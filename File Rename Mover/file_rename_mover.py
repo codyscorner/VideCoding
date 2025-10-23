@@ -5,17 +5,37 @@ import shutil
 import re
 import json
 from pathlib import Path
+import sys
+
+# Version number
+VERSION = "1.2.4"
 
 class FileRenameMover:
     def __init__(self, root):
         self.root = root
-        self.root.title("File Rename Mover")
+        self.root.title(f"File Rename Mover (V-{VERSION})")
         self.root.geometry("800x600")
         self.root.configure(bg='#1a1a1a')
 
         # Get the directory where the script is located
-        self.script_dir = Path(__file__).parent
+        if getattr(sys, 'frozen', False):
+            # Running as compiled executable
+            self.script_dir = Path(sys.executable).parent
+        else:
+            # Running as script
+            self.script_dir = Path(__file__).parent
+
         self.config_file = self.script_dir / "config.json"
+
+        # Set window icon
+        icon_path = self.script_dir / "app_icon.ico"
+        if icon_path.exists():
+            try:
+                # Use the iconbitmap method which works for .ico files
+                self.root.iconbitmap(str(icon_path))
+            except Exception:
+                # If that fails, silently continue
+                pass
 
         # Load configuration
         self.config = self.load_config()
