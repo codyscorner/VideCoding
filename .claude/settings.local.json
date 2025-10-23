@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(pip show:*)"
+      "Bash(pip show:*)",
+      "Bash(powershell:*)",
+      "Bash(python:*)",
+      "Bash(dir:*)",
+      "Bash(pyinstaller:*)"
     ],
     "deny": [],
     "ask": []
