@@ -1,6 +1,6 @@
 {
-    "default_source_folder": "P:/AI/Cumfyui/output/video/Archive",
-    "default_destination_folder": "P:/AI/Cumfyui/output/video/Archive/Facials",
+    "default_source_folder": "P:/AI/Cumfyui/output/video",
+    "default_destination_folder": "P:/AI/Cumfyui/output/video/Ovi/Archive",
     "last_extension": ".mp4",
-    "last_rename_to": "ComfyUI_Facials"
+    "last_rename_to": "ComfyUI_OVI"
 }
