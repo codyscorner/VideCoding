@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Lunar Lander - Single File Game</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #000;
+      color: #eee;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      height: 100vh;
+    }
+
+    #gameContainer {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+
+    canvas {
+      border: 2px solid #555;
+      background: radial-gradient(circle at 50% 20%, #222 0, #02020a 60%);
+      display: block;
+    }
+
+    #hud {
+      display: flex;
+      gap: 16px;
+      font-size: 14px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    #messages {
+      font-size: 14px;
+      text-align: center;
+      min-height: 1.5em;
+      color: #ffd27f;
+    }
+
+    .label {
+      color: #aaa;
+    }
+
+    .value {
+      color: #fff;
+      font-weight: 600;
+    }
+
+    #instructions {
+      font-size: 12px;
+      color: #bbb;
+      text-align: center;
+      max-width: 800px;
+      margin-top: 4px;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div id="gameContainer">
+    <canvas id="game" width="800" height="600"></canvas>
+    <div id="hud">
+      <div><span class="label">Fuel:</span> <span id="fuel" class="value"></span></div>
+      <div><span class="label">Vertical Speed:</span> <span id="vSpeed" class="value"></span></div>
+      <div><span class="label">Horizontal Speed:</span> <span id="hSpeed" class="value"></span></div>
+      <div><span class="label">Angle:</span> <span id="angle" class="value"></span></div>
+      <div><span class="label">Score:</span> <span id="score" class="value"></span></div>
+    </div>
+    <div id="messages"></div>
+    <div id="instructions">
+      Controls: 
+      <strong>Up Arrow</strong> = Thrust, 
+      <strong>Left / Right Arrows</strong> = Tilt, 
+      <strong>R</strong> = Restart after crash/landing. Landing pads are flat, highlighted sections of the surface – each with a different score value.
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const canvas = document.getElementById('game');
+      const ctx = canvas.getContext('2d');
+      const W = canvas.width;
+      const H = canvas.height;
+
+      const fuelEl = document.getElementById('fuel');
+      const vSpeedEl = document.getElementById('vSpeed');
+      const hSpeedEl = document.getElementById('hSpeed');
+      const angleEl = document.getElementById('angle');
+      const scoreEl = document.getElementById('score');
+      const msgEl = document.getElementById('messages');
+
+      // Physics constants
+      const GRAVITY = 0.03;       // downward acceleration
+      const THRUST = 0.08;        // engine thrust
+      const ROTATE_SPEED = 0.04;  // radians per frame while holding left/right
+
+      const SAFE_ANGLE = 0.25;    // radians from vertical
+      const SAFE_VSPEED = 1.2;    // safe vertical speed threshold
+      const SAFE_HSPEED = 1.0;    // safe horizontal speed threshold
+
+      // Ship parameters
+      const SHIP_WIDTH = 16;
+      const SHIP_HEIGHT = 24;
+
+      let keys = {
+        left: false,
+        right: false,
+        thrust: false
+      };
+
+      let terrainPoints = [];
+      let landingPads = [];
+
+      let ship;
+      let gameOver = false;
+      let totalScore = 0;
+
+      function createTerrain() {
+        terrainPoints = [];
+
+        terrainPoints.push({ x: 0,   y: 460 });
+        terrainPoints.push({ x: 80,  y: 430 });
+        terrainPoints.push({ x: 150, y: 470 });
+        // Pad 1 (easy, low points)
+        terrainPoints.push({ x: 230, y: 470 });
+        terrainPoints.push({ x: 320, y: 420 });
+        terrainPoints.push({ x: 380, y: 450 });
+        // Pad 2 (medium)
+        terrainPoints.push({ x: 460, y: 450 });
+        terrainPoints.push({ x: 550, y: 390 });
+        terrainPoints.push({ x: 620, y: 430 });
+        // Pad 3 (hard, high points)
+        terrainPoints.push({ x: 700, y: 430 });
+        terrainPoints.push({ x: 800, y: 470 });
+
+        // Landing pads: match flat segments in terrain
+        landingPads = [
+          { startX: 150, endX: 230, y: 470, points: 50, label: '50' },   // wide, low
+          { startX: 380, endX: 460, y: 450, points: 100, label: '100' }, // medium
+          { startX: 620, endX: 700, y: 430, points: 200, label: '200' }  // narrow, high
+        ];
+      }
+
+      function resetShip() {
+        ship = {
+          x: W * 0.5,
+          y: 80,
+          vx: 0,
+          vy: 0,
+          angle: 0,
+          fuel: 100,
+          landed: false,
+          crashed: false
+        };
+        msgEl.textContent = '';
+        gameOver = false;
+      }
+
+      function resetGame(keepScore) {
+        createTerrain();
+        if (!keepScore) totalScore = 0;
+        resetShip();
+        updateHUD();
+      }
+
+      function groundYAt(x) {
+        // Clamp x into terrain range
+        x = Math.max(0, Math.min(W, x));
+        for (let i = 0; i < terrainPoints.length - 1; i++) {
+          const p1 = terrainPoints[i];
+          const p2 = terrainPoints[i + 1];
+          if (x >= p1.x && x <= p2.x) {
+            const t = (x - p1.x) / (p2.x - p1.x);
+            return p1.y + (p2.y - p1.y) * t;
+          }
+        }
+        // Fallback (should not hit)
+        return H;
+      }
+
+      function getLandingPadAt(x) {
+        for (const pad of landingPads) {
+          if (x >= pad.startX && x <= pad.endX) {
+            return pad;
+          }
+        }
+        return null;
+      }
+
+      function updatePhysics() {
+        if (gameOver) return;
+
+        if (keys.left) {
+          ship.angle -= ROTATE_SPEED;
+        }
+        if (keys.right) {
+          ship.angle += ROTATE_SPEED;
+        }
+
+        if (keys.thrust && ship.fuel > 0 && !ship.landed && !ship.crashed) {
+          const ax = Math.sin(ship.angle) * -THRUST; // negative because angle is from vertical
+          const ay = Math.cos(ship.angle) * -THRUST;
+          ship.vx += ax;
+          ship.vy += ay;
+          ship.fuel = Math.max(0, ship.fuel - 0.15);
+        }
+
+        ship.vy += GRAVITY;
+
+        ship.x += ship.vx;
+        ship.y += ship.vy;
+
+        // basic horizontal wrapping to keep ship on screen
+        if (ship.x < 0) ship.x = 0;
+        if (ship.x > W) ship.x = W;
+
+        // Check collision with ground using bottom of ship
+        const bottomX = ship.x;
+        const bottomY = ship.y + SHIP_HEIGHT * 0.5;
+        const groundY = groundYAt(bottomX);
+
+        if (!ship.landed && !ship.crashed && bottomY >= groundY) {
+          handleLandingOrCrash();
+        }
+      }
+
+      function handleLandingOrCrash() {
+        const pad = getLandingPadAt(ship.x);
+        const vSpeed = ship.vy;
+        const hSpeed = ship.vx;
+        const angleFromVertical = Math.abs(ship.angle);
+
+        if (
+          pad &&
+          Math.abs(vSpeed) <= SAFE_VSPEED &&
+          Math.abs(hSpeed) <= SAFE_HSPEED &&
+          angleFromVertical <= SAFE_ANGLE
+        ) {
+          ship.landed = true;
+          gameOver = true;
+          const earned = pad.points;
+          totalScore += earned;
+          msgEl.textContent = `Nice landing! +${earned} points on ${pad.points}-point pad. Press R to fly again.`;
+        } else {
+          ship.crashed = true;
+          gameOver = true;
+          msgEl.textContent = 'CRASHED! Too hard, too fast, or bad angle. Press R to try again.';
+        }
+      }
+
+      function drawBackground() {
+        // Simple star field
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.save();
+        ctx.fillStyle = '#fff';
+        for (let i = 0; i < 80; i++) {
+          const x = (i * 73) % W;
+          const y = (i * 127) % (H * 0.7);
+          ctx.fillRect(x, y, 1, 1);
+        }
+        ctx.restore();
+      }
+
+      function drawTerrain() {
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(terrainPoints[0].x, terrainPoints[0].y);
+        for (let i = 1; i < terrainPoints.length; i++) {
+          ctx.lineTo(terrainPoints[i].x, terrainPoints[i].y);
+        }
+        ctx.lineTo(W, H);
+        ctx.lineTo(0, H);
+        ctx.closePath();
+
+        const grd = ctx.createLinearGradient(0, H * 0.5, 0, H);
+        grd.addColorStop(0, '#444');
+        grd.addColorStop(1, '#111');
+        ctx.fillStyle = grd;
+        ctx.fill();
+
+        // Draw outline
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#666';
+        ctx.stroke();
+
+        // Draw landing pads on top
+        for (const pad of landingPads) {
+          ctx.beginPath();
+          ctx.moveTo(pad.startX, pad.y);
+          ctx.lineTo(pad.endX, pad.y);
+          ctx.lineWidth = 4;
+          ctx.strokeStyle = '#3cff9b';
+          ctx.stroke();
+
+          // Score label above pad
+          ctx.fillStyle = '#ffd27f';
+          ctx.font = '12px system-ui';
+          const text = pad.label;
+          const textWidth = ctx.measureText(text).width;
+          ctx.fillText(text, pad.startX + (pad.endX - pad.startX) / 2 - textWidth / 2, pad.y - 8);
+        }
+
+        ctx.restore();
+      }
+
+      function drawShip() {
+        ctx.save();
+        ctx.translate(ship.x, ship.y);
+        ctx.rotate(ship.angle);
+
+        // Body
+        ctx.beginPath();
+        ctx.moveTo(0, -SHIP_HEIGHT * 0.5); // top
+        ctx.lineTo(-SHIP_WIDTH * 0.5, SHIP_HEIGHT * 0.5); // bottom left
+        ctx.lineTo(SHIP_WIDTH * 0.5, SHIP_HEIGHT * 0.5); // bottom right
+        ctx.closePath();
+        ctx.fillStyle = '#e0e0e0';
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = '#555';
+        ctx.stroke();
+
+        // Cabin
+        ctx.beginPath();
+        ctx.arc(0, -SHIP_HEIGHT * 0.25, 4, 0, Math.PI * 2);
+        ctx.fillStyle = '#7fd9ff';
+        ctx.fill();
+
+        // Legs
+        ctx.beginPath();
+        ctx.moveTo(-SHIP_WIDTH * 0.5, SHIP_HEIGHT * 0.5);
+        ctx.lineTo(-SHIP_WIDTH * 0.8, SHIP_HEIGHT * 0.7);
+        ctx.moveTo(SHIP_WIDTH * 0.5, SHIP_HEIGHT * 0.5);
+        ctx.lineTo(SHIP_WIDTH * 0.8, SHIP_HEIGHT * 0.7);
+        ctx.strokeStyle = '#888';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Thrust flame
+        if (keys.thrust && ship.fuel > 0 && !ship.landed && !ship.crashed) {
+          ctx.beginPath();
+          ctx.moveTo(-5, SHIP_HEIGHT * 0.5);
+          ctx.lineTo(0, SHIP_HEIGHT * 0.5 + 10 + Math.random() * 5);
+          ctx.lineTo(5, SHIP_HEIGHT * 0.5);
+          ctx.closePath();
+          const grd = ctx.createLinearGradient(0, SHIP_HEIGHT * 0.5, 0, SHIP_HEIGHT * 0.5 + 16);
+          grd.addColorStop(0, '#ffe66d');
+          grd.addColorStop(1, '#ff2f00');
+          ctx.fillStyle = grd;
+          ctx.fill();
+        }
+
+        ctx.restore();
+      }
+
+      function updateHUD() {
+        fuelEl.textContent = ship.fuel.toFixed(0);
+        vSpeedEl.textContent = ship.vy.toFixed(2);
+        hSpeedEl.textContent = ship.vx.toFixed(2);
+        angleEl.textContent = (ship.angle * (180 / Math.PI)).toFixed(1) + '°';
+        scoreEl.textContent = totalScore.toString();
+      }
+
+      function gameLoop() {
+        updatePhysics();
+        drawBackground();
+        drawTerrain();
+        drawShip();
+        updateHUD();
+        requestAnimationFrame(gameLoop);
+      }
+
+      window.addEventListener('keydown', (e) => {
+        if (e.code === 'ArrowLeft') {
+          keys.left = true;
+        } else if (e.code === 'ArrowRight') {
+          keys.right = true;
+        } else if (e.code === 'ArrowUp') {
+          keys.thrust = true;
+        } else if (e.code === 'KeyR') {
+          resetShip();
+        }
+      });
+
+      window.addEventListener('keyup', (e) => {
+        if (e.code === 'ArrowLeft') {
+          keys.left = false;
+        } else if (e.code === 'ArrowRight') {
+          keys.right = false;
+        } else if (e.code === 'ArrowUp') {
+          keys.thrust = false;
+        }
+      });
+
+      // Initial boot
+      resetGame(false);
+      gameLoop();
+    })();
+  </script>
+</body>
+</html>
