@@ -2,35 +2,64 @@
 
 A powerful, object-oriented tool for batch renaming and moving files with sequential numbering.
 
-## Version 2.0.0
+## Version 2.1.3
 
-This version represents a complete refactoring into a modular, object-oriented architecture.
+Enhanced version with advanced rename patterns, sorting options, and folder organization features.
 
 ## Features
 
+### Core Features
 - Batch rename and move files with sequential numbering
 - Automatic counter detection (continues from existing files)
-- Dark theme UI with red accents
+- Dark theme UI with red accents (1000x870 optimized window)
 - Persistent configuration
 - Settings dialog for default folders
 - File validation and error handling
+
+### Advanced Features (v2.1+)
+- **Multiple Rename Patterns**:
+  - Sequential numbering
+  - DateTime-based naming (multiple formats)
+  - Prefix mode (keep original names)
+  - Custom patterns with placeholders
+
+- **Sorting Options**:
+  - Sort by name, date modified, date created, or size
+  - Ascending or descending order
+
+- **Folder Organization**:
+  - Flat structure (all files in one folder)
+  - Organize by year, year/month, year/month/day
+  - Organize by date or month
+
+- **Standalone Executable**: No Python installation required
 
 ## Project Structure
 
 ```
 File Rename Mover/
-├── main.py                      # Application entry point
+├── main.py                      # Application entry point (v2.1+)
 ├── config.py                    # Configuration management
 ├── file_operations.py           # File handling logic
+├── rename_patterns.py           # Rename pattern strategies
+├── sorting.py                   # File sorting logic
+├── folder_organization.py       # Folder structure management
 ├── ui/
 │   ├── __init__.py
-│   ├── main_window.py          # Main application window
+│   ├── main_window_v2.py       # Enhanced main window (v2.1+)
+│   ├── main_window.py          # Legacy main window
 │   ├── settings_dialog.py      # Settings dialog
 │   └── styles.py               # Theme management
+├── dist/
+│   └── FileRenameMover.exe     # Standalone executable
+├── FileRenameMover.spec         # PyInstaller build configuration
 ├── file_rename_mover.py         # Legacy entry point (backward compatibility)
 ├── config.json                  # User configuration (auto-generated)
 ├── app_icon.ico                 # Application icon
-└── README.md                    # This file
+├── LICENSE                      # MIT License
+├── README.md                    # This file
+├── CHANGELOG.md                 # Version history details
+└── FEATURES_v2.1.md            # Detailed feature documentation
 ```
 
 ## Architecture Overview
@@ -47,12 +76,30 @@ The application follows SOLID principles and is organized into several key compo
 #### 2. File Operations (`file_operations.py`)
 - **FileValidator**: Validates file paths, extensions, and patterns
 - **FileScanner**: Scans directories and finds files
-- **FileRenamer**: Handles move and rename operations
+- **FileRenamer**: Handles move and rename operations with pattern support
 - **FileOperationResult**: Data class for operation results
 - Separated business logic from UI
 
-#### 3. UI Components (`ui/`)
-- **MainWindow**: Main application interface
+#### 3. Rename Patterns (`rename_patterns.py`)
+- **PatternFactory**: Creates pattern strategies
+- **NumberingPattern**: Sequential numbering (001, 002, etc.)
+- **DateTimePattern**: Date/time-based naming with multiple formats
+- **PrefixPattern**: Add prefix while keeping original names
+- **CustomPattern**: User-defined patterns with placeholders
+
+#### 4. Sorting (`sorting.py`)
+- **FileSorter**: Sorts files by various criteria
+- **SortBy**: Enum for sort criteria (name, date, size)
+- **SortOrder**: Enum for sort direction (ascending, descending)
+
+#### 5. Folder Organization (`folder_organization.py`)
+- **FolderOrganizer**: Manages destination folder structure
+- **FolderStructure**: Enum for organization patterns
+- Supports year, month, date-based folder hierarchies
+
+#### 6. UI Components (`ui/`)
+- **MainWindowV2**: Enhanced main application interface (v2.1+)
+- **MainWindow**: Legacy main window
 - **SettingsDialog**: Settings configuration dialog
 - **ThemeManager**: Theme and styling management
 - **DarkRedTheme**: Current theme implementation
@@ -69,6 +116,13 @@ The application follows SOLID principles and is organized into several key compo
 
 ### Running the Application
 
+#### Option 1: Standalone Executable (Recommended)
+```bash
+# Windows - No Python required!
+dist\FileRenameMover.exe
+```
+
+#### Option 2: From Source
 ```bash
 python main.py
 ```
@@ -83,16 +137,38 @@ python file_rename_mover.py
 1. Select a source folder (where files currently are)
 2. Select a destination folder (where to move files)
 3. Enter file extension to filter (e.g., `.jpg`, `.png`)
-4. Enter rename pattern (e.g., `photo`, `document`)
-5. Click "Move and Rename"
+4. Enter base name (e.g., `photo`, `document`)
+5. Choose rename pattern (numbering, datetime, prefix, custom)
+6. Select sorting options (optional)
+7. Choose folder organization structure (optional)
+8. Click "Move and Rename"
 
-### File Naming Convention
+### File Naming Examples
 
-Files are renamed with the pattern: `{pattern}_{counter}_{extension}`
+#### Sequential Numbering (Default)
+- `photo_000001.jpg`, `photo_000002.jpg`, etc.
 
-Example: `photo_000001_.jpg`, `photo_000002_.jpg`, etc.
+#### DateTime Pattern
+- `photo_20251127.jpg` (YYYYMMDD format)
+- `photo_2025_11_27.jpg` (YYYY_MM_DD format)
+- `photo_20251127_143052.jpg` (YYYYMMDD_HHMMSS format)
+- With counter: `photo_20251127_001.jpg`
 
-The counter automatically continues from existing files in the destination folder.
+#### Prefix Pattern
+- `photo_original_name1.jpg`, `photo_original_name2.jpg`
+
+#### Custom Pattern
+- Template: `{year}_{month}_{counter}` → `2025_11_001.jpg`
+- Available placeholders: `{counter}`, `{date}`, `{time}`, `{datetime}`, `{year}`, `{month}`, `{day}`, `{original}`
+
+### Folder Organization Examples
+
+- **Flat**: All files in destination folder
+- **By Year**: `2025/photo_001.jpg`
+- **By Year/Month**: `2025/11/photo_001.jpg`
+- **By Year/Month/Day**: `2025/11/27/photo_001.jpg`
+- **By Date**: `2025-11-27/photo_001.jpg`
+- **By Month**: `November/photo_001.jpg`
 
 ## Configuration
 
@@ -100,7 +176,13 @@ Configuration is stored in `config.json` and includes:
 - Default source folder
 - Default destination folder
 - Last used extension
-- Last used rename pattern
+- Last used base name
+- Rename pattern type
+- DateTime format preference
+- Sorting preferences (sort by, order)
+- Folder organization structure
+- Custom pattern template
+- Include counter preference
 
 ## Adding New Features
 
@@ -132,18 +214,27 @@ preview = file_renamer.generate_preview(
 3. Implement `apply_to_style()` method
 4. Add to `ThemeManager.THEMES` dictionary
 
+## Completed Features (v2.1.3)
+
+- [x] Multiple rename patterns (numbering, datetime, prefix, custom)
+- [x] Custom sorting options (name, date, size)
+- [x] Folder organization by date/time hierarchies
+- [x] Standalone executable distribution
+- [x] Advanced pattern configuration
+- [x] Real-time example preview
+
 ## Future Enhancement Ideas
 
-- [ ] Preview mode before moving files
+- [ ] Preview mode showing all changes before execution
 - [ ] Undo functionality
-- [ ] Multiple rename patterns/rules
-- [ ] File filtering by date, size, etc.
-- [ ] Custom sorting options
+- [ ] File filtering by date range, size range
 - [ ] Drag-and-drop support
 - [ ] Progress bar for large operations
-- [ ] Export/import rename rules
+- [ ] Export/import rename rules/presets
 - [ ] Command-line interface
-- [ ] Batch operation history
+- [ ] Batch operation history/logging
+- [ ] Duplicate file detection
+- [ ] Regex-based pattern matching
 
 ## Benefits of the Refactoring
 
@@ -156,8 +247,21 @@ preview = file_renamer.generate_preview(
 
 ## Requirements
 
+### For Standalone Executable
+- Windows 10 or later
+- No additional requirements!
+
+### For Running from Source
 - Python 3.7+
 - tkinter (usually included with Python)
+- No external dependencies required
+
+### For Building Executable
+- PyInstaller 6.0+
+```bash
+pip install pyinstaller
+pyinstaller --clean --noconfirm FileRenameMover.spec
+```
 
 ## Development
 
@@ -176,13 +280,42 @@ python -m pytest tests/
 
 ## License
 
-[Your License Here]
+MIT License - See [LICENSE](LICENSE) file for details.
 
 ## Author
 
-[Your Name Here]
+**Cody's Corner** - [@codyscorner](https://github.com/codyscorner)
+
+## Contributing
+
+Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
 
-- **2.0.0** (2025-11-27): Complete refactoring to object-oriented architecture
-- **1.2.4**: Last monolithic version
+### v2.1.3 (November 27, 2025)
+- Updated window size to 1000x870 for optimal UI layout
+- Built standalone executable with PyInstaller
+- Added MIT License
+- Updated build configuration
+- Enhanced documentation
+
+### v2.1.2 (November 27, 2025)
+- Added multiple rename patterns (numbering, datetime, prefix, custom)
+- Implemented advanced sorting options
+- Added folder organization features
+- Enhanced UI with pattern preview
+- Added custom pattern support with placeholders
+
+### v2.0.0 (November 27, 2025)
+- Complete refactoring to object-oriented architecture
+- Modular design with separation of concerns
+- Enhanced maintainability and extensibility
+
+### v1.2.4 (Earlier)
+- Last monolithic version
+
+## Additional Documentation
+
+- [CHANGELOG.md](CHANGELOG.md) - Detailed version history
+- [FEATURES_v2.1.md](FEATURES_v2.1.md) - Feature documentation
+- [LICENSE](LICENSE) - MIT License terms
