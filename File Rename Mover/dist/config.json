@@ -1,6 +1,13 @@
 {
-    "default_source_folder": "",
-    "default_destination_folder": "",
-    "last_extension": "",
-    "last_rename_to": ""
+    "default_source_folder": "P:/AI/Cumfyui/output/video/Archive",
+    "default_destination_folder": "P:/AI/Cumfyui/output/video/Archive/Remove Top",
+    "last_extension": "mp4",
+    "last_rename_to": "ComfyUI_remove_top",
+    "sort_by": "name",
+    "sort_order": "asc",
+    "pattern_type": "numbering",
+    "datetime_format": "YYYYMMDD",
+    "include_counter": true,
+    "folder_structure": "flat",
+    "custom_pattern": "{counter}"
 }
