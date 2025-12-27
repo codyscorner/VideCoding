@@ -5,7 +5,9 @@
       "Bash(powershell:*)",
       "Bash(python:*)",
       "Bash(dir:*)",
-      "Bash(pyinstaller:*)"
+      "Bash(pyinstaller:*)",
+      "Bash(findstr:*)",
+      "Bash(timeout 1 python:*)"
     ],
     "deny": [],
     "ask": []
