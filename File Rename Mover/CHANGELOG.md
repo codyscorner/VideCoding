@@ -5,6 +5,29 @@ All notable changes to File Rename Mover will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.4] - 2025-12-08
+
+### Fixed
+- Fixed filename formatting to remove trailing underscore before extension
+  - NumberingPattern: `photo_000001.jpg` instead of `photo_000001_.jpg`
+  - DateTimePattern: `photo_20251208_000001.jpg` instead of `photo_20251208_000001_.jpg`
+  - PrefixPattern: `backup_file.jpg` instead of `backup_file_.jpg`
+- Fixed preview generation to use current pattern strategy instead of hardcoded legacy format
+- Preview now respects sorting configuration and all pattern types
+
+### Added
+- Comprehensive filename validation and sanitization
+  - Path traversal protection (blocks `..` in filenames)
+  - Invalid character detection (blocks `<>:"/\|?*`)
+  - Reserved Windows name validation (blocks CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+- Enhanced extension validation with character checking
+- Better error messages for validation failures
+
+### Security
+- Added protection against path traversal attacks
+- Filename sanitization prevents directory traversal vulnerabilities
+- Validates against Windows reserved filenames
+
 ## [2.1.1] - 2025-11-27
 
 ### Fixed

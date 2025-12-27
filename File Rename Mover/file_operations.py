@@ -24,6 +24,9 @@ class FileOperationResult:
 class FileValidator:
     """Validates file operations and inputs"""
 
+    # Invalid characters for Windows filenames
+    INVALID_FILENAME_CHARS = r'<>:"/\|?*'
+
     @staticmethod
     def validate_extension(extension: str) -> str:
         """
@@ -36,7 +39,7 @@ class FileValidator:
             Normalized extension with leading dot
 
         Raises:
-            ValueError: If extension is empty
+            ValueError: If extension is empty or contains invalid characters
         """
         extension = extension.strip()
         if not extension:
@@ -44,6 +47,11 @@ class FileValidator:
 
         if not extension.startswith('.'):
             extension = '.' + extension
+
+        # Check for invalid characters (excluding the dot)
+        ext_without_dot = extension[1:]
+        if any(char in FileValidator.INVALID_FILENAME_CHARS for char in ext_without_dot):
+            raise ValueError(f"Extension contains invalid characters: {extension}")
 
         return extension
 
@@ -64,16 +72,39 @@ class FileValidator:
     @staticmethod
     def validate_rename_pattern(pattern: str) -> None:
         """
-        Validate rename pattern
+        Validate rename pattern (base name)
 
         Args:
             pattern: Pattern to validate
 
         Raises:
-            ValueError: If pattern is empty
+            ValueError: If pattern is empty, contains invalid characters, or has path traversal
         """
         if not pattern.strip():
             raise ValueError("Rename pattern cannot be empty")
+
+        pattern = pattern.strip()
+
+        # Check for path traversal attempts
+        if '..' in pattern:
+            raise ValueError("Rename pattern cannot contain '..' (path traversal)")
+
+        # Check for path separators
+        if '/' in pattern or '\\' in pattern:
+            raise ValueError("Rename pattern cannot contain path separators (/ or \\)")
+
+        # Check for other invalid filename characters
+        invalid_chars = set(FileValidator.INVALID_FILENAME_CHARS) - {'/', '\\'}  # Already checked
+        if any(char in invalid_chars for char in pattern):
+            invalid_found = [char for char in pattern if char in invalid_chars]
+            raise ValueError(f"Rename pattern contains invalid characters: {', '.join(invalid_found)}")
+
+        # Check for reserved Windows names
+        reserved_names = {'CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4',
+                         'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2',
+                         'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'}
+        if pattern.upper() in reserved_names:
+            raise ValueError(f"Rename pattern cannot be a reserved Windows name: {pattern}")
 
 
 class FileScanner:
@@ -345,7 +376,7 @@ class FileRenamer:
         self,
         source_folder: str,
         extension: str,
-        rename_pattern: str,
+        base_name: str,
         dest_folder: Optional[str] = None
     ) -> List[tuple[str, str]]:
         """
@@ -354,7 +385,7 @@ class FileRenamer:
         Args:
             source_folder: Source folder path
             extension: File extension to process
-            rename_pattern: Pattern for renaming files
+            base_name: Base name for renaming files
             dest_folder: Optional destination folder to check for existing files
 
         Returns:
@@ -366,16 +397,27 @@ class FileRenamer:
         if not source_files:
             return []
 
+        # Sort files using current sorting configuration
+        sorted_files = self.sorter.sort_files(
+            source_folder,
+            source_files,
+            self.sort_by,
+            self.sort_order
+        )
+
         # Get starting counter
         counter = 1
-        if dest_folder and os.path.exists(dest_folder):
-            max_counter = self.scanner.get_max_counter(dest_folder, rename_pattern, extension)
-            counter = max_counter + 1
 
-        # Generate preview
+        # Generate preview using current pattern
         preview = []
-        for filename in source_files:
-            new_filename = f"{rename_pattern}_{counter:06d}_{extension}"
+        for filename in sorted_files:
+            source_path = os.path.join(source_folder, filename)
+            new_filename = self.rename_pattern.generate_filename(
+                base_name,
+                extension,
+                counter,
+                source_path
+            )
             preview.append((filename, new_filename))
             counter += 1
 
