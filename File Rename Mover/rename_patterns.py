@@ -70,7 +70,7 @@ class NumberingPattern(RenamePattern):
     ) -> str:
         """Generate filename with numbering"""
         counter_str = str(counter).zfill(self.padding)
-        return f"{base_name}_{counter_str}_{extension}"
+        return f"{base_name}_{counter_str}{extension}"
 
 
 class DateTimePattern(RenamePattern):
@@ -118,9 +118,9 @@ class DateTimePattern(RenamePattern):
         # Build filename
         if self.include_counter:
             counter_str = str(counter).zfill(self.padding)
-            return f"{base_name}_{dt_str}_{counter_str}_{extension}"
+            return f"{base_name}_{dt_str}_{counter_str}{extension}"
         else:
-            return f"{base_name}_{dt_str}_{extension}"
+            return f"{base_name}_{dt_str}{extension}"
 
 
 class PrefixPattern(RenamePattern):
@@ -150,7 +150,7 @@ class PrefixPattern(RenamePattern):
             return f"{self.prefix}_{original_name}{extension}"
         else:
             counter_str = str(counter).zfill(6)
-            return f"{self.prefix}_{base_name}_{counter_str}_{extension}"
+            return f"{self.prefix}_{base_name}_{counter_str}{extension}"
 
 
 class CustomPattern(RenamePattern):

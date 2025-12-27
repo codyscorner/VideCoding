@@ -2,9 +2,9 @@
 
 A powerful, object-oriented tool for batch renaming and moving files with sequential numbering.
 
-## Version 2.1.3
+## Version 2.1.4
 
-Enhanced version with advanced rename patterns, sorting options, and folder organization features.
+Enhanced version with advanced rename patterns, sorting options, folder organization features, and improved security.
 
 ## Features
 
@@ -291,6 +291,13 @@ MIT License - See [LICENSE](LICENSE) file for details.
 Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
+
+### v2.1.4 (December 8, 2025)
+- Fixed filename formatting (removed trailing underscore)
+- Fixed preview generation to use current pattern strategy
+- Added comprehensive filename validation and sanitization
+- Added security protections (path traversal, invalid characters, reserved names)
+- Improved error messages and validation
 
 ### v2.1.3 (November 27, 2025)
 - Updated window size to 1000x870 for optimal UI layout

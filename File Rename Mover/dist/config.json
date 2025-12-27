@@ -1,13 +1,13 @@
 {
-    "default_source_folder": "P:/AI/Cumfyui/output/video/Archive",
-    "default_destination_folder": "P:/AI/Cumfyui/output/video/Archive/Remove Top",
+    "default_source_folder": "C:/AI/CumfyUI/output/video/RemoveTop",
+    "default_destination_folder": "B:/Video/Kissing",
     "last_extension": "mp4",
-    "last_rename_to": "ComfyUI_remove_top",
-    "sort_by": "name",
+    "last_rename_to": "Kissing",
+    "sort_by": "date_created",
     "sort_order": "asc",
     "pattern_type": "numbering",
     "datetime_format": "YYYYMMDD",
     "include_counter": true,
-    "folder_structure": "flat",
+    "folder_structure": "date",
     "custom_pattern": "{counter}"
 }
