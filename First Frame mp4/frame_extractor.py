@@ -185,10 +185,20 @@ class FrameExtractorApp:
             self.add_status("ERROR: Invalid source directory")
             return
 
-        if not dest or not os.path.isdir(dest):
-            messagebox.showerror("Error", "Please select a valid destination directory")
-            self.add_status("ERROR: Invalid destination directory")
+        if not dest:
+            messagebox.showerror("Error", "Please select a destination directory")
+            self.add_status("ERROR: No destination directory specified")
             return
+
+        # Create destination directory if it doesn't exist
+        if not os.path.isdir(dest):
+            try:
+                os.makedirs(dest, exist_ok=True)
+                self.add_status(f"Created destination directory: {dest}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not create destination directory: {str(e)}")
+                self.add_status(f"ERROR: Could not create destination directory: {str(e)}")
+                return
 
         self.add_status("=" * 60)
         self.add_status(f"Starting batch processing...")
