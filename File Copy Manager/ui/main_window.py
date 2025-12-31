@@ -50,6 +50,7 @@ class MainWindow:
         self.preserve_structure_var = tk.BooleanVar(value=self.config.get("preserve_structure", True))
         self.folder_structure_var = tk.StringVar(value=self.config.get("folder_structure", "flat"))
         self.number_duplicates_var = tk.BooleanVar(value=self.config.get("number_duplicates", True))
+        self.recursive_search_var = tk.BooleanVar(value=self.config.get("recursive_search", True))
 
         # Build UI
         self._setup_ui()
@@ -178,6 +179,20 @@ class MainWindow:
             style='Dark.TLabel',
             font=self.fonts['bold']
         ).pack(anchor='w', pady=(0, 5))
+
+        # Recursive search checkbox
+        recursive_check = tk.Checkbutton(
+            section_frame,
+            text="Search subfolders recursively (include all files from nested folders)",
+            variable=self.recursive_search_var,
+            bg=self.colors['background'],
+            fg=self.colors['foreground'],
+            selectcolor=self.colors['input_bg'],
+            activebackground=self.colors['background'],
+            activeforeground=self.colors['foreground'],
+            font=self.fonts['default']
+        )
+        recursive_check.pack(anchor='w', pady=(0, 5))
 
         # Preserve structure checkbox
         preserve_check = tk.Checkbutton(
@@ -421,6 +436,7 @@ class MainWindow:
             # Get options
             preserve_structure = self.preserve_structure_var.get()
             number_duplicates = self.number_duplicates_var.get()
+            recursive_search = self.recursive_search_var.get()
             folder_structure = FolderStructure(self.folder_structure_var.get())
 
             # Create file copier
@@ -435,7 +451,8 @@ class MainWindow:
                 source_folder,
                 dest_folder,
                 extension,
-                preserve_structure
+                preserve_structure,
+                recursive_search
             )
 
             # Count results
@@ -447,6 +464,7 @@ class MainWindow:
             self.config.set("preserve_structure", preserve_structure)
             self.config.set("folder_structure", self.folder_structure_var.get())
             self.config.set("number_duplicates", number_duplicates)
+            self.config.set("recursive_search", recursive_search)
             self.config.save()
 
             # Show result

@@ -1,0 +1,9 @@
+{
+    "default_source_folder": "//CL-NAS/Music/_Unknown_",
+    "default_destination_folder": "E:/MUSIC/For_Review",
+    "last_extension": "mp3",
+    "preserve_structure": false,
+    "folder_structure": "flat",
+    "number_duplicates": true,
+    "recursive_search": true
+}

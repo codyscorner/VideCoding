@@ -133,7 +133,8 @@ class FileCopier:
         source_folder: str,
         dest_folder: str,
         extension: str,
-        preserve_structure: bool = False
+        preserve_structure: bool = False,
+        recursive: bool = True
     ) -> List[FileOperationResult]:
         """
         Copy files from source to destination
@@ -143,6 +144,7 @@ class FileCopier:
             dest_folder: Destination folder path
             extension: File extension to process
             preserve_structure: If True, preserve original folder structure
+            recursive: If True, search subfolders recursively
 
         Returns:
             List of FileOperationResult objects
@@ -162,8 +164,8 @@ class FileCopier:
         structure = FolderStructure.PRESERVE if preserve_structure else self.folder_structure
 
         # Get files to process
-        self._log_status(f"Scanning source folder for {extension} files...")
-        recursive = preserve_structure
+        search_mode = "recursively" if recursive else "in root folder only"
+        self._log_status(f"Scanning source folder {search_mode} for {extension} files...")
         source_files = self.scanner.get_files_with_extension(source_folder, extension, recursive)
 
         if not source_files:

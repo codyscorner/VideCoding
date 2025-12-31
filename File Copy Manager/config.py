@@ -14,7 +14,8 @@ class ConfigManager:
         "last_extension": "",
         "preserve_structure": True,
         "folder_structure": "flat",
-        "number_duplicates": True
+        "number_duplicates": True,
+        "recursive_search": True
     }
 
     def __init__(self, config_path: Path):
