@@ -2,9 +2,14 @@
 
 A powerful tool for batch copying files with automatic duplicate numbering and flexible folder organization.
 
-## Version 1.1.0
+## Version 1.2.0
 
 **Yellow & Black Theme** - Easy to distinguish from the red File Rename Mover!
+
+### What's New in v1.2.0
+- **File Pattern Filtering**: Support for wildcard patterns (*.jpg, *.png) and multiple patterns
+- **Backward Compatible**: Old extension format (.jpg) automatically converts to patterns (*.jpg)
+- **Enhanced Pattern Matching**: Uses fnmatch for flexible file matching
 
 ### What's New in v1.1.0
 - **Dual Progress Bars**: Real-time overall and per-file progress tracking
@@ -89,7 +94,7 @@ python main.py
 
 1. Select a source folder (where files currently are)
 2. Select a destination folder (where to copy files)
-3. Enter file extension to filter (e.g., `.jpg`, `.png`, `.pdf`)
+3. Enter file pattern(s) to filter (e.g., `*.jpg`, `*.png, *.pdf`, `image*.jpg`)
 4. Choose copy options:
    - Preserve folder structure (or use custom organization)
    - Number duplicates (or skip them)
@@ -150,12 +155,29 @@ Destination/
   photo_001.jpg
 ```
 
+## File Pattern Matching
+
+### Supported Patterns
+The application supports flexible file pattern matching:
+
+- **Single pattern**: `*.jpg` - Match all JPG files
+- **Multiple patterns**: `*.jpg, *.png, *.pdf` - Match multiple file types
+- **Prefix wildcard**: `image*.jpg` - Match files starting with "image"
+- **Single character wildcard**: `photo_?.png` - Match photo_1.png, photo_2.png, etc.
+- **Legacy format**: `.jpg` - Automatically converts to `*.jpg`
+
+### Pattern Examples
+- `*.mp3` - All MP3 files
+- `*.jpg, *.png, *.gif` - All image files (JPG, PNG, GIF)
+- `report*.pdf` - PDFs starting with "report"
+- `data_????.csv` - CSV files with exactly 4 characters after "data_"
+
 ## Configuration
 
 Configuration is stored in `config.json` and includes:
 - Default source folder
 - Default destination folder
-- Last used extension
+- Last used file pattern (automatically migrates old extensions to patterns)
 - Preserve structure preference
 - Folder organization structure
 - Number duplicates preference
@@ -225,6 +247,20 @@ MIT License - See LICENSE file for details.
 Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
+
+### v1.2.0 (January 1, 2026)
+- **File Pattern Filtering**: Added wildcard pattern support (*.jpg, *.png)
+- **Multiple Patterns**: Support for comma-separated patterns (*.jpg, *.png, *.pdf)
+- **Pattern Migration**: Automatic conversion of old extension format to patterns
+- **Enhanced Validation**: Updated FileValidator for pattern validation
+- Updated UI labels and examples to reflect pattern filtering
+
+### v1.1.0 (December 2025)
+- **Dual Progress Bars**: Real-time overall and per-file progress tracking
+- **File Size Filtering**: Filter files by minimum/maximum size (B, KB, MB, GB)
+- **File Age Filtering**: Copy only files modified within the last X days
+- **Enhanced Status Display**: Shows file size and copy time for each file
+- **Improved UI**: Tighter, more compact layout for better usability
 
 ### v1.0.1 (December 8, 2025)
 - Updated window size to 1000x870 (matches File Rename Mover)

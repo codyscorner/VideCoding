@@ -3,6 +3,7 @@
 import os
 import shutil
 import time
+import fnmatch
 from pathlib import Path
 from typing import List, Optional, Callable
 from dataclasses import dataclass
@@ -27,23 +28,25 @@ class FileValidator:
     @staticmethod
     def validate_extension(extension: str) -> str:
         """
-        Validate and normalize file extension
+        Validate and normalize file pattern(s)
 
         Args:
-            extension: File extension to validate
+            extension: File pattern(s) to validate (e.g., '*.jpg', '.jpg', '*.png, *.pdf')
 
         Returns:
-            Normalized extension with leading dot
+            Validated pattern string (unchanged but verified)
 
         Raises:
-            ValueError: If extension is empty
+            ValueError: If pattern is empty or invalid
         """
         extension = extension.strip()
         if not extension:
-            raise ValueError("Extension cannot be empty")
+            raise ValueError("File pattern cannot be empty")
 
-        if not extension.startswith('.'):
-            extension = '.' + extension
+        # Validate that patterns don't contain invalid characters
+        invalid_chars = ['<', '>', '|', '"', '\0']
+        if any(char in extension for char in invalid_chars):
+            raise ValueError(f"File pattern contains invalid characters")
 
         return extension
 
@@ -68,11 +71,12 @@ class FileScanner:
     @staticmethod
     def get_files_with_extension(folder_path: str, extension: str, recursive: bool = False) -> List[tuple[str, str]]:
         """
-        Get all files in a folder with a specific extension
+        Get all files in a folder matching file patterns
 
         Args:
             folder_path: Path to scan
-            extension: File extension to match (with or without dot)
+            extension: File pattern(s) to match (e.g., '*.jpg', '*.png', or '.jpg' for backward compatibility)
+                      Supports multiple patterns separated by commas: '*.jpg, *.png, *.pdf'
             recursive: If True, scan subdirectories
 
         Returns:
@@ -81,23 +85,39 @@ class FileScanner:
         Raises:
             OSError: If folder cannot be read
         """
-        if not extension.startswith('.'):
-            extension = '.' + extension
+        # Parse patterns - support both old style (.jpg) and new style (*.jpg)
+        patterns = [p.strip() for p in extension.split(',')]
+        normalized_patterns = []
+
+        for pattern in patterns:
+            if not pattern:
+                continue
+            # Convert old-style extension (.jpg) to pattern (*.jpg)
+            if pattern.startswith('.') and '*' not in pattern:
+                normalized_patterns.append('*' + pattern)
+            # Add * prefix if pattern doesn't have it
+            elif not pattern.startswith('*') and '*' not in pattern:
+                normalized_patterns.append('*.' + pattern.lstrip('.'))
+            else:
+                normalized_patterns.append(pattern)
 
         files = []
 
         if recursive:
             for root, dirs, filenames in os.walk(folder_path):
                 for filename in filenames:
-                    if filename.lower().endswith(extension.lower()):
+                    # Check if filename matches any of the patterns
+                    if any(fnmatch.fnmatch(filename.lower(), pattern.lower()) for pattern in normalized_patterns):
                         full_path = os.path.join(root, filename)
                         rel_path = os.path.relpath(full_path, folder_path)
                         files.append((full_path, rel_path))
         else:
             for filename in os.listdir(folder_path):
                 full_path = os.path.join(folder_path, filename)
-                if os.path.isfile(full_path) and filename.lower().endswith(extension.lower()):
-                    files.append((full_path, filename))
+                if os.path.isfile(full_path):
+                    # Check if filename matches any of the patterns
+                    if any(fnmatch.fnmatch(filename.lower(), pattern.lower()) for pattern in normalized_patterns):
+                        files.append((full_path, filename))
 
         return files
 
