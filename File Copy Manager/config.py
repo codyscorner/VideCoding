@@ -35,12 +35,44 @@ class ConfigManager:
                 with open(self.config_path, 'r') as f:
                     config = json.load(f)
                     # Merge with defaults to ensure all keys exist
-                    return {**self.DEFAULT_CONFIG, **config}
+                    merged = {**self.DEFAULT_CONFIG, **config}
+                    # Migrate old extension format to pattern format
+                    merged = self._migrate_extension_to_pattern(merged)
+                    return merged
             except (json.JSONDecodeError, OSError):
                 pass
 
         # Return default config (will be saved later if needed)
         return self.DEFAULT_CONFIG.copy()
+
+    def _migrate_extension_to_pattern(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Migrate old-style extensions to new pattern format
+
+        Converts formats like 'mp3' or '.mp3' to '*.mp3'
+        """
+        last_ext = config.get('last_extension', '')
+        if last_ext and not last_ext.startswith('*'):
+            # Check if it's a simple extension without wildcards
+            if ',' in last_ext:
+                # Multiple extensions: "mp3, jpg" or ".mp3, .jpg"
+                parts = [p.strip() for p in last_ext.split(',')]
+                converted = []
+                for part in parts:
+                    if part and '*' not in part and '?' not in part:
+                        # Remove leading dot if present, then add pattern
+                        clean = part.lstrip('.')
+                        converted.append(f'*.{clean}')
+                    else:
+                        converted.append(part)
+                config['last_extension'] = ', '.join(converted)
+            else:
+                # Single extension: "mp3" or ".mp3"
+                if '*' not in last_ext and '?' not in last_ext:
+                    clean = last_ext.lstrip('.')
+                    config['last_extension'] = f'*.{clean}'
+
+        return config
 
     def save(self) -> bool:
         """

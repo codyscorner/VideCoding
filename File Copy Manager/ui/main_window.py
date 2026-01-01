@@ -162,7 +162,7 @@ class MainWindow:
         frame = ttk.Frame(parent, style='Dark.TFrame')
         frame.pack(fill='x', pady=(0, 5))
 
-        ttk.Label(frame, text="File Extension:", style='Dark.TLabel').pack(anchor='w')
+        ttk.Label(frame, text="File Pattern:", style='Dark.TLabel').pack(anchor='w')
 
         entry = tk.Entry(
             frame,
@@ -178,7 +178,7 @@ class MainWindow:
 
         ttk.Label(
             frame,
-            text="Example: .jpg, .png, .pdf",
+            text="Example: *.jpg, *.png, *.pdf",
             style='Dark.TLabel',
             font=self.fonts['italic']
         ).pack(anchor='w', pady=(2, 0))
