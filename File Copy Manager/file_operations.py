@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import List, Optional, Callable
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ class FileOperationResult:
     source_file: str
     destination_file: Optional[str] = None
     error_message: Optional[str] = None
+    file_size: int = 0
+    copy_time: float = 0.0
 
 
 class FileValidator:
@@ -106,7 +109,8 @@ class FileCopier:
         self,
         status_callback: Optional[Callable[[str], None]] = None,
         folder_structure: FolderStructure = FolderStructure.FLAT,
-        number_duplicates: bool = True
+        number_duplicates: bool = True,
+        progress_callback: Optional[Callable[[int, int, str, int], None]] = None
     ):
         """
         Initialize the file copier
@@ -115,8 +119,10 @@ class FileCopier:
             status_callback: Optional callback function for status updates
             folder_structure: Folder organization structure
             number_duplicates: If True, number duplicate files; if False, skip duplicates
+            progress_callback: Optional callback for progress updates (current, total, filename, file_progress)
         """
         self.status_callback = status_callback
+        self.progress_callback = progress_callback
         self.validator = FileValidator()
         self.scanner = FileScanner()
         self.folder_structure = folder_structure
@@ -128,13 +134,86 @@ class FileCopier:
         if self.status_callback:
             self.status_callback(message)
 
+    def _format_file_size(self, size_bytes: int) -> str:
+        """
+        Format file size in human-readable format
+
+        Args:
+            size_bytes: File size in bytes
+
+        Returns:
+            Formatted string (e.g., "1.23 MB")
+        """
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size_bytes < 1024.0:
+                return f"{size_bytes:.2f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.2f} PB"
+
+    def _apply_filters(
+        self,
+        files: List[tuple[str, str]],
+        min_size_bytes: Optional[float],
+        max_size_bytes: Optional[float],
+        max_days_old: Optional[int]
+    ) -> List[tuple[str, str]]:
+        """
+        Apply file filters to the file list
+
+        Args:
+            files: List of (full_path, rel_path) tuples
+            min_size_bytes: Minimum file size
+            max_size_bytes: Maximum file size
+            max_days_old: Maximum file age in days
+
+        Returns:
+            Filtered list of files
+        """
+        if not any([min_size_bytes, max_size_bytes, max_days_old]):
+            return files
+
+        from datetime import datetime, timedelta
+
+        filtered = []
+        now = datetime.now()
+
+        for full_path, rel_path in files:
+            # Size filter
+            if min_size_bytes is not None or max_size_bytes is not None:
+                try:
+                    file_size = os.path.getsize(full_path)
+                    if min_size_bytes is not None and file_size < min_size_bytes:
+                        continue
+                    if max_size_bytes is not None and file_size > max_size_bytes:
+                        continue
+                except OSError:
+                    continue
+
+            # Date filter
+            if max_days_old is not None:
+                try:
+                    mtime = os.path.getmtime(full_path)
+                    file_date = datetime.fromtimestamp(mtime)
+                    age_days = (now - file_date).days
+                    if age_days > max_days_old:
+                        continue
+                except OSError:
+                    continue
+
+            filtered.append((full_path, rel_path))
+
+        return filtered
+
     def copy_files(
         self,
         source_folder: str,
         dest_folder: str,
         extension: str,
         preserve_structure: bool = False,
-        recursive: bool = True
+        recursive: bool = True,
+        min_size_bytes: Optional[float] = None,
+        max_size_bytes: Optional[float] = None,
+        max_days_old: Optional[int] = None
     ) -> List[FileOperationResult]:
         """
         Copy files from source to destination
@@ -145,6 +224,9 @@ class FileCopier:
             extension: File extension to process
             preserve_structure: If True, preserve original folder structure
             recursive: If True, search subfolders recursively
+            min_size_bytes: Minimum file size in bytes (inclusive)
+            max_size_bytes: Maximum file size in bytes (inclusive)
+            max_days_old: Maximum file age in days
 
         Returns:
             List of FileOperationResult objects
@@ -174,9 +256,32 @@ class FileCopier:
 
         self._log_status(f"Found {len(source_files)} files to process")
 
+        # Apply filters
+        filtered_files = self._apply_filters(
+            source_files,
+            min_size_bytes,
+            max_size_bytes,
+            max_days_old
+        )
+
+        if len(filtered_files) < len(source_files):
+            skipped = len(source_files) - len(filtered_files)
+            self._log_status(f"Filtered out {skipped} files based on filter criteria")
+
+        if not filtered_files:
+            self._log_status("No files match the filter criteria")
+            return []
+
+        self._log_status(f"Processing {len(filtered_files)} files after filtering")
+
         # Process each file
         results = []
-        for full_path, rel_path in source_files:
+        for idx, (full_path, rel_path) in enumerate(filtered_files, 1):
+            # Update progress
+            if self.progress_callback:
+                filename = os.path.basename(full_path)
+                self.progress_callback(idx, len(filtered_files), filename, 0)
+
             result = self._process_single_file(
                 full_path,
                 rel_path,
@@ -185,6 +290,10 @@ class FileCopier:
                 structure
             )
             results.append(result)
+
+            # Update progress to 100% for this file
+            if self.progress_callback:
+                self.progress_callback(idx, len(filtered_files), filename, 100)
 
         # Summary
         success_count = sum(1 for r in results if r.success)
@@ -262,24 +371,35 @@ class FileCopier:
                 )
 
         try:
-            # Copy the file
+            # Get file size
+            file_size = os.path.getsize(source_path)
+
+            # Copy the file and measure time
+            start_time = time.time()
             shutil.copy2(source_path, dest_path)
+            copy_time = time.time() - start_time
+
+            # Format file size
+            size_str = self._format_file_size(file_size)
+            time_str = f"{copy_time:.2f}s"
 
             # Log the operation
             if structure == FolderStructure.PRESERVE:
                 rel_dest = os.path.relpath(dest_path, dest_folder)
-                self._log_status(f"Copied: {rel_path} → {rel_dest}")
+                self._log_status(f"Copied: {rel_path} → {rel_dest} ({size_str}, {time_str})")
             else:
                 subfolder_name = os.path.relpath(final_dest_folder, dest_folder)
                 if subfolder_name == ".":
-                    self._log_status(f"Copied: {filename}")
+                    self._log_status(f"Copied: {filename} ({size_str}, {time_str})")
                 else:
-                    self._log_status(f"Copied: {filename} → {subfolder_name}{os.sep}{final_filename}")
+                    self._log_status(f"Copied: {filename} → {subfolder_name}{os.sep}{final_filename} ({size_str}, {time_str})")
 
             return FileOperationResult(
                 success=True,
                 source_file=filename,
-                destination_file=final_filename
+                destination_file=final_filename,
+                file_size=file_size,
+                copy_time=copy_time
             )
         except Exception as e:
             error_msg = f"Error copying {filename}: {e}"
