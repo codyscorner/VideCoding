@@ -52,6 +52,15 @@ class MainWindow:
         self.number_duplicates_var = tk.BooleanVar(value=self.config.get("number_duplicates", True))
         self.recursive_search_var = tk.BooleanVar(value=self.config.get("recursive_search", True))
 
+        # Filter options
+        self.enable_size_filter_var = tk.BooleanVar(value=self.config.get("enable_size_filter", False))
+        self.min_size_var = tk.StringVar(value=self.config.get("min_size", "0"))
+        self.max_size_var = tk.StringVar(value=self.config.get("max_size", ""))
+        self.size_unit_var = tk.StringVar(value=self.config.get("size_unit", "MB"))
+
+        self.enable_date_filter_var = tk.BooleanVar(value=self.config.get("enable_date_filter", False))
+        self.days_old_var = tk.StringVar(value=self.config.get("days_old", "30"))
+
         # Build UI
         self._setup_ui()
 
@@ -96,11 +105,17 @@ class MainWindow:
         # Copy options
         self._create_copy_options(main_frame)
 
+        # Filter options
+        self._create_filter_options(main_frame)
+
         # Folder organization
         self._create_folder_organization_section(main_frame)
 
         # Buttons
         self._create_buttons(main_frame)
+
+        # Progress bars
+        self._create_progress_section(main_frame)
 
         # Status listbox
         self._create_status_listbox(main_frame)
@@ -145,7 +160,7 @@ class MainWindow:
     def _create_extension_input(self, parent: ttk.Frame) -> None:
         """Create extension input"""
         frame = ttk.Frame(parent, style='Dark.TFrame')
-        frame.pack(fill='x', pady=(0, 10))
+        frame.pack(fill='x', pady=(0, 5))
 
         ttk.Label(frame, text="File Extension:", style='Dark.TLabel').pack(anchor='w')
 
@@ -159,7 +174,7 @@ class MainWindow:
             bd=1,
             relief='solid'
         )
-        entry.pack(fill='x', pady=(5, 0))
+        entry.pack(fill='x', pady=(2, 0))
 
         ttk.Label(
             frame,
@@ -222,6 +237,127 @@ class MainWindow:
         )
         number_check.pack(anchor='w')
 
+    def _create_filter_options(self, parent: ttk.Frame) -> None:
+        """Create filter options section"""
+        section_frame = ttk.Frame(parent, style='Dark.TFrame')
+        section_frame.pack(fill='x', pady=(5, 5))
+
+        ttk.Label(
+            section_frame,
+            text="File Filters",
+            style='Dark.TLabel',
+            font=self.fonts['bold']
+        ).pack(anchor='w', pady=(0, 5))
+
+        # Size filter
+        size_frame = ttk.Frame(section_frame, style='Dark.TFrame')
+        size_frame.pack(fill='x', pady=(0, 5))
+
+        size_check = tk.Checkbutton(
+            size_frame,
+            text="Filter by file size:",
+            variable=self.enable_size_filter_var,
+            bg=self.colors['background'],
+            fg=self.colors['foreground'],
+            selectcolor=self.colors['input_bg'],
+            activebackground=self.colors['background'],
+            activeforeground=self.colors['foreground'],
+            font=self.fonts['default'],
+            command=self._on_size_filter_changed
+        )
+        size_check.pack(anchor='w')
+
+        # Size inputs frame
+        self.size_inputs_frame = ttk.Frame(size_frame, style='Dark.TFrame')
+        self.size_inputs_frame.pack(fill='x', padx=(20, 0), pady=(5, 0))
+
+        # Min size
+        min_frame = ttk.Frame(self.size_inputs_frame, style='Dark.TFrame')
+        min_frame.pack(side='left', padx=(0, 10))
+
+        ttk.Label(min_frame, text="Min:", style='Dark.TLabel').pack(side='left', padx=(0, 5))
+        tk.Entry(
+            min_frame,
+            textvariable=self.min_size_var,
+            width=10,
+            bg=self.colors['input_bg'],
+            fg=self.colors['input_fg'],
+            insertbackground=self.colors['insert_cursor'],
+            bd=1,
+            relief='solid'
+        ).pack(side='left')
+
+        # Max size
+        max_frame = ttk.Frame(self.size_inputs_frame, style='Dark.TFrame')
+        max_frame.pack(side='left', padx=(0, 10))
+
+        ttk.Label(max_frame, text="Max:", style='Dark.TLabel').pack(side='left', padx=(0, 5))
+        tk.Entry(
+            max_frame,
+            textvariable=self.max_size_var,
+            width=10,
+            bg=self.colors['input_bg'],
+            fg=self.colors['input_fg'],
+            insertbackground=self.colors['insert_cursor'],
+            bd=1,
+            relief='solid'
+        ).pack(side='left')
+
+        # Unit
+        unit_frame = ttk.Frame(self.size_inputs_frame, style='Dark.TFrame')
+        unit_frame.pack(side='left')
+
+        ttk.Label(unit_frame, text="Unit:", style='Dark.TLabel').pack(side='left', padx=(0, 5))
+        ttk.Combobox(
+            unit_frame,
+            textvariable=self.size_unit_var,
+            values=["B", "KB", "MB", "GB"],
+            state="readonly",
+            width=5
+        ).pack(side='left')
+
+        # Date filter
+        date_frame = ttk.Frame(section_frame, style='Dark.TFrame')
+        date_frame.pack(fill='x')
+
+        date_check = tk.Checkbutton(
+            date_frame,
+            text="Filter by file age:",
+            variable=self.enable_date_filter_var,
+            bg=self.colors['background'],
+            fg=self.colors['foreground'],
+            selectcolor=self.colors['input_bg'],
+            activebackground=self.colors['background'],
+            activeforeground=self.colors['foreground'],
+            font=self.fonts['default'],
+            command=self._on_date_filter_changed
+        )
+        date_check.pack(anchor='w')
+
+        # Date inputs frame
+        self.date_inputs_frame = ttk.Frame(date_frame, style='Dark.TFrame')
+        self.date_inputs_frame.pack(fill='x', padx=(20, 0), pady=(5, 0))
+
+        days_frame = ttk.Frame(self.date_inputs_frame, style='Dark.TFrame')
+        days_frame.pack(side='left')
+
+        ttk.Label(days_frame, text="Modified within last:", style='Dark.TLabel').pack(side='left', padx=(0, 5))
+        tk.Entry(
+            days_frame,
+            textvariable=self.days_old_var,
+            width=10,
+            bg=self.colors['input_bg'],
+            fg=self.colors['input_fg'],
+            insertbackground=self.colors['insert_cursor'],
+            bd=1,
+            relief='solid'
+        ).pack(side='left', padx=(0, 5))
+        ttk.Label(days_frame, text="days", style='Dark.TLabel').pack(side='left')
+
+        # Initialize visibility
+        self._on_size_filter_changed()
+        self._on_date_filter_changed()
+
     def _create_folder_organization_section(self, parent: ttk.Frame) -> None:
         """Create folder organization section"""
         self.folder_org_frame = ttk.Frame(parent, style='Dark.TFrame')
@@ -271,12 +407,12 @@ class MainWindow:
     ) -> None:
         """Create a folder input field with browse button"""
         frame = ttk.Frame(parent, style='Dark.TFrame')
-        frame.pack(fill='x', pady=(0, 10))
+        frame.pack(fill='x', pady=(0, 5))
 
         ttk.Label(frame, text=label, style='Dark.TLabel').pack(anchor='w')
 
         input_frame = tk.Frame(frame, bg=self.colors['background'])
-        input_frame.pack(fill='x', pady=(5, 0))
+        input_frame.pack(fill='x', pady=(2, 0))
 
         entry = tk.Entry(
             input_frame,
@@ -325,6 +461,50 @@ class MainWindow:
             pady=10
         )
         self.copy_button.pack(side='left', padx=(0, 10))
+
+    def _create_progress_section(self, parent: ttk.Frame) -> None:
+        """Create progress bars section"""
+        progress_frame = ttk.Frame(parent, style='Dark.TFrame')
+        progress_frame.pack(fill='x', pady=(5, 10))
+
+        # Overall progress
+        ttk.Label(
+            progress_frame,
+            text="Overall Progress:",
+            style='Dark.TLabel'
+        ).pack(anchor='w')
+
+        self.overall_progress = ttk.Progressbar(
+            progress_frame,
+            orient='horizontal',
+            mode='determinate',
+            length=100
+        )
+        self.overall_progress.pack(fill='x', pady=(5, 10))
+
+        # Current file progress
+        ttk.Label(
+            progress_frame,
+            text="Current File:",
+            style='Dark.TLabel'
+        ).pack(anchor='w')
+
+        self.file_progress = ttk.Progressbar(
+            progress_frame,
+            orient='horizontal',
+            mode='determinate',
+            length=100
+        )
+        self.file_progress.pack(fill='x', pady=(5, 0))
+
+        # Progress label
+        self.progress_label = ttk.Label(
+            progress_frame,
+            text="Ready",
+            style='Dark.TLabel',
+            font=self.fonts['italic']
+        )
+        self.progress_label.pack(anchor='w', pady=(2, 0))
 
     def _create_status_listbox(self, parent: ttk.Frame) -> None:
         """Create status listbox with scrollbar"""
@@ -396,6 +576,20 @@ class MainWindow:
             # Show folder organization options
             self.folder_org_frame.pack(fill='x', pady=(5, 5))
 
+    def _on_size_filter_changed(self) -> None:
+        """Handle size filter checkbox change"""
+        if self.enable_size_filter_var.get():
+            self.size_inputs_frame.pack(fill='x', padx=(20, 0), pady=(5, 0))
+        else:
+            self.size_inputs_frame.pack_forget()
+
+    def _on_date_filter_changed(self) -> None:
+        """Handle date filter checkbox change"""
+        if self.enable_date_filter_var.get():
+            self.date_inputs_frame.pack(fill='x', padx=(20, 0), pady=(5, 0))
+        else:
+            self.date_inputs_frame.pack_forget()
+
     def _update_folder_example(self, *args) -> None:
         """Update the folder organization example"""
         try:
@@ -432,6 +626,12 @@ class MainWindow:
 
         self.add_status("Starting copy operation...")
 
+        # Reset progress bars
+        self.overall_progress['value'] = 0
+        self.file_progress['value'] = 0
+        self.progress_label.config(text="Preparing...")
+        self.root.update_idletasks()
+
         try:
             # Get options
             preserve_structure = self.preserve_structure_var.get()
@@ -439,11 +639,42 @@ class MainWindow:
             recursive_search = self.recursive_search_var.get()
             folder_structure = FolderStructure(self.folder_structure_var.get())
 
-            # Create file copier
+            # Get filter options
+            min_size_bytes = None
+            max_size_bytes = None
+            max_days_old = None
+
+            if self.enable_size_filter_var.get():
+                try:
+                    unit_multiplier = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
+                    multiplier = unit_multiplier.get(self.size_unit_var.get(), 1024**2)
+
+                    min_val = self.min_size_var.get().strip()
+                    if min_val:
+                        min_size_bytes = float(min_val) * multiplier
+
+                    max_val = self.max_size_var.get().strip()
+                    if max_val:
+                        max_size_bytes = float(max_val) * multiplier
+                except ValueError:
+                    messagebox.showerror("Error", "Invalid size filter values")
+                    return
+
+            if self.enable_date_filter_var.get():
+                try:
+                    days_val = self.days_old_var.get().strip()
+                    if days_val:
+                        max_days_old = int(days_val)
+                except ValueError:
+                    messagebox.showerror("Error", "Invalid date filter value")
+                    return
+
+            # Create file copier with progress callback
             file_copier = FileCopier(
                 status_callback=self.add_status,
                 folder_structure=folder_structure,
-                number_duplicates=number_duplicates
+                number_duplicates=number_duplicates,
+                progress_callback=self._update_progress
             )
 
             # Perform operation
@@ -452,7 +683,10 @@ class MainWindow:
                 dest_folder,
                 extension,
                 preserve_structure,
-                recursive_search
+                recursive_search,
+                min_size_bytes=min_size_bytes,
+                max_size_bytes=max_size_bytes,
+                max_days_old=max_days_old
             )
 
             # Count results
@@ -465,9 +699,16 @@ class MainWindow:
             self.config.set("folder_structure", self.folder_structure_var.get())
             self.config.set("number_duplicates", number_duplicates)
             self.config.set("recursive_search", recursive_search)
+            self.config.set("enable_size_filter", self.enable_size_filter_var.get())
+            self.config.set("min_size", self.min_size_var.get())
+            self.config.set("max_size", self.max_size_var.get())
+            self.config.set("size_unit", self.size_unit_var.get())
+            self.config.set("enable_date_filter", self.enable_date_filter_var.get())
+            self.config.set("days_old", self.days_old_var.get())
             self.config.save()
 
             # Show result
+            self.progress_label.config(text="Complete!")
             if error_count == 0 and success_count > 0:
                 messagebox.showinfo("Success", f"Successfully copied {success_count} files")
             elif success_count > 0:
@@ -480,14 +721,33 @@ class MainWindow:
                 messagebox.showinfo("No Files", "No files were found to process")
 
         except ValueError as e:
+            self.progress_label.config(text="Error")
             messagebox.showerror("Validation Error", str(e))
         except OSError as e:
+            self.progress_label.config(text="Error")
             messagebox.showerror("File System Error", str(e))
         except Exception as e:
+            self.progress_label.config(text="Error")
             messagebox.showerror("Error", f"An unexpected error occurred: {e}")
 
     def add_status(self, message: str) -> None:
         """Add a status message to the listbox"""
         self.status_listbox.insert(tk.END, message)
         self.status_listbox.see(tk.END)
+        self.root.update_idletasks()
+
+    def _update_progress(self, current: int, total: int, current_file: str, file_progress: int = 0) -> None:
+        """Update progress bars and label"""
+        # Update overall progress
+        if total > 0:
+            overall_percent = (current / total) * 100
+            self.overall_progress['value'] = overall_percent
+
+        # Update file progress
+        self.file_progress['value'] = file_progress
+
+        # Update label
+        self.progress_label.config(text=f"Processing {current}/{total}: {current_file}")
+
+        # Force UI update
         self.root.update_idletasks()
