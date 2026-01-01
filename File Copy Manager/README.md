@@ -2,19 +2,42 @@
 
 A powerful tool for batch copying files with automatic duplicate numbering and flexible folder organization.
 
-## Version 1.0.1
+## Version 1.1.0
 
 **Yellow & Black Theme** - Easy to distinguish from the red File Rename Mover!
+
+### What's New in v1.1.0
+- **Dual Progress Bars**: Real-time overall and per-file progress tracking
+- **File Size Filtering**: Filter files by minimum/maximum size (B, KB, MB, GB)
+- **File Age Filtering**: Copy only files modified within the last X days
+- **Enhanced Status Display**: Shows file size and copy time for each file
+- **Improved UI**: Tighter, more compact layout for better usability
 
 ## Features
 
 ### Core Features
 - Batch copy files with automatic duplicate handling
+- **Real-time progress bars** (overall and per-file)
+- **File size and copy time tracking** in status window
 - Preserve original folder structure OR organize by date
 - Automatic duplicate file numbering (file_001.jpg, file_002.jpg, etc.)
+- **Advanced filtering** by file size and age
+- Recursive subfolder scanning
 - Yellow and black theme for easy visual identification
 - Persistent configuration
 - Dark theme UI optimized for 1000x870 resolution
+
+### File Filters (New in v1.1.0)
+
+#### Size Filter
+- Filter files by minimum and maximum size
+- Supports multiple units: B, KB, MB, GB
+- Example: Copy only files between 1 MB and 100 MB
+
+#### Date Filter
+- Filter by file age (modification date)
+- Copy only files modified within the last X days
+- Example: Copy only files from the last 30 days
 
 ### Copy Options
 
