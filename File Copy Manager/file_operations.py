@@ -26,29 +26,40 @@ class FileValidator:
     """Validates file operations and inputs"""
 
     @staticmethod
-    def validate_extension(extension: str) -> str:
+    def validate_file_mask(file_mask: str) -> List[str]:
         """
-        Validate and normalize file pattern(s)
+        Validate and normalize file mask patterns
 
         Args:
-            extension: File pattern(s) to validate (e.g., '*.jpg', '.jpg', '*.png, *.pdf')
+            file_mask: File mask pattern(s) to validate (e.g., "*.jpg, *.png" or "oct*.*")
 
         Returns:
-            Validated pattern string (unchanged but verified)
+            List of normalized patterns
 
         Raises:
-            ValueError: If pattern is empty or invalid
+            ValueError: If file mask is empty
         """
-        extension = extension.strip()
-        if not extension:
-            raise ValueError("File pattern cannot be empty")
+        file_mask = file_mask.strip()
+        if not file_mask:
+            raise ValueError("File mask cannot be empty")
 
-        # Validate that patterns don't contain invalid characters
-        invalid_chars = ['<', '>', '|', '"', '\0']
-        if any(char in extension for char in invalid_chars):
-            raise ValueError(f"File pattern contains invalid characters")
+        # Split by comma and normalize each pattern
+        patterns = []
+        for pattern in file_mask.split(','):
+            pattern = pattern.strip()
+            if not pattern:
+                continue
+            # If pattern doesn't contain *, add *. prefix for extension matching
+            if '*' not in pattern and '?' not in pattern:
+                if not pattern.startswith('.'):
+                    pattern = '.' + pattern
+                pattern = '*' + pattern
+            patterns.append(pattern)
 
-        return extension
+        if not patterns:
+            raise ValueError("File mask cannot be empty")
+
+        return patterns
 
     @staticmethod
     def validate_folder_exists(folder_path: str) -> None:
@@ -69,14 +80,31 @@ class FileScanner:
     """Scans directories for files matching criteria"""
 
     @staticmethod
-    def get_files_with_extension(folder_path: str, extension: str, recursive: bool = False) -> List[tuple[str, str]]:
+    def _matches_any_pattern(filename: str, patterns: List[str]) -> bool:
         """
-        Get all files in a folder matching file patterns
+        Check if filename matches any of the given patterns
+
+        Args:
+            filename: Filename to check
+            patterns: List of glob patterns
+
+        Returns:
+            True if filename matches any pattern
+        """
+        filename_lower = filename.lower()
+        for pattern in patterns:
+            if fnmatch.fnmatch(filename_lower, pattern.lower()):
+                return True
+        return False
+
+    @staticmethod
+    def get_files_with_patterns(folder_path: str, patterns: List[str], recursive: bool = False) -> List[tuple[str, str]]:
+        """
+        Get all files in a folder matching the given patterns
 
         Args:
             folder_path: Path to scan
-            extension: File pattern(s) to match (e.g., '*.jpg', '*.png', or '.jpg' for backward compatibility)
-                      Supports multiple patterns separated by commas: '*.jpg, *.png, *.pdf'
+            patterns: List of glob patterns to match (e.g., ["*.jpg", "*.png", "oct*.*"])
             recursive: If True, scan subdirectories
 
         Returns:
@@ -85,39 +113,20 @@ class FileScanner:
         Raises:
             OSError: If folder cannot be read
         """
-        # Parse patterns - support both old style (.jpg) and new style (*.jpg)
-        patterns = [p.strip() for p in extension.split(',')]
-        normalized_patterns = []
-
-        for pattern in patterns:
-            if not pattern:
-                continue
-            # Convert old-style extension (.jpg) to pattern (*.jpg)
-            if pattern.startswith('.') and '*' not in pattern:
-                normalized_patterns.append('*' + pattern)
-            # Add * prefix if pattern doesn't have it
-            elif not pattern.startswith('*') and '*' not in pattern:
-                normalized_patterns.append('*.' + pattern.lstrip('.'))
-            else:
-                normalized_patterns.append(pattern)
-
         files = []
 
         if recursive:
             for root, dirs, filenames in os.walk(folder_path):
                 for filename in filenames:
-                    # Check if filename matches any of the patterns
-                    if any(fnmatch.fnmatch(filename.lower(), pattern.lower()) for pattern in normalized_patterns):
+                    if FileScanner._matches_any_pattern(filename, patterns):
                         full_path = os.path.join(root, filename)
                         rel_path = os.path.relpath(full_path, folder_path)
                         files.append((full_path, rel_path))
         else:
             for filename in os.listdir(folder_path):
                 full_path = os.path.join(folder_path, filename)
-                if os.path.isfile(full_path):
-                    # Check if filename matches any of the patterns
-                    if any(fnmatch.fnmatch(filename.lower(), pattern.lower()) for pattern in normalized_patterns):
-                        files.append((full_path, filename))
+                if os.path.isfile(full_path) and FileScanner._matches_any_pattern(filename, patterns):
+                    files.append((full_path, filename))
 
         return files
 
@@ -228,7 +237,7 @@ class FileCopier:
         self,
         source_folder: str,
         dest_folder: str,
-        extension: str,
+        file_mask: str,
         preserve_structure: bool = False,
         recursive: bool = True,
         min_size_bytes: Optional[float] = None,
@@ -241,7 +250,7 @@ class FileCopier:
         Args:
             source_folder: Source folder path
             dest_folder: Destination folder path
-            extension: File extension to process
+            file_mask: File mask pattern(s) to match (e.g., "*.jpg, *.png" or "oct*.*")
             preserve_structure: If True, preserve original folder structure
             recursive: If True, search subfolders recursively
             min_size_bytes: Minimum file size in bytes (inclusive)
@@ -257,7 +266,7 @@ class FileCopier:
         """
         # Validate inputs
         self.validator.validate_folder_exists(source_folder)
-        extension = self.validator.validate_extension(extension)
+        patterns = self.validator.validate_file_mask(file_mask)
 
         # Create destination folder if it doesn't exist
         os.makedirs(dest_folder, exist_ok=True)
@@ -267,11 +276,12 @@ class FileCopier:
 
         # Get files to process
         search_mode = "recursively" if recursive else "in root folder only"
-        self._log_status(f"Scanning source folder {search_mode} for {extension} files...")
-        source_files = self.scanner.get_files_with_extension(source_folder, extension, recursive)
+        patterns_str = ", ".join(patterns)
+        self._log_status(f"Scanning source folder {search_mode} for files matching: {patterns_str}")
+        source_files = self.scanner.get_files_with_patterns(source_folder, patterns, recursive)
 
         if not source_files:
-            self._log_status(f"No files found with extension '{extension}' in source folder")
+            self._log_status(f"No files found matching '{patterns_str}' in source folder")
             return []
 
         self._log_status(f"Found {len(source_files)} files to process")

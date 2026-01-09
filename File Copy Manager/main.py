@@ -12,7 +12,7 @@ from config import ConfigManager
 from ui.main_window import MainWindow
 
 # Version number
-VERSION = "1.1.0"
+VERSION = "1.2.2"
 
 
 def get_script_directory() -> Path:

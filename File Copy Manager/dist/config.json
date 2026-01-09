@@ -1,0 +1,15 @@
+{
+    "default_source_folder": "//CL-NAS/Pictures/AI/Create_with_NSFW/Screenshots",
+    "default_destination_folder": "R:/Images_AI_IMG2VID_NSFW/Ready_For_Cum_Shot",
+    "last_extension": "*.jpg, *.png",
+    "preserve_structure": false,
+    "folder_structure": "flat",
+    "number_duplicates": true,
+    "recursive_search": true,
+    "enable_size_filter": false,
+    "min_size": "0",
+    "max_size": "",
+    "size_unit": "MB",
+    "enable_date_filter": false,
+    "days_old": "30"
+}
