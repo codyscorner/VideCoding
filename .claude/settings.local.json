@@ -7,7 +7,12 @@
       "Bash(dir:*)",
       "Bash(pyinstaller:*)",
       "Bash(findstr:*)",
-      "Bash(timeout 1 python:*)"
+      "Bash(timeout 1 python:*)",
+      "Bash(timeout 30 python:*)",
+      "Bash(copy \"File Copy Manager\\dist\\File Copy Manager.exe\" \"P:\\Apps\\VibeCoded\\File Copy Manager.exe\")",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nFile Copy Manager v1.2.0 - Pattern Filtering\n\nAdded support for wildcard file pattern filtering with backward compatibility.\n\nFeatures:\n- File pattern filtering with wildcard support (*.jpg, *.png)\n- Multiple pattern support (*.jpg, *.png, *.pdf)\n- Automatic migration from old extension format to patterns\n- Uses fnmatch for flexible pattern matching\n- Updated UI labels and examples\n\nTechnical Changes:\n- Updated main_window.py: Changed \"File Extension\" to \"File Pattern\"\n- Updated file_operations.py: Added fnmatch-based pattern matching\n- Updated config.py: Added automatic extension-to-pattern migration\n- Updated FileValidator: Validate patterns instead of extensions\n- Updated README.md: Comprehensive pattern matching documentation\n\nBackward Compatible:\n- Old format (.jpg) automatically converts to new format (*.jpg)\n- Existing saved extensions migrate seamlessly\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []
