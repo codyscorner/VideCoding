@@ -162,7 +162,7 @@ class MainWindow:
         frame = ttk.Frame(parent, style='Dark.TFrame')
         frame.pack(fill='x', pady=(0, 5))
 
-        ttk.Label(frame, text="File Pattern:", style='Dark.TLabel').pack(anchor='w')
+        ttk.Label(frame, text="File Mask:", style='Dark.TLabel').pack(anchor='w')
 
         entry = tk.Entry(
             frame,
@@ -178,7 +178,7 @@ class MainWindow:
 
         ttk.Label(
             frame,
-            text="Example: *.jpg, *.png, *.pdf",
+            text="Example: *.jpg, *.png  or  oct*.*  or  .pdf",
             style='Dark.TLabel',
             font=self.fonts['italic']
         ).pack(anchor='w', pady=(2, 0))
@@ -478,7 +478,8 @@ class MainWindow:
             progress_frame,
             orient='horizontal',
             mode='determinate',
-            length=100
+            length=100,
+            style='Yellow.Horizontal.TProgressbar'
         )
         self.overall_progress.pack(fill='x', pady=(5, 10))
 
@@ -493,7 +494,8 @@ class MainWindow:
             progress_frame,
             orient='horizontal',
             mode='determinate',
-            length=100
+            length=100,
+            style='Yellow.Horizontal.TProgressbar'
         )
         self.file_progress.pack(fill='x', pady=(5, 0))
 
@@ -695,6 +697,8 @@ class MainWindow:
 
             # Save configuration
             self.config.set("last_extension", extension)
+            self.config.set("default_source_folder", source_folder)
+            self.config.set("default_destination_folder", dest_folder)
             self.config.set("preserve_structure", preserve_structure)
             self.config.set("folder_structure", self.folder_structure_var.get())
             self.config.set("number_duplicates", number_duplicates)

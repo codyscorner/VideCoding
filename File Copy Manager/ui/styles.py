@@ -87,6 +87,17 @@ class YellowBlackTheme(Theme):
             insertcolor=self.colors['insert_cursor']
         )
 
+        # Progress bar - Yellow/Gold style
+        style.configure(
+            'Yellow.Horizontal.TProgressbar',
+            troughcolor='#333333',
+            background=self.colors['foreground'],  # Gold/Yellow
+            lightcolor=self.colors['button_hover'],  # Bright yellow
+            darkcolor='#B8860B',  # Dark goldenrod
+            bordercolor='#FFD700',
+            thickness=20
+        )
+
 
 class ThemeManager:
     """Manages application themes"""
