@@ -136,7 +136,7 @@ class FileScanner:
         return files
 
     @staticmethod
-    def get_max_counter(folder_path: str, base_name: str, extension: str) -> int:
+    def get_max_counter(folder_path: str, base_name: str, extension: str, padding: int = 6) -> int:
         """
         Scan destination folder for existing files and find the highest counter
 
@@ -144,16 +144,19 @@ class FileScanner:
             folder_path: Folder to scan
             base_name: Base name pattern to match
             extension: File extension to match
+            padding: Number of digits in the counter (default 6)
 
         Returns:
             Highest counter found (0 if none found)
         """
         max_counter = 0
-        pattern = rf"{re.escape(base_name)}_(\d{{6}})_{re.escape(extension)}$"
+        # Match pattern: basename_NNNNNN.ext (where N is any digit)
+        # Use \d+ to match any number of digits for flexibility
+        pattern = rf"^{re.escape(base_name)}_(\d+){re.escape(extension)}$"
 
         try:
             for filename in os.listdir(folder_path):
-                match = re.match(pattern, filename)
+                match = re.match(pattern, filename, re.IGNORECASE)
                 if match:
                     counter = int(match.group(1))
                     max_counter = max(max_counter, counter)
@@ -249,10 +252,11 @@ class FileRenamer:
             self.sort_order
         )
 
-        # Get starting counter (only for patterns that use counters)
-        counter = 1
-        # Note: For legacy patterns, we might need to check existing files
-        # This is simplified for now
+        # Get starting counter by scanning destination for existing files
+        max_existing = self.scanner.get_max_counter(dest_folder, base_name, extension)
+        counter = max_existing + 1
+        if max_existing > 0:
+            self._log_status(f"Found existing files up to {base_name}_{str(max_existing).zfill(6)}{extension}, starting at {counter}")
 
         # Process each file
         results = []
@@ -405,8 +409,11 @@ class FileRenamer:
             self.sort_order
         )
 
-        # Get starting counter
+        # Get starting counter by checking destination folder for existing files
         counter = 1
+        if dest_folder and os.path.exists(dest_folder):
+            max_existing = self.scanner.get_max_counter(dest_folder, base_name, extension)
+            counter = max_existing + 1
 
         # Generate preview using current pattern
         preview = []

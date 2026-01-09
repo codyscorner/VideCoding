@@ -12,7 +12,7 @@ from config import ConfigManager
 from ui.main_window import MainWindow
 
 # Version number
-VERSION = "1.2.2"
+VERSION = "1.2.3"
 
 
 def get_script_directory() -> Path:
@@ -30,6 +30,22 @@ def get_script_directory() -> Path:
         return Path(__file__).parent
 
 
+def set_window_icon(root: tk.Tk, script_dir: Path) -> None:
+    """
+    Set the window icon if available
+
+    Args:
+        root: Tkinter root window
+        script_dir: Directory containing the script
+    """
+    icon_path = script_dir / "app_icon.ico"
+    if icon_path.exists():
+        try:
+            root.iconbitmap(str(icon_path))
+        except Exception:
+            pass
+
+
 def main():
     """Main application entry point"""
     # Get script directory
@@ -41,6 +57,9 @@ def main():
 
     # Create main window
     root = tk.Tk()
+
+    # Set window icon
+    set_window_icon(root, script_dir)
 
     # Create application
     app = MainWindow(root, config_manager, VERSION)

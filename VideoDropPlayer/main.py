@@ -4,11 +4,12 @@ Supports MP4 and other common video formats
 """
 
 import sys
+import os
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel, QStackedLayout
 )
 from PyQt6.QtCore import Qt, QUrl
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QIcon
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 
@@ -59,10 +60,20 @@ class DropOverlay(QWidget):
                 event.acceptProposedAction()
 
 
+def get_icon_path():
+    """Get the path to the app icon."""
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable
+        return os.path.join(os.path.dirname(sys.executable), 'app_icon.ico')
+    else:
+        # Running as script
+        return os.path.join(os.path.dirname(__file__), 'app_icon.ico')
+
+
 class VideoDropPlayer(QMainWindow):
     """Main window for the video drop player application."""
 
-    VERSION = "1.0.5"
+    VERSION = "1.0.6"
     SUPPORTED_FORMATS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm'}
 
     def __init__(self):
@@ -70,6 +81,11 @@ class VideoDropPlayer(QMainWindow):
         self.setWindowTitle(f"Video Drop Player v{self.VERSION}")
         self.setGeometry(100, 100, 800, 600)
         self.setMinimumSize(400, 300)
+
+        # Set window icon
+        icon_path = get_icon_path()
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
 
         # Enable drag and drop on main window
         self.setAcceptDrops(True)
