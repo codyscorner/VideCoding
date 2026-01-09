@@ -2,7 +2,7 @@
 
 A powerful, object-oriented tool for batch renaming and moving files with sequential numbering.
 
-## Version 2.1.4
+## Version 2.1.7
 
 Enhanced version with advanced rename patterns, sorting options, folder organization features, and improved security.
 
@@ -291,6 +291,12 @@ MIT License - See [LICENSE](LICENSE) file for details.
 Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
+
+### v2.1.7 (January 9, 2026)
+- Fixed config initialization bug (ConfigManager._load calling save before _config existed)
+- Fixed counter scanning to search all subfolders for existing files
+- Proper icon loading for PyInstaller frozen executables
+- Distribution zip package for easy deployment
 
 ### v2.1.4 (December 8, 2025)
 - Fixed filename formatting (removed trailing underscore)

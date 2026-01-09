@@ -5,7 +5,7 @@ A collection of utility tools and games developed for file management, image pro
 ## 📦 Projects Overview
 
 ### 🗂️ File Rename Mover
-**Version:** 2.1.3 | **Status:** Active Development | **Language:** Python
+**Version:** 2.1.7 | **Status:** Active Development | **Language:** Python
 
 A powerful, object-oriented tool for batch renaming and moving files with advanced features.
 
@@ -14,26 +14,51 @@ A powerful, object-oriented tool for batch renaming and moving files with advanc
 - Multiple rename patterns (numbering, datetime, prefix, custom)
 - Advanced sorting options (name, date modified, date created, size)
 - Folder organization (flat, by year, year/month, year/month/day, date, month)
+- Counter scanning across all subfolders for proper sequence continuation
 - Dark theme UI with red accents
 - Persistent configuration
 - Settings dialog for default folders
-- Standalone executable available
+- Standalone executable available (distribution zip included)
 
-**Recent Updates (v2.1.3 - Nov 27, 2025):**
-- Updated window size to 1000x870 for better UI fit
-- Built standalone executable with PyInstaller
-- Added MIT License
-- Updated PyInstaller spec file to use new main.py entry point
-- Included comprehensive documentation
+**Recent Updates (v2.1.7 - Jan 9, 2026):**
+- Fixed config initialization bug
+- Fixed counter scanning to search all subfolders for existing files
+- Proper icon loading for PyInstaller frozen executables
+- Distribution zip package for easy deployment
 
 **Previous Versions:**
-- v2.1.2: Enhanced UI with advanced features
+- v2.1.4: Filename validation, security protections
+- v2.1.3: Standalone executable, MIT License
 - v2.0.0: Complete refactoring to object-oriented architecture
-- v1.2.4: Last monolithic version
 
 **Tech Stack:** Python, Tkinter, PyInstaller
 
 **Directory:** `File Rename Mover/`
+
+---
+
+### 📁 File Copy Manager
+**Version:** 1.2.0 | **Status:** Active Development | **Language:** Python
+
+A powerful tool for batch copying files with automatic duplicate numbering and flexible folder organization.
+
+**Features:**
+- Batch copy files with automatic duplicate handling
+- Real-time dual progress bars (overall and per-file)
+- File size and age filtering
+- Wildcard pattern matching (*.jpg, *.png, etc.)
+- Preserve original folder structure OR organize by date
+- Automatic duplicate file numbering
+- Yellow and black theme (distinct from File Rename Mover)
+
+**Recent Updates (v1.2.0 - Jan 1, 2026):**
+- File pattern filtering with wildcard support
+- Multiple patterns support (*.jpg, *.png, *.pdf)
+- Automatic migration of old extension format to patterns
+
+**Tech Stack:** Python, Tkinter, PyInstaller
+
+**Directory:** `File Copy Manager/`
 
 ---
 
@@ -170,7 +195,8 @@ Simply open the HTML files in a modern web browser.
 
 | Project | Version | Status | Language | Last Updated |
 |---------|---------|--------|----------|--------------|
-| File Rename Mover | 2.1.3 | ✅ Active | Python | Nov 27, 2025 |
+| File Rename Mover | 2.1.7 | ✅ Active | Python | Jan 9, 2026 |
+| File Copy Manager | 1.2.0 | ✅ Active | Python | Jan 1, 2026 |
 | Prompt Archiver | 1.2.5 | ✅ Active | TypeScript/JS | Nov 2025 |
 | Image Resizer | - | ✅ Stable | Python | Sep 2025 |
 | File Rename with Index | - | 📦 Legacy | Python | Sep 2025 |
@@ -210,6 +236,16 @@ npm start
 ---
 
 ## 🔄 Recent Activity
+
+### January 9, 2026
+- **File Rename Mover v2.1.7**: Fixed config init bug, counter scanning for subfolders, icon loading
+- Distribution zip package for easy deployment
+
+### January 1, 2026
+- **File Copy Manager v1.2.0**: Added wildcard pattern filtering, multiple patterns support
+
+### December 8, 2025
+- **File Rename Mover v2.1.4**: Filename validation, security protections
 
 ### November 27, 2025
 - **File Rename Mover v2.1.3**: UI adjustments, standalone executable, MIT License added
@@ -271,16 +307,18 @@ Each project contains its own documentation:
 - `File Rename Mover/README.md` - Detailed architecture and usage guide
 - `File Rename Mover/CHANGELOG.md` - Version history
 - `File Rename Mover/FEATURES_v2.1.md` - Feature documentation
-- `PromptArchiver/package.json` - Build and dependency information
+- `File Copy Manager/README.md` - File copy tool documentation
+- `PromptArchiver/README.md` - Prompt archiver documentation
 
 ---
 
 ## 🔗 Quick Links
 
 - [File Rename Mover Documentation](File%20Rename%20Mover/README.md)
+- [File Copy Manager Documentation](File%20Copy%20Manager/README.md)
 - [File Rename Mover Changelog](File%20Rename%20Mover/CHANGELOG.md)
 - [Report Issues](https://github.com/codyscorner/VideCoding/issues)
 
 ---
 
-**Last Updated:** November 27, 2025
+**Last Updated:** January 9, 2026
