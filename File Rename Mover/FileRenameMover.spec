@@ -2,22 +2,11 @@
 
 
 a = Analysis(
-    ['main.py'],
+    ['file_rename_mover.py'],
     pathex=[],
     binaries=[],
-    datas=[
-        ('app_icon.ico', '.'),
-    ],
-    hiddenimports=[
-        'config',
-        'file_operations',
-        'folder_organization',
-        'rename_patterns',
-        'sorting',
-        'ui.main_window_v2',
-        'ui.styles',
-        'ui.settings_dialog',
-    ],
+    datas=[('app_icon.ico', '.')],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -25,7 +14,6 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
-
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -47,5 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='app_icon.ico',
+    icon=['app_icon.ico'],
 )

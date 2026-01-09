@@ -30,15 +30,32 @@ def get_script_directory() -> Path:
         return Path(__file__).parent
 
 
-def set_window_icon(root: tk.Tk, script_dir: Path) -> None:
+def get_resource_path(filename: str) -> Path:
+    """
+    Get the path to a bundled resource file
+
+    Args:
+        filename: Name of the resource file
+
+    Returns:
+        Path object pointing to the resource
+    """
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable - resources are in _MEIPASS
+        return Path(sys._MEIPASS) / filename
+    else:
+        # Running as script
+        return Path(__file__).parent / filename
+
+
+def set_window_icon(root: tk.Tk) -> None:
     """
     Set the window icon if available
 
     Args:
         root: Tkinter root window
-        script_dir: Directory containing the script
     """
-    icon_path = script_dir / "app_icon.ico"
+    icon_path = get_resource_path("app_icon.ico")
     if icon_path.exists():
         try:
             root.iconbitmap(str(icon_path))
@@ -60,7 +77,7 @@ def main():
     root = tk.Tk()
 
     # Set window icon
-    set_window_icon(root, script_dir)
+    set_window_icon(root)
 
     # Create application
     app = MainWindowV2(root, config_manager, VERSION)

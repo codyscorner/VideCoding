@@ -155,11 +155,12 @@ class FileScanner:
         pattern = rf"^{re.escape(base_name)}_(\d+){re.escape(extension)}$"
 
         try:
-            for filename in os.listdir(folder_path):
-                match = re.match(pattern, filename, re.IGNORECASE)
-                if match:
-                    counter = int(match.group(1))
-                    max_counter = max(max_counter, counter)
+            for root, dirs, files in os.walk(folder_path):
+                for filename in files:
+                    match = re.match(pattern, filename, re.IGNORECASE)
+                    if match:
+                        counter = int(match.group(1))
+                        max_counter = max(max_counter, counter)
         except OSError:
             pass
 

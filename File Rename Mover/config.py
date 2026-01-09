@@ -44,8 +44,13 @@ class ConfigManager:
                 pass
 
         # Create default config file if it doesn't exist
-        self.save()
-        return self.DEFAULT_CONFIG.copy()
+        default_config = self.DEFAULT_CONFIG.copy()
+        try:
+            with open(self.config_path, 'w') as f:
+                json.dump(default_config, f, indent=4)
+        except OSError:
+            pass
+        return default_config
 
     def save(self) -> bool:
         """
