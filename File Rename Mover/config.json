@@ -1,13 +1,13 @@
 {
-    "default_source_folder": "//CL-NAS/Videos/AI Video/Singles/Remove_Top/Remove Top",
-    "default_destination_folder": "B:/AI Video/AdultNSFW/Remove Top",
+    "default_source_folder": "C:/AI/CumfyUI/output/video/Cumshots",
+    "default_destination_folder": "//CL-NAS/Videos/AI Video/AdultNSFW/CumShots/2026-01-08",
     "last_extension": ".mp4",
-    "last_rename_to": "ComfyUI_RemoveTop",
-    "sort_by": "date_created",
+    "last_rename_to": "CumShot",
+    "sort_by": "name",
     "sort_order": "asc",
-    "pattern_type": "datetime",
+    "pattern_type": "numbering",
     "datetime_format": "YYYYMMDD",
     "include_counter": true,
-    "folder_structure": "date",
+    "folder_structure": "flat",
     "custom_pattern": "{counter}"
 }

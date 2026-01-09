@@ -12,7 +12,17 @@
       "Bash(copy \"File Copy Manager\\dist\\File Copy Manager.exe\" \"P:\\Apps\\VibeCoded\\File Copy Manager.exe\")",
       "Bash(git add:*)",
       "Bash(git commit -m \"$(cat <<''EOF''\nFile Copy Manager v1.2.0 - Pattern Filtering\n\nAdded support for wildcard file pattern filtering with backward compatibility.\n\nFeatures:\n- File pattern filtering with wildcard support (*.jpg, *.png)\n- Multiple pattern support (*.jpg, *.png, *.pdf)\n- Automatic migration from old extension format to patterns\n- Uses fnmatch for flexible pattern matching\n- Updated UI labels and examples\n\nTechnical Changes:\n- Updated main_window.py: Changed \"File Extension\" to \"File Pattern\"\n- Updated file_operations.py: Added fnmatch-based pattern matching\n- Updated config.py: Added automatic extension-to-pattern migration\n- Updated FileValidator: Validate patterns instead of extensions\n- Updated README.md: Comprehensive pattern matching documentation\n\nBackward Compatible:\n- Old format (.jpg) automatically converts to new format (*.jpg)\n- Existing saved extensions migrate seamlessly\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n)\")",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(copy app_icon.ico distapp_icon.ico /Y)",
+      "Bash(cmd /c \"copy \"\"p:\\\\AI\\\\VideCoding\\\\File Rename Mover\\\\app_icon.ico\"\" \"\"p:\\\\AI\\\\VideCoding\\\\File Rename Mover\\\\dist\\\\app_icon.ico\"\" /Y\")",
+      "Bash(cmd /c \"ie4uinit.exe -show\")",
+      "Bash(where:*)",
+      "Bash(./rcedit-x64.exe:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nUpdate apps with new icons and bug fixes\n\nFile Rename Mover v2.1.7:\n- Fix sequential numbering to scan destination folder for existing files\n- Continue numbering from highest existing sequence number\n- Add new FileMover icon \\(blue gradient\\)\n\nFile Copy Manager v1.2.3:\n- Add new app icon \\(blue/green folder copy\\)\n- Add window icon support\n\nVideoDropPlayer v1.0.6:\n- Add new app icon \\(film reel gradient\\)\n- Add window icon support\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(cmd /c \"rmdir /s /q build 2>nul & rmdir /s /q dist 2>nul & echo cleaned\")",
+      "Bash(ls:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nFix config init bug and counter scanning for subfolders\n\n- Fix ConfigManager._load\\(\\) calling save\\(\\) before _config was initialized\n- Update get_max_counter to use os.walk\\(\\) to scan all subfolders\n- Add get_resource_path\\(\\) for proper icon loading in frozen exe\n- Include v2.1.7 distribution zip\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []
