@@ -30,6 +30,25 @@ def get_script_directory() -> Path:
         return Path(__file__).parent
 
 
+def get_config_file() -> Path:
+    """
+    Get the config file path based on the executable/script name
+
+    Returns:
+        Path object pointing to config file
+    """
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable
+        exe_name = Path(sys.executable).stem
+        exe_dir = Path(sys.executable).parent
+    else:
+        # Running as script
+        exe_name = Path(__file__).stem
+        exe_dir = Path(__file__).parent
+
+    return exe_dir / f"{exe_name}_config.json"
+
+
 def get_resource_path(filename: str) -> Path:
     """
     Get the path to a bundled resource file
@@ -70,7 +89,7 @@ def main():
     script_dir = get_script_directory()
 
     # Initialize configuration
-    config_file = script_dir / "config.json"
+    config_file = get_config_file()
     config_manager = ConfigManager(config_file)
 
     # Create main window
