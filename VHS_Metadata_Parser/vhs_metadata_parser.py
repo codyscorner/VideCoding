@@ -29,10 +29,17 @@ class MetadataParser:
         self.workflow_data: Dict = {}
 
     def parse_file(self, file_path: str) -> bool:
-        """Load and parse a metadata file."""
+        """Load and parse a metadata file (JSON, TXT, or MP4)."""
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                self.raw_data = json.load(f)
+            file_lower = file_path.lower()
+
+            if file_lower.endswith('.mp4'):
+                # Extract metadata from MP4 file
+                self.raw_data = self._extract_metadata_from_mp4(file_path)
+            else:
+                # Parse as JSON/TXT file
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    self.raw_data = json.load(f)
 
             # Parse the nested prompt JSON string
             if 'prompt' in self.raw_data:
@@ -50,6 +57,41 @@ class MetadataParser:
         except Exception as e:
             print(f"Error parsing file: {e}")
             return False
+
+    def _extract_metadata_from_mp4(self, file_path: str) -> Dict:
+        """Extract embedded ComfyUI metadata from an MP4 file."""
+        with open(file_path, 'rb') as f:
+            data = f.read()
+
+        # Search for the JSON metadata marker
+        idx = data.find(b'{"prompt"')
+        if idx == -1:
+            raise ValueError("No ComfyUI metadata found in MP4 file")
+
+        # Extract the JSON by counting braces to find the complete object
+        json_bytes = bytearray()
+        brace_count = 0
+        started = False
+
+        for i in range(idx, len(data)):
+            byte = data[i]
+            # Only process ASCII characters for JSON structure
+            if byte < 128:
+                char = chr(byte)
+                if char == '{':
+                    brace_count += 1
+                    started = True
+                elif char == '}':
+                    brace_count -= 1
+
+                if started:
+                    json_bytes.append(byte)
+
+                if started and brace_count == 0:
+                    break
+
+        json_str = json_bytes.decode('utf-8')
+        return json.loads(json_str)
 
     def get_nodes_by_type(self, class_type: str) -> List[Dict]:
         """Get all nodes of a specific class type."""
@@ -219,7 +261,7 @@ class DropZone(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
-        self.setText("Drag and drop a metadata file here\nor use File > Open")
+        self.setText("Drag and drop a metadata file here\n(supports .txt, .json, .mp4)\nor use File > Open")
         self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet("""
             QLabel {
@@ -690,7 +732,7 @@ class MainWindow(QMainWindow):
             self,
             "Open Metadata File",
             "",
-            "Text Files (*.txt);;JSON Files (*.json);;All Files (*.*)"
+            "All Supported Files (*.txt *.json *.mp4);;MP4 Videos (*.mp4);;Text Files (*.txt);;JSON Files (*.json);;All Files (*.*)"
         )
         if file_path:
             self.load_file(file_path)

@@ -4,15 +4,17 @@ File Rename Mover - Main Entry Point
 A tool for batch renaming and moving files with sequential numbering.
 """
 
-import tkinter as tk
+from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QIcon
 from pathlib import Path
 import sys
 
 from config import ConfigManager
-from ui.main_window_v2 import MainWindowV2
+from templates import TemplateManager
+from ui.main_window_qt import MainWindowQt
 
 # Version number
-VERSION = "2.1.7"
+VERSION = "3.1.0"
 
 
 def get_script_directory() -> Path:
@@ -32,21 +34,32 @@ def get_script_directory() -> Path:
 
 def get_config_file() -> Path:
     """
-    Get the config file path based on the executable/script name
+    Get the config file path
 
     Returns:
         Path object pointing to config file
     """
     if getattr(sys, 'frozen', False):
-        # Running as compiled executable
-        exe_name = Path(sys.executable).stem
         exe_dir = Path(sys.executable).parent
     else:
-        # Running as script
-        exe_name = Path(__file__).stem
         exe_dir = Path(__file__).parent
 
-    return exe_dir / f"{exe_name}_config.json"
+    return exe_dir / "Filemove_config.json"
+
+
+def get_templates_file() -> Path:
+    """
+    Get the templates file path
+
+    Returns:
+        Path object pointing to templates file
+    """
+    if getattr(sys, 'frozen', False):
+        exe_dir = Path(sys.executable).parent
+    else:
+        exe_dir = Path(__file__).parent
+
+    return exe_dir / "Filemove_templates.json"
 
 
 def get_resource_path(filename: str) -> Path:
@@ -67,42 +80,32 @@ def get_resource_path(filename: str) -> Path:
         return Path(__file__).parent / filename
 
 
-def set_window_icon(root: tk.Tk) -> None:
-    """
-    Set the window icon if available
-
-    Args:
-        root: Tkinter root window
-    """
-    icon_path = get_resource_path("app_icon.ico")
-    if icon_path.exists():
-        try:
-            root.iconbitmap(str(icon_path))
-        except Exception:
-            # Silently continue if icon cannot be set
-            pass
-
-
 def main():
     """Main application entry point"""
-    # Get script directory
-    script_dir = get_script_directory()
+    # Create Qt application
+    app = QApplication(sys.argv)
 
     # Initialize configuration
     config_file = get_config_file()
     config_manager = ConfigManager(config_file)
 
+    # Initialize templates
+    templates_file = get_templates_file()
+    template_manager = TemplateManager(templates_file)
+
     # Create main window
-    root = tk.Tk()
+    window = MainWindowQt(config_manager, VERSION, template_manager)
 
-    # Set window icon
-    set_window_icon(root)
+    # Set window icon if available
+    icon_path = get_resource_path("app_icon.ico")
+    if icon_path.exists():
+        window.setWindowIcon(QIcon(str(icon_path)))
 
-    # Create application
-    app = MainWindowV2(root, config_manager, VERSION)
+    # Show window
+    window.show()
 
-    # Start main loop
-    root.mainloop()
+    # Start event loop
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

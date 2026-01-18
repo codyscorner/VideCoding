@@ -1,0 +1,18 @@
+{
+    "similarity_threshold": 0.95,
+    "min_resolution": [
+        256,
+        256
+    ],
+    "model_name": "clip-ViT-B-32",
+    "cache_path": "./data/cache.sqlite",
+    "last_scan_folder": "R:/Images_AI_IMG2VID_NSFW/Ready_For_Cum_Shot",
+    "last_search_folder": "C:/Users/cody/OneDrive/Pictures/AI Pic to Vid/Pictures/1-Create",
+    "duplicates_folder": "",
+    "excluded_dirs": [],
+    "thumbnail_size": 150,
+    "batch_size": 512,
+    "io_workers": 24,
+    "use_gpu": true,
+    "recursive_scan": true
+}

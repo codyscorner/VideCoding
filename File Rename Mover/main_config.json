@@ -1,0 +1,13 @@
+{
+    "default_source_folder": "C:/AI/CumfyUI/output/video/Blowjob",
+    "default_destination_folder": "//CL-NAS/Videos/AI Video/AdultNSFW/BlowJobs",
+    "last_extension": "mp4",
+    "last_rename_to": "BlowJob",
+    "sort_by": "name",
+    "sort_order": "asc",
+    "pattern_type": "numbering",
+    "datetime_format": "YYYYMMDD",
+    "include_counter": true,
+    "folder_structure": "date",
+    "custom_pattern": "{counter}"
+}

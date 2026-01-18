@@ -1,7 +1,7 @@
-"""UI package for File Rename Mover application"""
+"""UI package for File Rename Mover application (PySide6 version)"""
 
-from .main_window import MainWindow
-from .settings_dialog import SettingsDialog
-from .styles import ThemeManager
+from .main_window_qt import MainWindowQt
+from .settings_dialog_qt import SettingsDialogQt
+from .styles_qt import ThemeManager
 
-__all__ = ['MainWindow', 'SettingsDialog', 'ThemeManager']
+__all__ = ['MainWindowQt', 'SettingsDialogQt', 'ThemeManager']

@@ -11,12 +11,13 @@ from ui.styles import ThemeManager
 from sorting import SortBy, SortOrder
 from rename_patterns import PatternType, DateTimeFormat, PatternFactory
 from folder_organization import FolderStructure, FolderOrganizer
+from templates import TemplateManager
 
 
 class MainWindowV2:
     """Enhanced main application window with advanced features"""
 
-    def __init__(self, root: tk.Tk, config_manager: ConfigManager, version: str):
+    def __init__(self, root: tk.Tk, config_manager: ConfigManager, version: str, template_manager: TemplateManager):
         """
         Initialize enhanced main window
 
@@ -24,10 +25,12 @@ class MainWindowV2:
             root: Tkinter root window
             config_manager: Configuration manager instance
             version: Application version string
+            template_manager: Template manager instance
         """
         self.root = root
         self.config = config_manager
         self.version = version
+        self.template_manager = template_manager
 
         # Set up window
         self.root.title(f"File Rename Mover (V-{self.version})")
@@ -61,6 +64,9 @@ class MainWindowV2:
 
         # UI Variables - Folder Organization
         self.folder_structure_var = tk.StringVar(value=self.config.get("folder_structure", "flat"))
+
+        # UI Variables - Templates
+        self.template_var = tk.StringVar(value="")
 
         # Build UI
         self._setup_ui()
@@ -98,6 +104,9 @@ class MainWindowV2:
 
         main_frame = ttk.Frame(scrollable_frame, style='Dark.TFrame')
         main_frame.pack(fill='both', expand=True, padx=15, pady=10)
+
+        # Templates section (at the top for easy access)
+        self._create_templates_section(main_frame)
 
         # Source and Destination folders
         self._create_folder_inputs(main_frame)
@@ -343,6 +352,85 @@ class MainWindowV2:
         )
         self.folder_example_label.pack(anchor='w', pady=(2, 0))
         self._update_folder_example()
+
+    def _create_templates_section(self, parent: ttk.Frame) -> None:
+        """Create templates section for saving/loading presets"""
+        section_frame = ttk.Frame(parent, style='Dark.TFrame')
+        section_frame.pack(fill='x', pady=(0, 15))
+
+        # Title
+        ttk.Label(
+            section_frame,
+            text="Templates",
+            style='Dark.TLabel',
+            font=self.fonts['bold']
+        ).pack(anchor='w', pady=(0, 5))
+
+        # Template controls row
+        controls_frame = ttk.Frame(section_frame, style='Dark.TFrame')
+        controls_frame.pack(fill='x')
+
+        # Template dropdown
+        dropdown_frame = ttk.Frame(controls_frame, style='Dark.TFrame')
+        dropdown_frame.pack(side='left', fill='x', expand=True, padx=(0, 10))
+
+        self.template_combo = ttk.Combobox(
+            dropdown_frame,
+            textvariable=self.template_var,
+            values=self.template_manager.get_template_names(),
+            state="readonly",
+            width=40
+        )
+        self.template_combo.pack(fill='x')
+
+        # Buttons frame
+        buttons_frame = ttk.Frame(controls_frame, style='Dark.TFrame')
+        buttons_frame.pack(side='right')
+
+        # Load button
+        self.load_template_btn = tk.Button(
+            buttons_frame,
+            text="Load",
+            command=self._load_template,
+            bg=self.colors['button_bg'],
+            fg=self.colors['button_fg'],
+            font=self.fonts['button'],
+            relief='raised',
+            bd=2,
+            padx=10,
+            pady=2
+        )
+        self.load_template_btn.pack(side='left', padx=(0, 5))
+
+        # Save button
+        self.save_template_btn = tk.Button(
+            buttons_frame,
+            text="Save",
+            command=self._save_template,
+            bg=self.colors['button_bg'],
+            fg=self.colors['button_fg'],
+            font=self.fonts['button'],
+            relief='raised',
+            bd=2,
+            padx=10,
+            pady=2
+        )
+        self.save_template_btn.pack(side='left', padx=(0, 5))
+
+        # Manage button
+        self.manage_templates_btn = tk.Button(
+            buttons_frame,
+            text="Manage",
+            command=self._manage_templates,
+            bg=self.colors['button_bg'],
+            fg=self.colors['button_fg'],
+            font=self.fonts['button'],
+            relief='raised',
+            bd=2,
+            padx=10,
+            pady=2
+        )
+        self.manage_templates_btn.pack(side='left')
 
     def _create_folder_input(
         self,
@@ -709,3 +797,75 @@ class MainWindowV2:
         """Update UI fields from configuration"""
         self.source_var.set(self.config.get("default_source_folder", ""))
         self.dest_var.set(self.config.get("default_destination_folder", ""))
+
+    def _get_current_settings(self) -> dict:
+        """Get all current UI settings as a dictionary"""
+        return {
+            "default_source_folder": self.source_var.get(),
+            "default_destination_folder": self.dest_var.get(),
+            "last_extension": self.ext_var.get(),
+            "last_rename_to": self.rename_var.get(),
+            "sort_by": self.sort_by_var.get(),
+            "sort_order": self.sort_order_var.get(),
+            "pattern_type": self.pattern_type_var.get(),
+            "datetime_format": self.datetime_format_var.get(),
+            "include_counter": self.include_counter_var.get(),
+            "folder_structure": self.folder_structure_var.get(),
+            "custom_pattern": self.custom_pattern_var.get()
+        }
+
+    def _apply_settings(self, settings: dict) -> None:
+        """Apply settings dictionary to UI"""
+        if "default_source_folder" in settings:
+            self.source_var.set(settings["default_source_folder"] or "")
+        if "default_destination_folder" in settings:
+            self.dest_var.set(settings["default_destination_folder"] or "")
+        if "last_extension" in settings:
+            self.ext_var.set(settings["last_extension"] or "")
+        if "last_rename_to" in settings:
+            self.rename_var.set(settings["last_rename_to"] or "")
+        if "sort_by" in settings:
+            self.sort_by_var.set(settings["sort_by"] or "name")
+        if "sort_order" in settings:
+            self.sort_order_var.set(settings["sort_order"] or "asc")
+        if "pattern_type" in settings:
+            self.pattern_type_var.set(settings["pattern_type"] or "numbering")
+        if "datetime_format" in settings:
+            self.datetime_format_var.set(settings["datetime_format"] or "YYYYMMDD")
+        if "include_counter" in settings:
+            self.include_counter_var.set(settings.get("include_counter", True))
+        if "folder_structure" in settings:
+            self.folder_structure_var.set(settings["folder_structure"] or "flat")
+        if "custom_pattern" in settings:
+            self.custom_pattern_var.set(settings["custom_pattern"] or "{counter}")
+
+        # Update pattern UI visibility
+        self._on_pattern_type_changed()
+
+    def _refresh_template_list(self) -> None:
+        """Refresh the template dropdown with current templates"""
+        self.template_combo['values'] = self.template_manager.get_template_names()
+
+    def _load_template(self) -> None:
+        """Load selected template and apply settings"""
+        template_name = self.template_var.get()
+        if not template_name:
+            messagebox.showwarning("No Template Selected", "Please select a template to load.")
+            return
+
+        template = self.template_manager.get_template(template_name)
+        if template:
+            self._apply_settings(template)
+            self.add_status(f"Template '{template_name}' loaded successfully.")
+        else:
+            messagebox.showerror("Error", f"Template '{template_name}' not found.")
+
+    def _save_template(self) -> None:
+        """Save current settings as a template"""
+        from ui.save_template_dialog import SaveTemplateDialog
+        dialog = SaveTemplateDialog(self.root, self)
+
+    def _manage_templates(self) -> None:
+        """Open template management dialog"""
+        from ui.manage_templates_dialog import ManageTemplatesDialog
+        dialog = ManageTemplatesDialog(self.root, self)

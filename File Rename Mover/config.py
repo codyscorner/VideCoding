@@ -19,7 +19,8 @@ class ConfigManager:
         "datetime_format": "YYYYMMDD",
         "include_counter": True,
         "folder_structure": "flat",
-        "custom_pattern": "{counter}"
+        "custom_pattern": "{counter}",
+        "verify_hash": False
     }
 
     def __init__(self, config_path: Path):

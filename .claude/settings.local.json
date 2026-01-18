@@ -22,7 +22,14 @@
       "Bash(cmd /c \"rmdir /s /q build 2>nul & rmdir /s /q dist 2>nul & echo cleaned\")",
       "Bash(ls:*)",
       "Bash(git commit -m \"$\\(cat <<''EOF''\nFix config init bug and counter scanning for subfolders\n\n- Fix ConfigManager._load\\(\\) calling save\\(\\) before _config was initialized\n- Update get_max_counter to use os.walk\\(\\) to scan all subfolders\n- Add get_resource_path\\(\\) for proper icon loading in frozen exe\n- Include v2.1.7 distribution zip\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(pip install:*)",
+      "Bash(timeout 5 python:*)",
+      "Bash(taskkill:*)",
+      "Bash(Get-ChildItem -Path \"p:\\\\AI\\\\VideCoding\" -Recurse -Filter \"*Cumshot*.mp4\" -ErrorAction SilentlyContinue)",
+      "Bash(Select-Object -First 5 -ExpandProperty FullName)",
+      "Bash(ffprobe:*)",
+      "Bash(python3:*)"
     ],
     "deny": [],
     "ask": []

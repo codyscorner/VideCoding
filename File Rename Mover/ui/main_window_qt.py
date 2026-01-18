@@ -1,0 +1,759 @@
+"""Enhanced main window UI with advanced features for File Rename Mover application (PySide6 version)"""
+
+from PySide6.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QComboBox, QCheckBox, QListWidget,
+    QScrollArea, QFrame, QFileDialog, QMessageBox, QSizePolicy,
+    QProgressBar, QApplication
+)
+from PySide6.QtCore import Qt, Slot
+from PySide6.QtGui import QFont, QIcon
+from pathlib import Path
+from typing import Optional, Callable
+
+from config import ConfigManager
+from file_operations import FileRenamer
+from ui.styles_qt import ThemeManager
+from sorting import SortBy, SortOrder
+from rename_patterns import PatternType, DateTimeFormat, PatternFactory
+from folder_organization import FolderStructure, FolderOrganizer
+from templates import TemplateManager
+
+
+class MainWindowQt(QMainWindow):
+    """Enhanced main application window with advanced features (PySide6 version)"""
+
+    def __init__(self, config_manager: ConfigManager, version: str, template_manager: TemplateManager):
+        """
+        Initialize enhanced main window
+
+        Args:
+            config_manager: Configuration manager instance
+            version: Application version string
+            template_manager: Template manager instance
+        """
+        super().__init__()
+
+        self.config = config_manager
+        self.version = version
+        self.template_manager = template_manager
+
+        # Initialize theme
+        self.theme = ThemeManager('dark_red')
+        self.colors = self.theme.get_all_colors()
+        self.fonts = self.theme.get_all_fonts()
+
+        # Set up window
+        self.setWindowTitle(f"File Rename Mover (V-{self.version})")
+        self.setMinimumSize(1000, 870)
+        self.resize(1000, 870)
+
+        # Apply stylesheet
+        self.setStyleSheet(self.theme.get_stylesheet())
+
+        # Build UI
+        self._setup_ui()
+
+        # Load initial values from config
+        self._load_from_config()
+
+        # Connect signals
+        self._connect_signals()
+
+        # Update examples
+        self._update_example()
+        self._update_folder_example()
+
+    def _setup_ui(self) -> None:
+        """Set up the main UI components"""
+        # Central widget with scroll area
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Scroll area for the form
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        # Container widget for scrollable content
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(15, 10, 15, 10)
+        scroll_layout.setSpacing(10)
+
+        # Templates section (at the top for easy access)
+        self._create_templates_section(scroll_layout)
+
+        # Source and Destination folders
+        self._create_folder_inputs(scroll_layout)
+
+        # Extension and Base Name
+        self._create_basic_inputs(scroll_layout)
+
+        # Sorting options
+        self._create_sorting_section(scroll_layout)
+
+        # Pattern options
+        self._create_pattern_section(scroll_layout)
+
+        # Folder organization
+        self._create_folder_organization_section(scroll_layout)
+
+        # Buttons
+        self._create_buttons(scroll_layout)
+
+        # Status listbox
+        self._create_status_listbox(scroll_layout)
+
+        # Add stretch to push content to top
+        scroll_layout.addStretch()
+
+        scroll_area.setWidget(scroll_content)
+        main_layout.addWidget(scroll_area)
+
+    def _create_section_title(self, text: str) -> QLabel:
+        """Create a section title label"""
+        label = QLabel(text)
+        label.setProperty("cssClass", "section-title")
+        font = QFont("Arial", 12)
+        font.setBold(True)
+        label.setFont(font)
+        return label
+
+    def _create_italic_label(self, text: str = "") -> QLabel:
+        """Create an italic label for examples"""
+        label = QLabel(text)
+        label.setProperty("cssClass", "italic")
+        font = QFont("Arial", 9)
+        font.setItalic(True)
+        label.setFont(font)
+        return label
+
+    def _create_templates_section(self, parent_layout: QVBoxLayout) -> None:
+        """Create templates section for saving/loading presets"""
+        # Title
+        parent_layout.addWidget(self._create_section_title("Templates"))
+
+        # Controls row
+        controls_layout = QHBoxLayout()
+
+        # Template dropdown
+        self.template_combo = QComboBox()
+        self.template_combo.addItems(self.template_manager.get_template_names())
+        self.template_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        controls_layout.addWidget(self.template_combo)
+
+        # Load button
+        self.load_template_btn = QPushButton("Load")
+        self.load_template_btn.clicked.connect(self._load_template)
+        controls_layout.addWidget(self.load_template_btn)
+
+        # Save button
+        self.save_template_btn = QPushButton("Save")
+        self.save_template_btn.clicked.connect(self._save_template)
+        controls_layout.addWidget(self.save_template_btn)
+
+        # Manage button
+        self.manage_templates_btn = QPushButton("Manage")
+        self.manage_templates_btn.clicked.connect(self._manage_templates)
+        controls_layout.addWidget(self.manage_templates_btn)
+
+        parent_layout.addLayout(controls_layout)
+
+        # Add spacing after section
+        parent_layout.addSpacing(10)
+
+    def _create_folder_inputs(self, parent_layout: QVBoxLayout) -> None:
+        """Create source and destination folder inputs"""
+        # Source Folder
+        parent_layout.addWidget(QLabel("Source Folder:"))
+        source_layout = QHBoxLayout()
+        self.source_entry = QLineEdit()
+        source_layout.addWidget(self.source_entry)
+        self.source_browse_btn = QPushButton("...")
+        self.source_browse_btn.setProperty("cssClass", "browse")
+        self.source_browse_btn.setFixedWidth(40)
+        self.source_browse_btn.clicked.connect(self._browse_source)
+        source_layout.addWidget(self.source_browse_btn)
+        parent_layout.addLayout(source_layout)
+
+        # Destination Folder
+        parent_layout.addWidget(QLabel("Destination Folder:"))
+        dest_layout = QHBoxLayout()
+        self.dest_entry = QLineEdit()
+        dest_layout.addWidget(self.dest_entry)
+        self.dest_browse_btn = QPushButton("...")
+        self.dest_browse_btn.setProperty("cssClass", "browse")
+        self.dest_browse_btn.setFixedWidth(40)
+        self.dest_browse_btn.clicked.connect(self._browse_destination)
+        dest_layout.addWidget(self.dest_browse_btn)
+        parent_layout.addLayout(dest_layout)
+
+    def _create_basic_inputs(self, parent_layout: QVBoxLayout) -> None:
+        """Create extension and base name inputs"""
+        # Extension
+        parent_layout.addWidget(QLabel("Extension:"))
+        self.ext_entry = QLineEdit()
+        parent_layout.addWidget(self.ext_entry)
+
+        # Base name
+        parent_layout.addWidget(QLabel("Base Name:"))
+        self.rename_entry = QLineEdit()
+        parent_layout.addWidget(self.rename_entry)
+
+        # Example label
+        self.example_label = self._create_italic_label()
+        parent_layout.addWidget(self.example_label)
+
+    def _create_sorting_section(self, parent_layout: QVBoxLayout) -> None:
+        """Create sorting options section"""
+        parent_layout.addWidget(self._create_section_title("Sorting Options"))
+
+        # Sort by and order in one row
+        sort_layout = QHBoxLayout()
+
+        # Sort by
+        sort_by_layout = QVBoxLayout()
+        sort_by_layout.addWidget(QLabel("Sort by:"))
+        self.sort_by_combo = QComboBox()
+        self.sort_by_combo.addItems(["name", "date_modified", "date_created", "size"])
+        sort_by_layout.addWidget(self.sort_by_combo)
+        sort_layout.addLayout(sort_by_layout)
+
+        # Sort order
+        sort_order_layout = QVBoxLayout()
+        sort_order_layout.addWidget(QLabel("Order:"))
+        self.sort_order_combo = QComboBox()
+        self.sort_order_combo.addItems(["asc", "desc"])
+        sort_order_layout.addWidget(self.sort_order_combo)
+        sort_layout.addLayout(sort_order_layout)
+
+        parent_layout.addLayout(sort_layout)
+
+    def _create_pattern_section(self, parent_layout: QVBoxLayout) -> None:
+        """Create rename pattern options section"""
+        parent_layout.addWidget(self._create_section_title("Rename Pattern"))
+
+        # Pattern type
+        parent_layout.addWidget(QLabel("Pattern Type:"))
+        self.pattern_type_combo = QComboBox()
+        self.pattern_type_combo.addItems(["numbering", "datetime", "prefix", "custom"])
+        self.pattern_type_combo.currentTextChanged.connect(self._on_pattern_type_changed)
+        parent_layout.addWidget(self.pattern_type_combo)
+
+        # Datetime options frame (shown when datetime pattern selected)
+        self.datetime_options_widget = QWidget()
+        datetime_layout = QVBoxLayout(self.datetime_options_widget)
+        datetime_layout.setContentsMargins(0, 5, 0, 0)
+
+        datetime_layout.addWidget(QLabel("DateTime Format:"))
+        self.datetime_format_combo = QComboBox()
+        self.datetime_format_combo.addItems([
+            "YYYYMMDD", "YYYY_MM_DD", "YYYYMMDD_HHMMSS",
+            "YYYY_MM_DD_HH_MM_SS", "MMDDYYYY", "DDMMYYYY"
+        ])
+        datetime_layout.addWidget(self.datetime_format_combo)
+
+        self.include_counter_check = QCheckBox("Include counter")
+        self.include_counter_check.setChecked(True)
+        datetime_layout.addWidget(self.include_counter_check)
+
+        self.datetime_options_widget.setVisible(False)
+        parent_layout.addWidget(self.datetime_options_widget)
+
+        # Custom pattern frame (shown when custom pattern selected)
+        self.custom_pattern_widget = QWidget()
+        custom_layout = QVBoxLayout(self.custom_pattern_widget)
+        custom_layout.setContentsMargins(0, 5, 0, 0)
+
+        custom_layout.addWidget(QLabel("Custom Pattern:"))
+        hint_label = self._create_italic_label(
+            "Available: {counter}, {date}, {time}, {datetime}, {year}, {month}, {day}, {original}"
+        )
+        custom_layout.addWidget(hint_label)
+        self.custom_pattern_entry = QLineEdit()
+        self.custom_pattern_entry.setText("{counter}")
+        custom_layout.addWidget(self.custom_pattern_entry)
+
+        self.custom_pattern_widget.setVisible(False)
+        parent_layout.addWidget(self.custom_pattern_widget)
+
+    def _create_folder_organization_section(self, parent_layout: QVBoxLayout) -> None:
+        """Create folder organization section"""
+        parent_layout.addWidget(self._create_section_title("Folder Organization"))
+
+        # Folder structure
+        parent_layout.addWidget(QLabel("Organize into:"))
+        self.folder_structure_combo = QComboBox()
+        self.folder_structure_combo.addItems([
+            "flat", "year", "year_month", "year_month_day", "date", "month"
+        ])
+        self.folder_structure_combo.currentTextChanged.connect(self._update_folder_example)
+        parent_layout.addWidget(self.folder_structure_combo)
+
+        # Example label
+        self.folder_example_label = self._create_italic_label()
+        parent_layout.addWidget(self.folder_example_label)
+
+    def _create_buttons(self, parent_layout: QVBoxLayout) -> None:
+        """Create action buttons"""
+        button_layout = QHBoxLayout()
+
+        # Move and Rename button
+        self.move_button = QPushButton("Move and Rename")
+        self.move_button.clicked.connect(self._move_and_rename)
+        button_layout.addWidget(self.move_button)
+
+        # Settings button
+        self.settings_button = QPushButton("Settings")
+        self.settings_button.clicked.connect(self._open_settings)
+        button_layout.addWidget(self.settings_button)
+
+        button_layout.addStretch()
+        parent_layout.addLayout(button_layout)
+
+    def _create_status_listbox(self, parent_layout: QVBoxLayout) -> None:
+        """Create status listbox with progress bar"""
+        parent_layout.addWidget(QLabel("Status:"))
+
+        # Progress bar (initially hidden)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMinimum(0)
+        self.progress_bar.setMaximum(100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("%v / %m files (%p%)")
+        parent_layout.addWidget(self.progress_bar)
+
+        # Progress label
+        self.progress_label = QLabel("")
+        self.progress_label.setVisible(False)
+        progress_font = QFont("Arial", 9)
+        progress_font.setItalic(True)
+        self.progress_label.setFont(progress_font)
+        parent_layout.addWidget(self.progress_label)
+
+        self.status_listbox = QListWidget()
+        self.status_listbox.setMinimumHeight(150)
+        parent_layout.addWidget(self.status_listbox)
+
+        # Initial status message
+        self.add_status("Ready to move and rename files...")
+
+    def _load_from_config(self) -> None:
+        """Load values from configuration"""
+        self.source_entry.setText(self.config.get("default_source_folder", ""))
+        self.dest_entry.setText(self.config.get("default_destination_folder", ""))
+        self.ext_entry.setText(self.config.get("last_extension", ""))
+        self.rename_entry.setText(self.config.get("last_rename_to", ""))
+
+        # Sorting
+        sort_by = self.config.get("sort_by", "name")
+        idx = self.sort_by_combo.findText(sort_by)
+        if idx >= 0:
+            self.sort_by_combo.setCurrentIndex(idx)
+
+        sort_order = self.config.get("sort_order", "asc")
+        idx = self.sort_order_combo.findText(sort_order)
+        if idx >= 0:
+            self.sort_order_combo.setCurrentIndex(idx)
+
+        # Pattern
+        pattern_type = self.config.get("pattern_type", "numbering")
+        idx = self.pattern_type_combo.findText(pattern_type)
+        if idx >= 0:
+            self.pattern_type_combo.setCurrentIndex(idx)
+
+        datetime_format = self.config.get("datetime_format", "YYYYMMDD")
+        idx = self.datetime_format_combo.findText(datetime_format)
+        if idx >= 0:
+            self.datetime_format_combo.setCurrentIndex(idx)
+
+        self.include_counter_check.setChecked(self.config.get("include_counter", True))
+        self.custom_pattern_entry.setText(self.config.get("custom_pattern", "{counter}"))
+
+        # Folder structure
+        folder_structure = self.config.get("folder_structure", "flat")
+        idx = self.folder_structure_combo.findText(folder_structure)
+        if idx >= 0:
+            self.folder_structure_combo.setCurrentIndex(idx)
+
+        # Update visibility
+        self._on_pattern_type_changed()
+
+    def _connect_signals(self) -> None:
+        """Connect UI signals to slots"""
+        # Text changes that update example
+        self.ext_entry.textChanged.connect(self._update_example)
+        self.rename_entry.textChanged.connect(self._update_example)
+        self.datetime_format_combo.currentTextChanged.connect(self._update_example)
+        self.include_counter_check.stateChanged.connect(self._update_example)
+        self.custom_pattern_entry.textChanged.connect(self._update_example)
+
+    @Slot()
+    def _browse_source(self) -> None:
+        """Handle source folder browse button"""
+        initial_dir = self.source_entry.text() or self.config.get("default_source_folder", "")
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select Source Folder",
+            initial_dir
+        )
+        if folder:
+            self.source_entry.setText(folder)
+            self.config.set("default_source_folder", folder)
+            self.config.save()
+            self.add_status(f"Source folder selected: {folder}")
+
+    @Slot()
+    def _browse_destination(self) -> None:
+        """Handle destination folder browse button"""
+        initial_dir = self.dest_entry.text() or self.config.get("default_destination_folder", "")
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select Destination Folder",
+            initial_dir
+        )
+        if folder:
+            self.dest_entry.setText(folder)
+            self.config.set("default_destination_folder", folder)
+            self.config.save()
+            self.add_status(f"Destination folder selected: {folder}")
+
+    @Slot()
+    def _on_pattern_type_changed(self) -> None:
+        """Handle pattern type change"""
+        pattern_type = self.pattern_type_combo.currentText()
+
+        # Hide all pattern-specific frames
+        self.datetime_options_widget.setVisible(False)
+        self.custom_pattern_widget.setVisible(False)
+
+        # Show relevant frame
+        if pattern_type == "datetime":
+            self.datetime_options_widget.setVisible(True)
+        elif pattern_type == "custom":
+            self.custom_pattern_widget.setVisible(True)
+
+        self._update_example()
+
+    @Slot()
+    def _update_example(self) -> None:
+        """Update the example filename as user types"""
+        try:
+            base_name = self.rename_entry.text().strip()
+            extension = self.ext_entry.text().strip()
+
+            if not extension.startswith('.') and extension:
+                extension = '.' + extension
+
+            if not base_name:
+                self.example_label.setText("")
+                return
+
+            # Create pattern
+            pattern_type = PatternType(self.pattern_type_combo.currentText())
+            pattern = self._create_pattern(pattern_type)
+
+            # Generate example filename
+            example_filename = pattern.generate_filename(
+                base_name,
+                extension,
+                1,
+                None
+            )
+
+            self.example_label.setText(f"Example: {example_filename}")
+        except Exception:
+            self.example_label.setText("")
+
+    @Slot()
+    def _update_folder_example(self) -> None:
+        """Update the folder organization example"""
+        try:
+            structure = FolderStructure(self.folder_structure_combo.currentText())
+            example = FolderOrganizer.get_folder_structure_example(structure)
+            self.folder_example_label.setText(f"Example: {example}")
+        except Exception:
+            self.folder_example_label.setText("")
+
+    def _create_pattern(self, pattern_type: PatternType):
+        """Create rename pattern from UI settings"""
+        if pattern_type == PatternType.NUMBERING:
+            return PatternFactory.create_pattern(PatternType.NUMBERING)
+
+        elif pattern_type == PatternType.DATETIME:
+            dt_format = DateTimeFormat[self.datetime_format_combo.currentText()]
+            return PatternFactory.create_pattern(
+                PatternType.DATETIME,
+                datetime_format=dt_format,
+                include_counter=self.include_counter_check.isChecked(),
+                use_file_date=True
+            )
+
+        elif pattern_type == PatternType.PREFIX:
+            return PatternFactory.create_pattern(
+                PatternType.PREFIX,
+                prefix=self.rename_entry.text().strip(),
+                keep_original_name=True
+            )
+
+        elif pattern_type == PatternType.CUSTOM:
+            return PatternFactory.create_pattern(
+                PatternType.CUSTOM,
+                pattern_string=self.custom_pattern_entry.text()
+            )
+
+        else:
+            return PatternFactory.create_pattern(PatternType.NUMBERING)
+
+    @Slot()
+    def _open_settings(self) -> None:
+        """Open the settings dialog"""
+        from ui.settings_dialog_qt import SettingsDialogQt
+        dialog = SettingsDialogQt(self, self)
+        dialog.exec()
+
+    @Slot()
+    def _move_and_rename(self) -> None:
+        """Handle move and rename operation"""
+        # Get values
+        source_folder = self.source_entry.text().strip()
+        dest_folder = self.dest_entry.text().strip()
+        extension = self.ext_entry.text().strip()
+        base_name = self.rename_entry.text().strip()
+
+        # Validate inputs
+        if not source_folder:
+            QMessageBox.critical(self, "Error", "Please select a source folder")
+            return
+
+        if not dest_folder:
+            QMessageBox.critical(self, "Error", "Please select a destination folder")
+            return
+
+        if not extension:
+            QMessageBox.critical(self, "Error", "Please enter a file extension")
+            return
+
+        if not base_name:
+            QMessageBox.critical(self, "Error", "Please enter a base name")
+            return
+
+        self.add_status("Starting move and rename operation...")
+
+        # Show progress bar
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+        self.progress_label.setVisible(True)
+        self.move_button.setEnabled(False)
+        QApplication.processEvents()
+
+        try:
+            # Create pattern
+            pattern_type = PatternType(self.pattern_type_combo.currentText())
+            pattern = self._create_pattern(pattern_type)
+
+            # Get sorting options
+            sort_by_value = self.sort_by_combo.currentText()
+            if sort_by_value == "name":
+                sort_by = SortBy.NAME
+            elif sort_by_value == "date_modified":
+                sort_by = SortBy.DATE_MODIFIED
+            elif sort_by_value == "date_created":
+                sort_by = SortBy.DATE_CREATED
+            elif sort_by_value == "size":
+                sort_by = SortBy.SIZE
+            else:
+                sort_by = SortBy.NAME
+
+            sort_order = SortOrder.ASCENDING if self.sort_order_combo.currentText() == "asc" else SortOrder.DESCENDING
+
+            # Get folder structure
+            folder_structure = FolderStructure(self.folder_structure_combo.currentText())
+
+            # Get verify_hash setting
+            verify_hash = self.config.get("verify_hash", False)
+
+            # Create file renamer with progress callback
+            file_renamer = FileRenamer(
+                status_callback=self.add_status,
+                progress_callback=self._on_progress,
+                rename_pattern=pattern,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                folder_structure=folder_structure,
+                verify_hash=verify_hash
+            )
+
+            # Perform operation
+            results = file_renamer.move_and_rename(
+                source_folder,
+                dest_folder,
+                extension,
+                base_name
+            )
+
+            # Count results
+            success_count = sum(1 for r in results if r.success)
+            error_count = sum(1 for r in results if not r.success)
+
+            # Save configuration
+            self.config.set("last_extension", extension)
+            self.config.set("last_rename_to", base_name)
+            self.config.set("sort_by", self.sort_by_combo.currentText())
+            self.config.set("sort_order", self.sort_order_combo.currentText())
+            self.config.set("pattern_type", self.pattern_type_combo.currentText())
+            self.config.set("datetime_format", self.datetime_format_combo.currentText())
+            self.config.set("include_counter", self.include_counter_check.isChecked())
+            self.config.set("folder_structure", self.folder_structure_combo.currentText())
+            self.config.set("custom_pattern", self.custom_pattern_entry.text())
+            self.config.save()
+
+            # Show result
+            if error_count == 0 and success_count > 0:
+                QMessageBox.information(self, "Success", f"Successfully moved and renamed {success_count} files")
+            elif success_count > 0:
+                QMessageBox.warning(
+                    self,
+                    "Completed with errors",
+                    f"Moved {success_count} files with {error_count} errors. Check status for details."
+                )
+            elif error_count == 0:
+                # No files found
+                QMessageBox.information(self, "No Files", "No files were found to process")
+
+        except ValueError as e:
+            QMessageBox.critical(self, "Validation Error", str(e))
+        except OSError as e:
+            QMessageBox.critical(self, "File System Error", str(e))
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"An unexpected error occurred: {e}")
+        finally:
+            # Hide progress bar and re-enable button
+            self.progress_bar.setVisible(False)
+            self.progress_label.setVisible(False)
+            self.move_button.setEnabled(True)
+
+    def add_status(self, message: str) -> None:
+        """Add a status message to the listbox"""
+        self.status_listbox.addItem(message)
+        self.status_listbox.scrollToBottom()
+
+    def _on_progress(self, current: int, total: int, filename: str) -> None:
+        """Handle progress updates from file operations"""
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(current)
+        self.progress_label.setText(f"Processing: {filename}")
+        # Process events to keep UI responsive
+        QApplication.processEvents()
+
+    def update_from_config(self) -> None:
+        """Update UI fields from configuration"""
+        self.source_entry.setText(self.config.get("default_source_folder", ""))
+        self.dest_entry.setText(self.config.get("default_destination_folder", ""))
+
+    def _get_current_settings(self) -> dict:
+        """Get all current UI settings as a dictionary"""
+        return {
+            "default_source_folder": self.source_entry.text(),
+            "default_destination_folder": self.dest_entry.text(),
+            "last_extension": self.ext_entry.text(),
+            "last_rename_to": self.rename_entry.text(),
+            "sort_by": self.sort_by_combo.currentText(),
+            "sort_order": self.sort_order_combo.currentText(),
+            "pattern_type": self.pattern_type_combo.currentText(),
+            "datetime_format": self.datetime_format_combo.currentText(),
+            "include_counter": self.include_counter_check.isChecked(),
+            "folder_structure": self.folder_structure_combo.currentText(),
+            "custom_pattern": self.custom_pattern_entry.text()
+        }
+
+    def _apply_settings(self, settings: dict) -> None:
+        """Apply settings dictionary to UI"""
+        if "default_source_folder" in settings:
+            self.source_entry.setText(settings["default_source_folder"] or "")
+        if "default_destination_folder" in settings:
+            self.dest_entry.setText(settings["default_destination_folder"] or "")
+        if "last_extension" in settings:
+            self.ext_entry.setText(settings["last_extension"] or "")
+        if "last_rename_to" in settings:
+            self.rename_entry.setText(settings["last_rename_to"] or "")
+
+        if "sort_by" in settings:
+            idx = self.sort_by_combo.findText(settings["sort_by"] or "name")
+            if idx >= 0:
+                self.sort_by_combo.setCurrentIndex(idx)
+
+        if "sort_order" in settings:
+            idx = self.sort_order_combo.findText(settings["sort_order"] or "asc")
+            if idx >= 0:
+                self.sort_order_combo.setCurrentIndex(idx)
+
+        if "pattern_type" in settings:
+            idx = self.pattern_type_combo.findText(settings["pattern_type"] or "numbering")
+            if idx >= 0:
+                self.pattern_type_combo.setCurrentIndex(idx)
+
+        if "datetime_format" in settings:
+            idx = self.datetime_format_combo.findText(settings["datetime_format"] or "YYYYMMDD")
+            if idx >= 0:
+                self.datetime_format_combo.setCurrentIndex(idx)
+
+        if "include_counter" in settings:
+            self.include_counter_check.setChecked(settings.get("include_counter", True))
+
+        if "folder_structure" in settings:
+            idx = self.folder_structure_combo.findText(settings["folder_structure"] or "flat")
+            if idx >= 0:
+                self.folder_structure_combo.setCurrentIndex(idx)
+
+        if "custom_pattern" in settings:
+            self.custom_pattern_entry.setText(settings["custom_pattern"] or "{counter}")
+
+        # Update pattern UI visibility
+        self._on_pattern_type_changed()
+
+    def _refresh_template_list(self) -> None:
+        """Refresh the template dropdown with current templates"""
+        current_text = self.template_combo.currentText()
+        self.template_combo.clear()
+        self.template_combo.addItems(self.template_manager.get_template_names())
+        # Try to restore selection
+        idx = self.template_combo.findText(current_text)
+        if idx >= 0:
+            self.template_combo.setCurrentIndex(idx)
+
+    @Slot()
+    def _load_template(self) -> None:
+        """Load selected template and apply settings"""
+        template_name = self.template_combo.currentText()
+        if not template_name:
+            QMessageBox.warning(self, "No Template Selected", "Please select a template to load.")
+            return
+
+        template = self.template_manager.get_template(template_name)
+        if template:
+            self._apply_settings(template)
+            self.add_status(f"Template '{template_name}' loaded successfully.")
+        else:
+            QMessageBox.critical(self, "Error", f"Template '{template_name}' not found.")
+
+    @Slot()
+    def _save_template(self) -> None:
+        """Save current settings as a template"""
+        from ui.save_template_dialog_qt import SaveTemplateDialogQt
+        dialog = SaveTemplateDialogQt(self, self)
+        dialog.exec()
+
+    @Slot()
+    def _manage_templates(self) -> None:
+        """Open template management dialog"""
+        from ui.manage_templates_dialog_qt import ManageTemplatesDialogQt
+        dialog = ManageTemplatesDialogQt(self, self)
+        dialog.exec()

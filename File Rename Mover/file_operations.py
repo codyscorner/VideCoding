@@ -3,6 +3,7 @@
 import os
 import shutil
 import re
+import hashlib
 from pathlib import Path
 from typing import List, Optional, Callable
 from dataclasses import dataclass
@@ -173,28 +174,34 @@ class FileRenamer:
     def __init__(
         self,
         status_callback: Optional[Callable[[str], None]] = None,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
         rename_pattern: Optional[RenamePattern] = None,
         sort_by: SortBy = SortBy.NAME,
         sort_order: SortOrder = SortOrder.ASCENDING,
-        folder_structure: FolderStructure = FolderStructure.FLAT
+        folder_structure: FolderStructure = FolderStructure.FLAT,
+        verify_hash: bool = False
     ):
         """
         Initialize the file renamer
 
         Args:
             status_callback: Optional callback function for status updates
+            progress_callback: Optional callback for progress updates (current, total, filename)
             rename_pattern: Rename pattern to use (default: NumberingPattern)
             sort_by: Field to sort files by
             sort_order: Sort order (ascending or descending)
             folder_structure: Folder organization structure
+            verify_hash: Whether to verify file integrity with hash after copy
         """
         self.status_callback = status_callback
+        self.progress_callback = progress_callback
         self.validator = FileValidator()
         self.scanner = FileScanner()
         self.rename_pattern = rename_pattern or NumberingPattern()
         self.sort_by = sort_by
         self.sort_order = sort_order
         self.folder_structure = folder_structure
+        self.verify_hash = verify_hash
         self.sorter = FileSorter()
         self.organizer = FolderOrganizer()
 
@@ -202,6 +209,78 @@ class FileRenamer:
         """Log status message if callback is set"""
         if self.status_callback:
             self.status_callback(message)
+
+    def _report_progress(self, current: int, total: int, filename: str) -> None:
+        """Report progress if callback is set"""
+        if self.progress_callback:
+            self.progress_callback(current, total, filename)
+
+    def _calculate_file_hash(self, file_path: str, chunk_size: int = 8192) -> str:
+        """
+        Calculate MD5 hash of a file
+
+        Args:
+            file_path: Path to the file
+            chunk_size: Size of chunks to read (default 8KB)
+
+        Returns:
+            MD5 hash as hex string
+        """
+        hash_md5 = hashlib.md5()
+        with open(file_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(chunk_size), b''):
+                hash_md5.update(chunk)
+        return hash_md5.hexdigest()
+
+    def _safe_move_file(self, source_path: str, dest_path: str) -> None:
+        """
+        Safely move file using copy-verify-delete pattern.
+
+        1. Copy file to destination (preserving metadata)
+        2. Verify destination exists and size matches
+        3. Optionally verify MD5 hash matches
+        4. Only then delete source
+
+        Args:
+            source_path: Source file path
+            dest_path: Destination file path
+
+        Raises:
+            IOError: If copy verification fails
+            OSError: If file operations fail
+        """
+        source_size = os.path.getsize(source_path)
+
+        # Step 1: Copy file to destination (preserving metadata)
+        shutil.copy2(source_path, dest_path)
+
+        # Step 2: Verify destination exists and size matches
+        if not os.path.exists(dest_path):
+            raise IOError(f"Copy failed: destination file not created")
+
+        dest_size = os.path.getsize(dest_path)
+        if dest_size != source_size:
+            # Clean up failed copy
+            try:
+                os.remove(dest_path)
+            except OSError:
+                pass
+            raise IOError(f"Copy verification failed: size mismatch (source: {source_size}, dest: {dest_size})")
+
+        # Step 3: Optionally verify hash
+        if self.verify_hash:
+            source_hash = self._calculate_file_hash(source_path)
+            dest_hash = self._calculate_file_hash(dest_path)
+            if source_hash != dest_hash:
+                # Clean up failed copy
+                try:
+                    os.remove(dest_path)
+                except OSError:
+                    pass
+                raise IOError(f"Copy verification failed: hash mismatch")
+
+        # Step 4: Delete source only after successful verification
+        os.remove(source_path)
 
     def move_and_rename(
         self,
@@ -261,7 +340,11 @@ class FileRenamer:
 
         # Process each file
         results = []
-        for filename in sorted_files:
+        total_files = len(sorted_files)
+        for index, filename in enumerate(sorted_files, 1):
+            # Report progress before processing
+            self._report_progress(index, total_files, filename)
+
             result = self._process_single_file(
                 source_folder,
                 dest_folder,
@@ -350,8 +433,8 @@ class FileRenamer:
                     error_message=error_msg
                 )
 
-            # Move/rename the file
-            shutil.move(source_path, dest_path)
+            # Move/rename the file using safe copy-verify-delete pattern
+            self._safe_move_file(source_path, dest_path)
 
             # Log the operation
             if subfolder:
