@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QAbstractItemView
 )
 from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QIcon, QPixmap, QImage
+from PySide6.QtGui import QIcon, QPixmap, QImage, QKeyEvent
 from typing import List, Optional, Dict
 from PIL import Image
 import io
@@ -19,6 +19,7 @@ class ThumbnailView(QListWidget):
     image_selected = Signal(str)  # path
     image_double_clicked = Signal(str)  # path - open compare dialog
     selection_changed = Signal(list)  # List of selected paths
+    delete_requested = Signal()  # Delete key pressed
 
     def __init__(self, thumbnail_size: int = 150, parent=None):
         """
@@ -47,10 +48,10 @@ class ThumbnailView(QListWidget):
         self.setWordWrap(True)
         self.setUniformItemSizes(True)
 
-        # Set item size to accommodate thumbnail + text
+        # Set item size to accommodate thumbnail + text (filename + similarity %)
         self.setGridSize(QSize(
             self.thumbnail_size + 20,
-            self.thumbnail_size + 40
+            self.thumbnail_size + 55
         ))
 
     def _connect_signals(self) -> None:
@@ -228,7 +229,15 @@ class ThumbnailView(QListWidget):
         """
         self.thumbnail_size = size
         self.setIconSize(QSize(size, size))
-        self.setGridSize(QSize(size + 20, size + 40))
+        self.setGridSize(QSize(size + 20, size + 55))
 
         # Clear cache to regenerate at new size
         self._thumbnails.clear()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Handle key press events"""
+        if event.key() == Qt.Key.Key_Delete:
+            if self.selectedItems():
+                self.delete_requested.emit()
+        else:
+            super().keyPressEvent(event)

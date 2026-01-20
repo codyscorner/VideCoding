@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QPushButton, QSlider, QProgressBar,
     QFileDialog, QMessageBox, QFrame, QApplication, QGroupBox
 )
+import os
 from PySide6.QtCore import Qt, Slot
 from typing import Optional, List, Dict
 import numpy as np
@@ -264,6 +265,13 @@ class MainWindow(QMainWindow):
         self.compare_btn.clicked.connect(self._show_comparison)
         layout.addWidget(self.compare_btn)
 
+        # Delete Selected button for bulk deletion
+        self.delete_selected_btn = QPushButton("Delete Selected (0)")
+        self.delete_selected_btn.setEnabled(False)
+        self.delete_selected_btn.setToolTip("Delete all selected duplicate images (Del)")
+        self.delete_selected_btn.clicked.connect(self._delete_selected)
+        layout.addWidget(self.delete_selected_btn)
+
         # Settings button
         self.settings_btn = QPushButton("Settings")
         self.settings_btn.setFixedWidth(100)
@@ -274,7 +282,8 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         """Connect additional signals"""
-        pass
+        self.thumbnail_view.selection_changed.connect(self._on_selection_changed)
+        self.thumbnail_view.delete_requested.connect(self._delete_selected)
 
     def _load_from_config(self) -> None:
         """Load settings from config"""
@@ -402,6 +411,8 @@ class MainWindow(QMainWindow):
         """Handle embedding progress"""
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
+        if message:
+            self.status_label.setText(message)
 
     @Slot(str)
     def _on_embed_status(self, message: str) -> None:
@@ -537,9 +548,22 @@ class MainWindow(QMainWindow):
         similarities = {group.representative: 1.0}
         similarities.update(group.similarity_scores)
 
+        # Build file size lookup from scanned images
+        file_sizes = {img.path: img.file_size for img in self.scanned_images}
+
+        # Sort duplicates by file size (largest first)
+        sorted_duplicates = sorted(
+            group.duplicates,
+            key=lambda p: file_sizes.get(p, 0),
+            reverse=True
+        )
+
+        # Build display order: representative first, then duplicates by size
+        display_order = [group.representative] + sorted_duplicates
+
         # Show all images in group
         self.thumbnail_view.set_images(
-            group.all_images,
+            display_order,
             similarities=similarities,
             representative=group.representative
         )
@@ -601,10 +625,19 @@ class MainWindow(QMainWindow):
         dialog = ImageCompareDialog(
             group=group,
             parent=self,
-            theme=self.theme
+            theme=self.theme,
+            all_groups=self.duplicate_groups,
+            current_group_index=self.current_group_index
         )
         dialog.group_updated.connect(self._on_group_updated)
+        dialog.group_changed.connect(self._on_dialog_group_changed)
         dialog.exec()
+
+    @Slot(int)
+    def _on_dialog_group_changed(self, group_index: int) -> None:
+        """Handle group change from comparison dialog"""
+        self.current_group_index = group_index
+        self._display_current_group()
 
     @Slot()
     def _on_group_updated(self) -> None:
@@ -629,6 +662,94 @@ class MainWindow(QMainWindow):
         else:
             self.thumbnail_view.clear_thumbnails()
             self.status_label.setText("All duplicates have been processed.")
+
+    @Slot(list)
+    def _on_selection_changed(self, selected_paths: list) -> None:
+        """Handle selection change in thumbnail view"""
+        if not self.duplicate_groups:
+            self.delete_selected_btn.setEnabled(False)
+            self.delete_selected_btn.setText("Delete Selected (0)")
+            return
+
+        group = self.duplicate_groups[self.current_group_index]
+
+        # Filter selected paths to only include duplicates (not the representative)
+        deletable = [p for p in selected_paths if p in group.duplicates]
+        count = len(deletable)
+
+        self.delete_selected_btn.setText(f"Delete Selected ({count})")
+        self.delete_selected_btn.setEnabled(count > 0)
+
+    @Slot()
+    def _delete_selected(self) -> None:
+        """Delete all selected duplicate images"""
+        if not self.duplicate_groups:
+            return
+
+        group = self.duplicate_groups[self.current_group_index]
+        selected_paths = self.thumbnail_view.get_selected_paths()
+
+        # Filter to only include duplicates (not the representative)
+        to_delete = [p for p in selected_paths if p in group.duplicates]
+
+        if not to_delete:
+            QMessageBox.information(
+                self,
+                "No Duplicates Selected",
+                "Please select duplicate images to delete.\n"
+                "The representative image (highlighted in green) cannot be deleted from here."
+            )
+            return
+
+        # Confirm deletion
+        if len(to_delete) == 1:
+            msg = f"Are you sure you want to delete this image?\n\n{to_delete[0]}"
+        else:
+            msg = f"Are you sure you want to delete {len(to_delete)} images?\n\n"
+            # Show first few paths
+            for path in to_delete[:5]:
+                msg += f"• {path.split('/')[-1].split(chr(92))[-1]}\n"
+            if len(to_delete) > 5:
+                msg += f"• ... and {len(to_delete) - 5} more"
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Delete",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Delete files
+        deleted = 0
+        errors = []
+
+        for path in to_delete:
+            try:
+                os.remove(path)
+                # Remove from group
+                group.duplicates.remove(path)
+                if path in group.similarity_scores:
+                    del group.similarity_scores[path]
+                deleted += 1
+            except OSError as e:
+                errors.append(f"{path}: {e}")
+
+        # Show result
+        if errors:
+            error_msg = f"Deleted {deleted} files.\n\nFailed to delete {len(errors)} files:\n"
+            error_msg += "\n".join(errors[:5])
+            if len(errors) > 5:
+                error_msg += f"\n... and {len(errors) - 5} more errors"
+            QMessageBox.warning(self, "Partial Success", error_msg)
+        else:
+            self.status_label.setText(f"Deleted {deleted} duplicate(s)")
+
+        # Update display
+        self._on_group_updated()
 
     @Slot(int)
     def _on_threshold_changed(self, value: int) -> None:

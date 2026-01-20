@@ -22,12 +22,15 @@ class ImageCompareDialog(QDialog):
     # Signals
     action_taken = Signal(str, str)  # action ("delete", "move", "keep"), path
     group_updated = Signal()  # Emitted when group is modified
+    group_changed = Signal(int)  # Emitted when navigating to different group (index)
 
     def __init__(
         self,
         group: DuplicateGroup,
         parent=None,
-        theme=None
+        theme=None,
+        all_groups: list = None,
+        current_group_index: int = 0
     ):
         """
         Initialize compare dialog
@@ -36,11 +39,15 @@ class ImageCompareDialog(QDialog):
             group: DuplicateGroup to compare
             parent: Parent widget
             theme: ThemeManager for styling
+            all_groups: List of all DuplicateGroups for navigation
+            current_group_index: Index of current group in all_groups
         """
         super().__init__(parent)
         self.group = group
         self.theme = theme
         self.current_index = 0  # Index in duplicates list
+        self.all_groups = all_groups or [group]
+        self.current_group_index = current_group_index
 
         self.setWindowTitle("Compare Images")
         self.setMinimumSize(900, 600)
@@ -196,13 +203,16 @@ class ImageCompareDialog(QDialog):
         index = max(0, min(index, len(self.group.duplicates) - 1))
         self.current_index = index
 
-        # Update title
+        # Update title with group info
         total = len(self.group.duplicates)
-        self.title_label.setText(f"Comparison {index + 1} of {total}")
+        group_info = f"Group {self.current_group_index + 1}/{len(self.all_groups)}"
+        self.title_label.setText(f"{group_info} - Duplicate {index + 1} of {total}")
 
-        # Update navigation buttons
-        self.prev_btn.setEnabled(index > 0)
-        self.next_btn.setEnabled(index < total - 1)
+        # Update navigation buttons (can navigate between groups too)
+        can_go_prev = index > 0 or self.current_group_index > 0
+        can_go_next = index < total - 1 or self.current_group_index < len(self.all_groups) - 1
+        self.prev_btn.setEnabled(can_go_prev)
+        self.next_btn.setEnabled(can_go_next)
 
         # Show representative (left)
         self._load_image_panel(
@@ -268,15 +278,44 @@ class ImageCompareDialog(QDialog):
 
     @Slot()
     def _next_comparison(self) -> None:
-        """Go to next comparison"""
+        """Go to next comparison, or next group if at end"""
         if self.current_index < len(self.group.duplicates) - 1:
             self._show_comparison(self.current_index + 1)
+        elif self.current_group_index < len(self.all_groups) - 1:
+            # Move to next group
+            self._go_to_group(self.current_group_index + 1)
 
     @Slot()
     def _prev_comparison(self) -> None:
-        """Go to previous comparison"""
+        """Go to previous comparison, or previous group if at start"""
         if self.current_index > 0:
             self._show_comparison(self.current_index - 1)
+        elif self.current_group_index > 0:
+            # Move to previous group, start at last duplicate
+            self._go_to_group(self.current_group_index - 1, start_at_end=True)
+
+    def _go_to_group(self, group_index: int, start_at_end: bool = False) -> None:
+        """Navigate to a different group"""
+        if 0 <= group_index < len(self.all_groups):
+            self.current_group_index = group_index
+            self.group = self.all_groups[group_index]
+            self.group_changed.emit(group_index)
+
+            if start_at_end and self.group.duplicates:
+                self._show_comparison(len(self.group.duplicates) - 1)
+            else:
+                self._show_comparison(0)
+
+    def keyPressEvent(self, event) -> None:
+        """Handle keyboard navigation"""
+        if event.key() == Qt.Key.Key_Right:
+            self._next_comparison()
+        elif event.key() == Qt.Key.Key_Left:
+            self._prev_comparison()
+        elif event.key() == Qt.Key.Key_Delete:
+            self._delete_duplicate()
+        else:
+            super().keyPressEvent(event)
 
     @Slot()
     def _delete_duplicate(self) -> None:
