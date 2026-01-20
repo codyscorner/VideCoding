@@ -8,7 +8,7 @@ import os
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel, QStackedLayout
 )
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtCore import Qt, QUrl, QEventLoop, QTimer
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QIcon
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
@@ -54,9 +54,18 @@ class DropOverlay(QWidget):
         """Handle drop events."""
         urls = event.mimeData().urls()
         if urls:
-            file_path = urls[0].toLocalFile()
-            if self.parent_player.is_supported_video(file_path):
-                self.parent_player.play_video(file_path)
+            # Collect all supported video files
+            video_files = []
+            for url in urls:
+                file_path = url.toLocalFile()
+                if self.parent_player.is_supported_video(file_path):
+                    video_files.append(file_path)
+
+            if video_files:
+                # Build playlist and start playing
+                self.parent_player.build_playlist(video_files)
+                if self.parent_player.playlist:
+                    self.parent_player.play_current()
                 event.acceptProposedAction()
 
 
@@ -73,7 +82,7 @@ def get_icon_path():
 class VideoDropPlayer(QMainWindow):
     """Main window for the video drop player application."""
 
-    VERSION = "1.0.6"
+    VERSION = "1.1.0"
     SUPPORTED_FORMATS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm'}
 
     def __init__(self):
@@ -81,6 +90,10 @@ class VideoDropPlayer(QMainWindow):
         self.setWindowTitle(f"Video Drop Player v{self.VERSION}")
         self.setGeometry(100, 100, 800, 600)
         self.setMinimumSize(400, 300)
+
+        # Playlist state
+        self.playlist = []  # List of (file_path, duration_ms) tuples
+        self.current_index = 0
 
         # Set window icon
         icon_path = get_icon_path()
@@ -191,14 +204,86 @@ class VideoDropPlayer(QMainWindow):
         """Handle drop events."""
         urls = event.mimeData().urls()
         if urls:
-            file_path = urls[0].toLocalFile()
-            if self.is_supported_video(file_path):
-                self.play_video(file_path)
+            # Collect all supported video files
+            video_files = []
+            for url in urls:
+                file_path = url.toLocalFile()
+                if self.is_supported_video(file_path):
+                    video_files.append(file_path)
+
+            if video_files:
+                # Build playlist and start playing
+                self.build_playlist(video_files)
+                if self.playlist:
+                    self.play_current()
                 event.acceptProposedAction()
 
     def is_supported_video(self, file_path: str) -> bool:
         """Check if the file is a supported video format."""
         return any(file_path.lower().endswith(fmt) for fmt in self.SUPPORTED_FORMATS)
+
+    def get_video_duration(self, file_path: str) -> int:
+        """
+        Get the duration of a video file in milliseconds.
+        Returns 0 if duration cannot be determined.
+        """
+        probe_player = QMediaPlayer()
+        duration = 0
+
+        loop = QEventLoop()
+
+        def on_duration_changed(d):
+            nonlocal duration
+            duration = d
+            loop.quit()
+
+        def on_error(error, error_string):
+            loop.quit()
+
+        def on_status_changed(status):
+            if status == QMediaPlayer.MediaStatus.LoadedMedia:
+                # Give a moment for duration to be available
+                QTimer.singleShot(50, loop.quit)
+            elif status in (QMediaPlayer.MediaStatus.InvalidMedia,
+                           QMediaPlayer.MediaStatus.NoMedia):
+                loop.quit()
+
+        probe_player.durationChanged.connect(on_duration_changed)
+        probe_player.errorOccurred.connect(on_error)
+        probe_player.mediaStatusChanged.connect(on_status_changed)
+
+        probe_player.setSource(QUrl.fromLocalFile(file_path))
+
+        # Timeout after 3 seconds
+        QTimer.singleShot(3000, loop.quit)
+        loop.exec()
+
+        # Clean up
+        probe_player.setSource(QUrl())
+
+        return duration
+
+    def build_playlist(self, file_paths: list):
+        """
+        Build a playlist from file paths, sorted by duration (shortest first).
+        """
+        self.drop_label.setText("Loading video information...")
+        self.drop_label.show()
+        QApplication.processEvents()
+
+        # Get durations for all files
+        videos_with_duration = []
+        for i, path in enumerate(file_paths):
+            self.drop_label.setText(f"Scanning video {i+1}/{len(file_paths)}...")
+            QApplication.processEvents()
+            duration = self.get_video_duration(path)
+            videos_with_duration.append((path, duration))
+
+        # Sort by duration (shortest first)
+        videos_with_duration.sort(key=lambda x: x[1])
+
+        self.playlist = videos_with_duration
+        self.current_index = 0
 
     def play_video(self, file_path: str):
         """Play the specified video file."""
@@ -210,20 +295,49 @@ class VideoDropPlayer(QMainWindow):
         self.media_player.setSource(QUrl.fromLocalFile(file_path))
         self.media_player.play()
 
-        # Update window title with filename
+        # Update window title with filename and playlist position
         filename = file_path.split('/')[-1].split('\\')[-1]
-        self.setWindowTitle(f"Video Drop Player v{self.VERSION} - {filename}")
+        if len(self.playlist) > 1:
+            self.setWindowTitle(
+                f"Video Drop Player v{self.VERSION} - "
+                f"Playing {self.current_index + 1}/{len(self.playlist)} - {filename}"
+            )
+        else:
+            self.setWindowTitle(f"Video Drop Player v{self.VERSION} - {filename}")
+
+    def play_current(self):
+        """Play the current video in the playlist."""
+        if 0 <= self.current_index < len(self.playlist):
+            file_path, _ = self.playlist[self.current_index]
+            self.play_video(file_path)
+
+    def play_next(self):
+        """Play the next video in the playlist, or release if at end."""
+        self.current_index += 1
+        if self.current_index < len(self.playlist):
+            self.play_current()
+        else:
+            # End of playlist
+            self.release_video()
+
+    def play_previous(self):
+        """Play the previous video in the playlist."""
+        if self.current_index > 0:
+            self.current_index -= 1
+            self.play_current()
 
     def on_media_status_changed(self, status):
         """Handle media status changes."""
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            # Video finished - return to drop screen and release file
-            self.release_video()
+            # Video finished - play next or return to drop screen
+            self.play_next()
 
     def release_video(self):
         """Stop playback and release the file handle."""
         self.media_player.stop()
         self.media_player.setSource(QUrl())  # Clear source to release file handle
+        self.playlist = []
+        self.current_index = 0
         self.video_widget.hide()
         self.drop_label.setText("Drag and drop a video file here")
         self.drop_label.show()
@@ -267,6 +381,13 @@ class VideoDropPlayer(QMainWindow):
         elif event.key() == Qt.Key.Key_M:
             # Toggle mute
             self.audio_output.setMuted(not self.audio_output.isMuted())
+        elif event.key() == Qt.Key.Key_N:
+            # Next video in playlist
+            if self.playlist and self.current_index < len(self.playlist) - 1:
+                self.play_next()
+        elif event.key() == Qt.Key.Key_P:
+            # Previous video in playlist
+            self.play_previous()
 
 
 def main():
