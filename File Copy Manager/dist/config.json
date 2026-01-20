@@ -1,6 +1,6 @@
 {
-    "default_source_folder": "//CL-NAS/Pictures/AI/Create_with_NSFW/Screenshots",
-    "default_destination_folder": "R:/Images_AI_IMG2VID_NSFW/Ready_For_Cum_Shot",
+    "default_source_folder": "X:/Images",
+    "default_destination_folder": "F:/",
     "last_extension": "*.jpg, *.png",
     "preserve_structure": false,
     "folder_structure": "flat",

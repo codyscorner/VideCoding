@@ -29,7 +29,10 @@
       "Bash(Get-ChildItem -Path \"p:\\\\AI\\\\VideCoding\" -Recurse -Filter \"*Cumshot*.mp4\" -ErrorAction SilentlyContinue)",
       "Bash(Select-Object -First 5 -ExpandProperty FullName)",
       "Bash(ffprobe:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(p:)"
     ],
     "deny": [],
     "ask": []

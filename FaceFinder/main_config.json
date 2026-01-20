@@ -1,0 +1,6 @@
+{
+    "default_reference_image": "X:/SearchImages/Shayln 01.jpg",
+    "default_search_folder": "D:/ImagesBySize",
+    "tolerance": 0.5,
+    "recursive_search": true
+}
