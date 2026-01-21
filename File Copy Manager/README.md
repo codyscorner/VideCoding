@@ -2,21 +2,21 @@
 
 A powerful tool for batch copying files with automatic duplicate numbering and flexible folder organization.
 
-## Version 1.2.0
+## Version 2.0.0
 
 **Yellow & Black Theme** - Easy to distinguish from the red File Rename Mover!
+
+### What's New in v2.0.0
+- **Background Threading**: Copy operations now run in a background thread - UI stays responsive even during large file operations
+- **Cancel Button**: New Cancel button allows stopping copy operations mid-process
+- **File Type Presets**: Quick dropdown to select common file types (Images, Videos, Audio, Documents, Archives, Code, Data)
+- **Improved Responsiveness**: No more "Not Responding" when switching between windows during copy operations
+- **Resizable Window**: Window can now be resized down to 75% of starting dimensions (minimum 900x675)
 
 ### What's New in v1.2.0
 - **File Pattern Filtering**: Support for wildcard patterns (*.jpg, *.png) and multiple patterns
 - **Backward Compatible**: Old extension format (.jpg) automatically converts to patterns (*.jpg)
 - **Enhanced Pattern Matching**: Uses fnmatch for flexible file matching
-
-### What's New in v1.1.0
-- **Dual Progress Bars**: Real-time overall and per-file progress tracking
-- **File Size Filtering**: Filter files by minimum/maximum size (B, KB, MB, GB)
-- **File Age Filtering**: Copy only files modified within the last X days
-- **Enhanced Status Display**: Shows file size and copy time for each file
-- **Improved UI**: Tighter, more compact layout for better usability
 
 ## Features
 
@@ -30,7 +30,7 @@ A powerful tool for batch copying files with automatic duplicate numbering and f
 - Recursive subfolder scanning
 - Yellow and black theme for easy visual identification
 - Persistent configuration
-- Dark theme UI optimized for 1000x870 resolution
+- Dark theme UI optimized for 1200x900 resolution (resizable)
 
 ### File Filters (New in v1.1.0)
 
@@ -247,6 +247,13 @@ MIT License - See LICENSE file for details.
 Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
+
+### v2.0.0 (January 21, 2026)
+- **Background Threading**: File copy operations now run in a background thread for responsive UI
+- **Cancel Support**: Added Cancel button to stop operations mid-process
+- **File Type Presets**: Quick dropdown with 7 preset categories (Images, Videos, Audio, Documents, Archives, Code, Data)
+- **Window Improvements**: Resizable window (1200x900 default, 900x675 minimum)
+- **No More Freezing**: UI stays responsive when switching focus during long copy operations
 
 ### v1.2.0 (January 1, 2026)
 - **File Pattern Filtering**: Added wildcard pattern support (*.jpg, *.png)

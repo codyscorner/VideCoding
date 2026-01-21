@@ -4,6 +4,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 from typing import Optional, Callable
+import threading
+import queue
 
 from config import ConfigManager
 from file_operations import FileCopier
@@ -29,11 +31,11 @@ class MainWindow:
 
         # Set up window
         self.root.title(f"File Copy Manager (V-{self.version})")
-        self.root.geometry("1000x870")
+        self.root.geometry("1200x900")
         self.root.configure(bg='#1a1a1a')
 
-        # Set minimum window size
-        self.root.minsize(1000, 870)
+        # Set minimum window size (75% of starting dimensions)
+        self.root.minsize(900, 675)
 
         # Initialize theme
         self.style = ttk.Style()
@@ -60,6 +62,12 @@ class MainWindow:
 
         self.enable_date_filter_var = tk.BooleanVar(value=self.config.get("enable_date_filter", False))
         self.days_old_var = tk.StringVar(value=self.config.get("days_old", "30"))
+
+        # Threading state
+        self._copy_thread: Optional[threading.Thread] = None
+        self._progress_queue: queue.Queue = queue.Queue()
+        self._cancel_requested: bool = False
+        self._is_copying: bool = False
 
         # Build UI
         self._setup_ui()
@@ -158,11 +166,40 @@ class MainWindow:
         )
 
     def _create_extension_input(self, parent: ttk.Frame) -> None:
-        """Create extension input"""
+        """Create extension input with preset dropdown"""
+        # Define file type presets
+        self.file_type_presets = {
+            "-- Select Preset --": "",
+            "Images": "*.jpg, *.jpeg, *.png, *.gif, *.bmp, *.tiff, *.tif, *.webp, *.svg, *.ico, *.raw, *.heic, *.heif",
+            "Videos": "*.mp4, *.avi, *.mkv, *.mov, *.wmv, *.flv, *.webm, *.m4v, *.mpeg, *.mpg, *.3gp, *.ts",
+            "Audio": "*.mp3, *.wav, *.flac, *.aac, *.ogg, *.wma, *.m4a, *.opus, *.aiff, *.alac",
+            "Documents": "*.pdf, *.doc, *.docx, *.xls, *.xlsx, *.ppt, *.pptx, *.txt, *.rtf, *.odt, *.ods, *.odp",
+            "Archives": "*.zip, *.rar, *.7z, *.tar, *.gz, *.bz2, *.xz, *.iso, *.cab",
+            "Code": "*.py, *.js, *.ts, *.html, *.css, *.java, *.cpp, *.c, *.h, *.cs, *.php, *.rb, *.go, *.rs, *.swift",
+            "Data": "*.json, *.xml, *.csv, *.yaml, *.yml, *.sql, *.db, *.sqlite, *.mdb",
+        }
+
         frame = ttk.Frame(parent, style='Dark.TFrame')
         frame.pack(fill='x', pady=(0, 5))
 
-        ttk.Label(frame, text="File Mask:", style='Dark.TLabel').pack(anchor='w')
+        # Label row with preset dropdown
+        label_frame = ttk.Frame(frame, style='Dark.TFrame')
+        label_frame.pack(fill='x')
+
+        ttk.Label(label_frame, text="File Mask:", style='Dark.TLabel').pack(side='left')
+
+        # Preset dropdown
+        ttk.Label(label_frame, text="Presets:", style='Dark.TLabel').pack(side='left', padx=(20, 5))
+        self.preset_var = tk.StringVar(value="-- Select Preset --")
+        preset_combo = ttk.Combobox(
+            label_frame,
+            textvariable=self.preset_var,
+            values=list(self.file_type_presets.keys()),
+            state="readonly",
+            width=20
+        )
+        preset_combo.pack(side='left')
+        preset_combo.bind('<<ComboboxSelected>>', self._on_preset_selected)
 
         entry = tk.Entry(
             frame,
@@ -182,6 +219,14 @@ class MainWindow:
             style='Dark.TLabel',
             font=self.fonts['italic']
         ).pack(anchor='w', pady=(2, 0))
+
+    def _on_preset_selected(self, event=None) -> None:
+        """Handle preset selection from dropdown"""
+        preset_name = self.preset_var.get()
+        if preset_name in self.file_type_presets:
+            preset_value = self.file_type_presets[preset_name]
+            if preset_value:  # Don't clear if selecting the placeholder
+                self.ext_var.set(preset_value)
 
     def _create_copy_options(self, parent: ttk.Frame) -> None:
         """Create copy options section"""
@@ -451,7 +496,7 @@ class MainWindow:
         self.copy_button = tk.Button(
             button_frame,
             text="Copy Files",
-            command=self._copy_files,
+            command=self._start_copy,
             bg=self.colors['button_bg'],
             fg=self.colors['button_fg'],
             font=self.fonts['button'],
@@ -461,6 +506,22 @@ class MainWindow:
             pady=10
         )
         self.copy_button.pack(side='left', padx=(0, 10))
+
+        # Cancel button (initially disabled)
+        self.cancel_button = tk.Button(
+            button_frame,
+            text="Cancel",
+            command=self._cancel_copy,
+            bg='#8B0000',  # Dark red
+            fg=self.colors['button_fg'],
+            font=self.fonts['button'],
+            relief='raised',
+            bd=2,
+            padx=20,
+            pady=10,
+            state='disabled'
+        )
+        self.cancel_button.pack(side='left', padx=(0, 10))
 
     def _create_progress_section(self, parent: ttk.Frame) -> None:
         """Create progress bars section"""
@@ -601,8 +662,8 @@ class MainWindow:
         except Exception:
             self.folder_example_label.config(text="")
 
-    def _copy_files(self) -> None:
-        """Handle copy files operation"""
+    def _start_copy(self) -> None:
+        """Start the copy operation in a background thread"""
         # Get values
         source_folder = self.source_var.get().strip()
         dest_folder = self.dest_var.get().strip()
@@ -626,113 +687,245 @@ class MainWindow:
             messagebox.showerror("Error", "Source and destination folders cannot be the same")
             return
 
-        self.add_status("Starting copy operation...")
+        # Get filter options (validate before starting thread)
+        min_size_bytes = None
+        max_size_bytes = None
+        max_days_old = None
 
-        # Reset progress bars
+        if self.enable_size_filter_var.get():
+            try:
+                unit_multiplier = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
+                multiplier = unit_multiplier.get(self.size_unit_var.get(), 1024**2)
+
+                min_val = self.min_size_var.get().strip()
+                if min_val:
+                    min_size_bytes = float(min_val) * multiplier
+
+                max_val = self.max_size_var.get().strip()
+                if max_val:
+                    max_size_bytes = float(max_val) * multiplier
+            except ValueError:
+                messagebox.showerror("Error", "Invalid size filter values")
+                return
+
+        if self.enable_date_filter_var.get():
+            try:
+                days_val = self.days_old_var.get().strip()
+                if days_val:
+                    max_days_old = int(days_val)
+            except ValueError:
+                messagebox.showerror("Error", "Invalid date filter value")
+                return
+
+        # Prepare UI for copying
+        self._is_copying = True
+        self._cancel_requested = False
+        self.copy_button.config(state='disabled')
+        self.cancel_button.config(state='normal')
         self.overall_progress['value'] = 0
         self.file_progress['value'] = 0
         self.progress_label.config(text="Preparing...")
-        self.root.update_idletasks()
 
+        # Gather all options for the thread
+        copy_options = {
+            'source_folder': source_folder,
+            'dest_folder': dest_folder,
+            'extension': extension,
+            'preserve_structure': self.preserve_structure_var.get(),
+            'number_duplicates': self.number_duplicates_var.get(),
+            'recursive_search': self.recursive_search_var.get(),
+            'folder_structure': self.folder_structure_var.get(),
+            'min_size_bytes': min_size_bytes,
+            'max_size_bytes': max_size_bytes,
+            'max_days_old': max_days_old
+        }
+
+        # Start the worker thread
+        self._copy_thread = threading.Thread(
+            target=self._copy_files_worker,
+            args=(copy_options,),
+            daemon=True
+        )
+        self._copy_thread.start()
+
+        # Start polling the queue for updates
+        self._poll_progress_queue()
+
+    def _copy_files_worker(self, options: dict) -> None:
+        """Worker thread that performs the actual file copying"""
         try:
-            # Get options
-            preserve_structure = self.preserve_structure_var.get()
-            number_duplicates = self.number_duplicates_var.get()
-            recursive_search = self.recursive_search_var.get()
-            folder_structure = FolderStructure(self.folder_structure_var.get())
+            self._queue_message('status', "Starting copy operation...")
 
-            # Get filter options
-            min_size_bytes = None
-            max_size_bytes = None
-            max_days_old = None
+            folder_structure = FolderStructure(options['folder_structure'])
 
-            if self.enable_size_filter_var.get():
-                try:
-                    unit_multiplier = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
-                    multiplier = unit_multiplier.get(self.size_unit_var.get(), 1024**2)
-
-                    min_val = self.min_size_var.get().strip()
-                    if min_val:
-                        min_size_bytes = float(min_val) * multiplier
-
-                    max_val = self.max_size_var.get().strip()
-                    if max_val:
-                        max_size_bytes = float(max_val) * multiplier
-                except ValueError:
-                    messagebox.showerror("Error", "Invalid size filter values")
-                    return
-
-            if self.enable_date_filter_var.get():
-                try:
-                    days_val = self.days_old_var.get().strip()
-                    if days_val:
-                        max_days_old = int(days_val)
-                except ValueError:
-                    messagebox.showerror("Error", "Invalid date filter value")
-                    return
-
-            # Create file copier with progress callback
+            # Create file copier with thread-safe callbacks
             file_copier = FileCopier(
-                status_callback=self.add_status,
+                status_callback=lambda msg: self._queue_message('status', msg),
                 folder_structure=folder_structure,
-                number_duplicates=number_duplicates,
-                progress_callback=self._update_progress
+                number_duplicates=options['number_duplicates'],
+                progress_callback=lambda cur, tot, fname, fprog: self._queue_message(
+                    'progress', {'current': cur, 'total': tot, 'filename': fname, 'file_progress': fprog}
+                ),
+                cancel_check=lambda: self._cancel_requested
             )
 
             # Perform operation
             results = file_copier.copy_files(
-                source_folder,
-                dest_folder,
-                extension,
-                preserve_structure,
-                recursive_search,
-                min_size_bytes=min_size_bytes,
-                max_size_bytes=max_size_bytes,
-                max_days_old=max_days_old
+                options['source_folder'],
+                options['dest_folder'],
+                options['extension'],
+                options['preserve_structure'],
+                options['recursive_search'],
+                min_size_bytes=options['min_size_bytes'],
+                max_size_bytes=options['max_size_bytes'],
+                max_days_old=options['max_days_old']
             )
+
+            # Check if cancelled
+            if self._cancel_requested:
+                self._queue_message('cancelled', None)
+                return
 
             # Count results
             success_count = sum(1 for r in results if r.success)
             error_count = sum(1 for r in results if not r.success)
 
-            # Save configuration
-            self.config.set("last_extension", extension)
-            self.config.set("default_source_folder", source_folder)
-            self.config.set("default_destination_folder", dest_folder)
-            self.config.set("preserve_structure", preserve_structure)
-            self.config.set("folder_structure", self.folder_structure_var.get())
-            self.config.set("number_duplicates", number_duplicates)
-            self.config.set("recursive_search", recursive_search)
-            self.config.set("enable_size_filter", self.enable_size_filter_var.get())
-            self.config.set("min_size", self.min_size_var.get())
-            self.config.set("max_size", self.max_size_var.get())
-            self.config.set("size_unit", self.size_unit_var.get())
-            self.config.set("enable_date_filter", self.enable_date_filter_var.get())
-            self.config.set("days_old", self.days_old_var.get())
-            self.config.save()
-
-            # Show result
-            self.progress_label.config(text="Complete!")
-            if error_count == 0 and success_count > 0:
-                messagebox.showinfo("Success", f"Successfully copied {success_count} files")
-            elif success_count > 0:
-                messagebox.showwarning(
-                    "Completed with errors",
-                    f"Copied {success_count} files with {error_count} errors. Check status for details."
-                )
-            elif error_count == 0:
-                # No files found
-                messagebox.showinfo("No Files", "No files were found to process")
+            # Queue completion with results
+            self._queue_message('complete', {
+                'success_count': success_count,
+                'error_count': error_count,
+                'options': options
+            })
 
         except ValueError as e:
-            self.progress_label.config(text="Error")
-            messagebox.showerror("Validation Error", str(e))
+            self._queue_message('error', {'type': 'validation', 'message': str(e)})
         except OSError as e:
-            self.progress_label.config(text="Error")
-            messagebox.showerror("File System Error", str(e))
+            self._queue_message('error', {'type': 'filesystem', 'message': str(e)})
         except Exception as e:
-            self.progress_label.config(text="Error")
-            messagebox.showerror("Error", f"An unexpected error occurred: {e}")
+            self._queue_message('error', {'type': 'unexpected', 'message': str(e)})
+
+    def _queue_message(self, msg_type: str, data) -> None:
+        """Add a message to the progress queue (thread-safe)"""
+        self._progress_queue.put((msg_type, data))
+
+    def _poll_progress_queue(self) -> None:
+        """Poll the progress queue and update UI (runs on main thread)"""
+        try:
+            while True:
+                try:
+                    msg_type, data = self._progress_queue.get_nowait()
+
+                    if msg_type == 'status':
+                        self.status_listbox.insert(tk.END, data)
+                        self.status_listbox.see(tk.END)
+
+                    elif msg_type == 'progress':
+                        total = data['total']
+                        current = data['current']
+                        if total > 0:
+                            overall_percent = (current / total) * 100
+                            self.overall_progress['value'] = overall_percent
+                        self.file_progress['value'] = data['file_progress']
+                        self.progress_label.config(
+                            text=f"Processing {current}/{total}: {data['filename']}"
+                        )
+
+                    elif msg_type == 'complete':
+                        self._on_copy_complete(data)
+                        return  # Stop polling
+
+                    elif msg_type == 'cancelled':
+                        self._on_copy_cancelled()
+                        return  # Stop polling
+
+                    elif msg_type == 'error':
+                        self._on_copy_error(data)
+                        return  # Stop polling
+
+                except queue.Empty:
+                    break
+
+        except Exception as e:
+            # Safety catch for any UI update errors
+            print(f"Error in progress queue polling: {e}")
+
+        # Continue polling if still copying
+        if self._is_copying:
+            self.root.after(50, self._poll_progress_queue)
+
+    def _on_copy_complete(self, data: dict) -> None:
+        """Handle copy operation completion (runs on main thread)"""
+        self._is_copying = False
+        self.copy_button.config(state='normal')
+        self.cancel_button.config(state='disabled')
+
+        success_count = data['success_count']
+        error_count = data['error_count']
+        options = data['options']
+
+        # Save configuration
+        self.config.set("last_extension", options['extension'])
+        self.config.set("default_source_folder", options['source_folder'])
+        self.config.set("default_destination_folder", options['dest_folder'])
+        self.config.set("preserve_structure", options['preserve_structure'])
+        self.config.set("folder_structure", options['folder_structure'])
+        self.config.set("number_duplicates", options['number_duplicates'])
+        self.config.set("recursive_search", options['recursive_search'])
+        self.config.set("enable_size_filter", self.enable_size_filter_var.get())
+        self.config.set("min_size", self.min_size_var.get())
+        self.config.set("max_size", self.max_size_var.get())
+        self.config.set("size_unit", self.size_unit_var.get())
+        self.config.set("enable_date_filter", self.enable_date_filter_var.get())
+        self.config.set("days_old", self.days_old_var.get())
+        self.config.save()
+
+        # Show result
+        self.progress_label.config(text="Complete!")
+        if error_count == 0 and success_count > 0:
+            messagebox.showinfo("Success", f"Successfully copied {success_count} files")
+        elif success_count > 0:
+            messagebox.showwarning(
+                "Completed with errors",
+                f"Copied {success_count} files with {error_count} errors. Check status for details."
+            )
+        elif error_count == 0:
+            messagebox.showinfo("No Files", "No files were found to process")
+
+    def _on_copy_cancelled(self) -> None:
+        """Handle copy operation cancellation (runs on main thread)"""
+        self._is_copying = False
+        self.copy_button.config(state='normal')
+        self.cancel_button.config(state='disabled')
+        self.progress_label.config(text="Cancelled")
+        self.status_listbox.insert(tk.END, "Operation cancelled by user")
+        self.status_listbox.see(tk.END)
+        messagebox.showinfo("Cancelled", "Copy operation was cancelled")
+
+    def _on_copy_error(self, data: dict) -> None:
+        """Handle copy operation error (runs on main thread)"""
+        self._is_copying = False
+        self.copy_button.config(state='normal')
+        self.cancel_button.config(state='disabled')
+        self.progress_label.config(text="Error")
+
+        error_type = data['type']
+        message = data['message']
+
+        if error_type == 'validation':
+            messagebox.showerror("Validation Error", message)
+        elif error_type == 'filesystem':
+            messagebox.showerror("File System Error", message)
+        else:
+            messagebox.showerror("Error", f"An unexpected error occurred: {message}")
+
+    def _cancel_copy(self) -> None:
+        """Request cancellation of the copy operation"""
+        if self._is_copying:
+            self._cancel_requested = True
+            self.cancel_button.config(state='disabled')
+            self.progress_label.config(text="Cancelling...")
+            self.status_listbox.insert(tk.END, "Cancellation requested, please wait...")
+            self.status_listbox.see(tk.END)
 
     def add_status(self, message: str) -> None:
         """Add a status message to the listbox"""

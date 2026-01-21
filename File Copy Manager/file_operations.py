@@ -139,7 +139,8 @@ class FileCopier:
         status_callback: Optional[Callable[[str], None]] = None,
         folder_structure: FolderStructure = FolderStructure.FLAT,
         number_duplicates: bool = True,
-        progress_callback: Optional[Callable[[int, int, str, int], None]] = None
+        progress_callback: Optional[Callable[[int, int, str, int], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None
     ):
         """
         Initialize the file copier
@@ -149,9 +150,11 @@ class FileCopier:
             folder_structure: Folder organization structure
             number_duplicates: If True, number duplicate files; if False, skip duplicates
             progress_callback: Optional callback for progress updates (current, total, filename, file_progress)
+            cancel_check: Optional callback that returns True if operation should be cancelled
         """
         self.status_callback = status_callback
         self.progress_callback = progress_callback
+        self.cancel_check = cancel_check
         self.validator = FileValidator()
         self.scanner = FileScanner()
         self.folder_structure = folder_structure
@@ -307,6 +310,11 @@ class FileCopier:
         # Process each file
         results = []
         for idx, (full_path, rel_path) in enumerate(filtered_files, 1):
+            # Check for cancellation
+            if self.cancel_check and self.cancel_check():
+                self._log_status("Operation cancelled by user")
+                break
+
             # Update progress
             if self.progress_callback:
                 filename = os.path.basename(full_path)
@@ -326,9 +334,13 @@ class FileCopier:
                 self.progress_callback(idx, len(filtered_files), filename, 100)
 
         # Summary
-        success_count = sum(1 for r in results if r.success)
-        error_count = sum(1 for r in results if not r.success)
-        self._log_status(f"Operation completed: {success_count} files copied, {error_count} errors")
+        if self.cancel_check and self.cancel_check():
+            success_count = sum(1 for r in results if r.success)
+            self._log_status(f"Operation cancelled: {success_count} files copied before cancellation")
+        else:
+            success_count = sum(1 for r in results if r.success)
+            error_count = sum(1 for r in results if not r.success)
+            self._log_status(f"Operation completed: {success_count} files copied, {error_count} errors")
 
         return results
 
