@@ -9,11 +9,78 @@ from pathlib import Path
 import sys
 from multiprocessing import freeze_support
 
-from config import ConfigManager
-from ui.main_window import MainWindow
+# Try to import drag and drop support
+try:
+    from tkinterdnd2 import TkinterDnD
+    DND_AVAILABLE = True
+except ImportError:
+    DND_AVAILABLE = False
 
 # Version number
-VERSION = "1.0.0"
+VERSION = "1.1.0"
+
+
+def close_pyinstaller_splash():
+    """Close PyInstaller splash screen if running as frozen exe"""
+    try:
+        import pyi_splash
+        pyi_splash.close()
+    except ImportError:
+        pass
+
+
+class SplashScreen:
+    """Loading splash screen shown during heavy imports"""
+
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("FaceFinder")
+        self.root.overrideredirect(True)
+
+        # Window size and centering
+        width, height = 300, 100
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        x = (screen_w - width) // 2
+        y = (screen_h - height) // 2
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+
+        # Always on top
+        self.root.attributes('-topmost', True)
+
+        # Styling
+        self.root.configure(bg='#2b2b2b')
+
+        # Title label
+        title = tk.Label(
+            self.root,
+            text="FaceFinder",
+            font=("Segoe UI", 16, "bold"),
+            fg='white',
+            bg='#2b2b2b'
+        )
+        title.pack(pady=(15, 5))
+
+        # Status label
+        self.status = tk.Label(
+            self.root,
+            text="Loading face recognition models...",
+            font=("Segoe UI", 9),
+            fg='#aaaaaa',
+            bg='#2b2b2b'
+        )
+        self.status.pack(pady=5)
+
+        self.root.update()
+
+    def update_status(self, text: str):
+        """Update the status message"""
+        self.status.config(text=text)
+        self.root.update()
+
+    def close(self):
+        """Close the splash screen"""
+        self.root.destroy()
 
 
 def get_script_directory() -> Path:
@@ -68,6 +135,19 @@ def set_window_icon(root: tk.Tk, script_dir: Path) -> None:
 
 def main():
     """Main application entry point"""
+    # Close PyInstaller splash (if running as exe)
+    close_pyinstaller_splash()
+
+    # Show loading splash while importing heavy modules
+    splash = SplashScreen()
+
+    # Deferred imports (face_recognition models take time to load)
+    splash.update_status("Loading face recognition models...")
+    from config import ConfigManager
+    from ui.main_window import MainWindow
+
+    splash.update_status("Initializing...")
+
     # Get script directory
     script_dir = get_script_directory()
 
@@ -75,14 +155,27 @@ def main():
     config_file = get_config_file()
     config_manager = ConfigManager(config_file)
 
-    # Create main window
-    root = tk.Tk()
+    # Close splash before showing main window
+    splash.close()
+
+    # Create main window (use TkinterDnD for drag-drop support if available)
+    if DND_AVAILABLE:
+        root = TkinterDnD.Tk()
+    else:
+        root = tk.Tk()
 
     # Set window icon
     set_window_icon(root, script_dir)
 
     # Create application
     app = MainWindow(root, config_manager, VERSION)
+
+    # Bring window to front, then allow normal behavior
+    root.attributes('-topmost', True)
+    root.update()
+    root.attributes('-topmost', False)
+    root.lift()
+    root.focus_force()
 
     # Start main loop
     root.mainloop()

@@ -5,6 +5,7 @@ A tool for sorting images based on face detection - separates images with people
 from images without people.
 """
 
+import multiprocessing
 import tkinter as tk
 from pathlib import Path
 import sys
@@ -89,4 +90,5 @@ def main():
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()

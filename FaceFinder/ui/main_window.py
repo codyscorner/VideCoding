@@ -10,9 +10,18 @@ from multiprocessing import freeze_support
 import logging
 from datetime import datetime
 
+# Try to import drag and drop support
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    DND_AVAILABLE = True
+except ImportError:
+    DND_AVAILABLE = False
+
 import face_recognition
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageGrab
+import tempfile
+import os
 
 from config import ConfigManager
 from ui.styles import ThemeManager
@@ -167,16 +176,23 @@ class MainWindow:
         ).pack(anchor='center')
 
     def _create_reference_input(self, parent: ttk.Frame) -> None:
-        """Create reference image input"""
+        """Create reference image input with drag and drop and clipboard support"""
         frame = ttk.Frame(parent, style='Dark.TFrame')
         frame.pack(fill='x', pady=(0, 10))
 
-        ttk.Label(frame, text="Reference Image:", style='Dark.TLabel').pack(anchor='w')
+        label_text = "Reference Image:"
+        hints = []
+        if DND_AVAILABLE:
+            hints.append("drag & drop")
+        hints.append("Ctrl+V to paste")
+        if hints:
+            label_text += f" ({', '.join(hints)})"
+        ttk.Label(frame, text=label_text, style='Dark.TLabel').pack(anchor='w')
 
         input_frame = tk.Frame(frame, bg=self.colors['background'])
         input_frame.pack(fill='x', pady=(2, 0))
 
-        entry = tk.Entry(
+        self.ref_entry = tk.Entry(
             input_frame,
             textvariable=self.ref_path_var,
             width=80,
@@ -186,7 +202,28 @@ class MainWindow:
             bd=1,
             relief='solid'
         )
-        entry.pack(side='left', fill='x', expand=True, padx=(0, 5))
+        self.ref_entry.pack(side='left', fill='x', expand=True, padx=(0, 5))
+
+        # Register drag and drop if available
+        if DND_AVAILABLE:
+            self.ref_entry.drop_target_register(DND_FILES)
+            self.ref_entry.dnd_bind('<<Drop>>', self._on_reference_drop)
+
+        # Paste button
+        paste_btn = tk.Button(
+            input_frame,
+            text="Paste",
+            command=self._paste_from_clipboard,
+            bg=self.colors['button_bg'],
+            fg=self.colors['button_fg'],
+            relief='raised',
+            bd=2,
+            width=5,
+            font=self.fonts['button'],
+            activebackground=self.colors['button_active'],
+            activeforeground=self.colors['button_fg']
+        )
+        paste_btn.pack(side='right', padx=(5, 0))
 
         browse_btn = tk.Button(
             input_frame,
@@ -202,6 +239,9 @@ class MainWindow:
             activeforeground=self.colors['button_fg']
         )
         browse_btn.pack(side='right')
+
+        # Bind Ctrl+V to paste from clipboard (on the main window)
+        self.root.bind('<Control-v>', lambda e: self._paste_from_clipboard())
 
     def _create_folder_input(self, parent: ttk.Frame) -> None:
         """Create search folder input"""
@@ -423,10 +463,81 @@ class MainWindow:
             filetypes=[("Images", "*.jpg *.jpeg *.png"), ("All files", "*.*")]
         )
         if file_path:
-            self.ref_path_var.set(file_path)
-            self.config.set("default_reference_image", file_path)
-            self.config.save()
-            self._add_result(f"Reference image: {Path(file_path).name}")
+            self._set_reference_image(file_path)
+
+    def _on_reference_drop(self, event) -> None:
+        """Handle drag and drop of reference image"""
+        # Get the dropped file path(s)
+        file_path = event.data
+
+        # Handle curly braces that tkdnd adds for paths with spaces
+        if file_path.startswith('{') and file_path.endswith('}'):
+            file_path = file_path[1:-1]
+
+        # If multiple files dropped, take the first one
+        if ' ' in file_path and not Path(file_path).exists():
+            # Try to split by space (for multiple files without braces)
+            file_path = file_path.split()[0]
+
+        # Validate it's an image file
+        path = Path(file_path)
+        if path.exists() and path.suffix.lower() in self.SUPPORTED_EXTENSIONS:
+            self._set_reference_image(file_path)
+        else:
+            messagebox.showwarning("Invalid File", "Please drop a valid image file (jpg, png, etc.)")
+
+    def _set_reference_image(self, file_path: str) -> None:
+        """Set the reference image path and save config"""
+        self.ref_path_var.set(file_path)
+        self.config.set("default_reference_image", file_path)
+        self.config.save()
+        self._add_result(f"Reference image: {Path(file_path).name}")
+
+    def _paste_from_clipboard(self) -> None:
+        """Paste image from clipboard as reference image"""
+        try:
+            # Try to grab image from clipboard
+            img = ImageGrab.grabclipboard()
+
+            if img is None:
+                messagebox.showinfo("No Image", "No image found in clipboard.\n\nCopy an image first (e.g., from an image editor or screenshot).")
+                return
+
+            # Handle case where clipboard contains file paths (list of strings)
+            if isinstance(img, list):
+                # It's a list of file paths
+                for item in img:
+                    if isinstance(item, str) and Path(item).exists():
+                        path = Path(item)
+                        if path.suffix.lower() in self.SUPPORTED_EXTENSIONS:
+                            self._set_reference_image(str(path))
+                            return
+                messagebox.showwarning("Invalid Clipboard", "Clipboard contains file paths but no valid images.")
+                return
+
+            # It's an actual image - save to temp file
+            if hasattr(img, 'save'):
+                # Create temp file for the clipboard image
+                temp_dir = tempfile.gettempdir()
+                temp_path = os.path.join(temp_dir, "facefinder_clipboard_ref.png")
+
+                # Convert to RGB if necessary (handles RGBA from screenshots)
+                if img.mode == 'RGBA':
+                    # Create white background and composite
+                    background = Image.new('RGB', img.size, (255, 255, 255))
+                    background.paste(img, mask=img.split()[3])
+                    img = background
+                elif img.mode != 'RGB':
+                    img = img.convert('RGB')
+
+                img.save(temp_path, 'PNG')
+                self._set_reference_image(temp_path)
+                self._add_result("(Pasted from clipboard)")
+            else:
+                messagebox.showwarning("Invalid Clipboard", "Clipboard does not contain a valid image.")
+
+        except Exception as e:
+            messagebox.showerror("Clipboard Error", f"Failed to paste from clipboard:\n{e}")
 
     def _browse_folder(self) -> None:
         """Handle search folder browse button"""
@@ -526,7 +637,8 @@ class MainWindow:
         return arr
 
     # Number of worker processes for parallel processing
-    NUM_WORKERS = 10
+    # Use ~75% of available CPU cores for better utilization
+    NUM_WORKERS = max(4, int(os.cpu_count() * 0.75)) if os.cpu_count() else 10
 
     def _perform_search(self, ref_path: str, folder: str) -> None:
         """
@@ -579,6 +691,7 @@ class MainWindow:
 
             # Search for matches using process pool (separate processes for dlib compatibility)
             matches: List[str] = []
+            matched_set: set = set()  # Track matched files to prevent duplicates
             tolerance = self.tolerance_var.get()
             processed = 0
             logger.info(f"Starting parallel search with tolerance={tolerance}")
@@ -608,7 +721,8 @@ class MainWindow:
                             logger.info(f"Progress: {processed}/{total}")
                         self._update_progress(processed, total, f"Scanned: {processed}/{total}")
 
-                        if result:
+                        if result and result not in matched_set:
+                            matched_set.add(result)
                             matches.append(result)
                             self._add_result(f"MATCH: {result}")
                     except Exception as e:
@@ -630,27 +744,29 @@ class MainWindow:
 
     def _collect_image_files(self, folder: str) -> List[Path]:
         """
-        Collect all image files from folder
+        Collect all image files from folder (deduplicated)
 
         Args:
             folder: Path to search folder
 
         Returns:
-            List of image file paths
+            List of unique image file paths
         """
         folder_path = Path(folder)
-        files: List[Path] = []
+        # Use a set with resolved paths to prevent duplicates
+        # Windows filesystem is case-insensitive, so *.jpg matches .JPG, .Jpg, etc.
+        files_set: set = set()
 
         if self.recursive_var.get():
             for ext in self.SUPPORTED_EXTENSIONS:
-                files.extend(folder_path.rglob(f"*{ext}"))
-                files.extend(folder_path.rglob(f"*{ext.upper()}"))
+                for f in folder_path.rglob(f"*{ext}"):
+                    files_set.add(f.resolve())
         else:
             for ext in self.SUPPORTED_EXTENSIONS:
-                files.extend(folder_path.glob(f"*{ext}"))
-                files.extend(folder_path.glob(f"*{ext.upper()}"))
+                for f in folder_path.glob(f"*{ext}"):
+                    files_set.add(f.resolve())
 
-        return files
+        return list(files_set)
 
     def _update_progress(self, current: int, total: int, message: str) -> None:
         """Update progress bar and label (thread-safe)"""

@@ -1,10 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
+import face_recognition_models
+import tkinterdnd2
+
+# Get the path to face_recognition_models data files
+models_path = face_recognition_models.__path__[0]
+
+# Get the path to tkinterdnd2 data files (contains platform-specific DLLs)
+tkdnd_path = tkinterdnd2.__path__[0]
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        (models_path, 'face_recognition_models'),
+        (tkdnd_path, 'tkinterdnd2'),
+    ],
     hiddenimports=[
         'face_recognition',
         'face_recognition_models',
@@ -12,6 +23,7 @@ a = Analysis(
         'PIL',
         'numpy',
         'tkinter',
+        'tkinterdnd2',
     ],
     hookspath=[],
     hooksconfig={},
@@ -23,9 +35,22 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# Splash screen shown instantly during startup
+splash = Splash(
+    'splash.png',
+    binaries=a.binaries,
+    datas=a.datas,
+    text_pos=(10, 230),
+    text_size=10,
+    text_color='white',
+    text_default='Loading...',
+)
+
 exe = EXE(
     pyz,
     a.scripts,
+    splash,
+    splash.binaries,
     [],
     exclude_binaries=True,
     name='FaceFinder',
