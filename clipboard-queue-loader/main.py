@@ -4,13 +4,15 @@ A utility for sequentially copying prompts to clipboard for use with
 web-based AI art tools like OpenArt.ai
 
 Author: Claude
-Version: 1.0.0
+Version: 1.1.0
 """
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import json
 import os
+import ctypes
+import time
 
 # =============================================================================
 # Configuration
@@ -41,6 +43,8 @@ class ClipboardQueueApp:
         self.stay_on_top = tk.BooleanVar(value=False)
         self.auto_advance = tk.BooleanVar(value=True)
         self.skip_used = tk.BooleanVar(value=False)
+        self.auto_paste = tk.BooleanVar(value=False)
+        self.select_all_before_paste = tk.BooleanVar(value=False)
 
         # Build UI
         self.create_widgets()
@@ -140,15 +144,27 @@ class ClipboardQueueApp:
         # Options
         ttk.Checkbutton(
             list_header,
-            text="Auto-advance after copy",
-            variable=self.auto_advance
-        ).grid(row=0, column=2, padx=10)
+            text="Auto-paste",
+            variable=self.auto_paste
+        ).grid(row=0, column=2, padx=5)
 
         ttk.Checkbutton(
             list_header,
-            text="Skip used prompts",
+            text="Select all first",
+            variable=self.select_all_before_paste
+        ).grid(row=0, column=3, padx=5)
+
+        ttk.Checkbutton(
+            list_header,
+            text="Auto-advance",
+            variable=self.auto_advance
+        ).grid(row=0, column=4, padx=5)
+
+        ttk.Checkbutton(
+            list_header,
+            text="Skip used",
             variable=self.skip_used
-        ).grid(row=0, column=3)
+        ).grid(row=0, column=5)
 
         # === Row 4: Listbox ===
         list_frame = ttk.Frame(self.root)
@@ -309,6 +325,39 @@ class ClipboardQueueApp:
             "Accent.TButton",
             font=("Segoe UI", 10, "bold")
         )
+
+    def send_paste_to_previous_window(self):
+        """Send Ctrl+V keystroke to the previously active window."""
+        # Virtual key codes
+        VK_CONTROL = 0x11
+        VK_V = 0x56
+        VK_A = 0x41
+        VK_MENU = 0x12  # Alt key
+        VK_TAB = 0x09
+        KEYEVENTF_KEYUP = 0x0002
+
+        # Use Alt+Tab to switch to previous window
+        ctypes.windll.user32.keybd_event(VK_MENU, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(VK_TAB, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(VK_TAB, 0, KEYEVENTF_KEYUP, 0)
+        ctypes.windll.user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+
+        # Wait for window switch to complete
+        time.sleep(0.15)
+
+        # Send Ctrl+A first if enabled (select all to replace old prompt)
+        if self.select_all_before_paste.get():
+            ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(VK_A, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(VK_A, 0, KEYEVENTF_KEYUP, 0)
+            ctypes.windll.user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+            time.sleep(0.05)
+
+        # Send Ctrl+V to paste
+        ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(VK_V, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
+        ctypes.windll.user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
 
     def bind_shortcuts(self):
         """Bind keyboard shortcuts."""
@@ -511,6 +560,10 @@ class ClipboardQueueApp:
         self.root.clipboard_clear()
         self.root.clipboard_append(prompt)
         self.root.update()
+
+        # Auto-paste if enabled
+        if self.auto_paste.get():
+            self.send_paste_to_previous_window()
 
         # Mark as used
         self.used_indices.add(self.current_index)
