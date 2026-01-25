@@ -32,7 +32,10 @@
       "Bash(python3:*)",
       "Bash(grep:*)",
       "Bash(find:*)",
-      "Bash(p:)"
+      "Bash(p:)",
+      "Bash(del \"p:\\\\AI\\\\VideCoding\\\\nul\")",
+      "Bash(del \"p:\\\\AI\\\\VideCoding\\\\FaceFinder\\\\nul\")",
+      "Bash(start python main.py)"
     ],
     "deny": [],
     "ask": []
