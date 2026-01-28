@@ -6,12 +6,117 @@ Supports MP4 and other common video formats
 import sys
 import os
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel, QStackedLayout
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel, QStackedLayout,
+    QDialog, QRadioButton, QButtonGroup, QPushButton, QHBoxLayout
 )
+import random
 from PyQt6.QtCore import Qt, QUrl, QEventLoop, QTimer
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QIcon
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
+
+class SortOrderDialog(QDialog):
+    """Dialog for choosing playlist sort order."""
+
+    SORT_FILENAME_ASC = "filename_asc"
+    SORT_FILENAME_DESC = "filename_desc"
+    SORT_DATE_ASC = "date_asc"
+    SORT_DATE_DESC = "date_desc"
+    SORT_DURATION_ASC = "duration_asc"
+    SORT_DURATION_DESC = "duration_desc"
+    SORT_RANDOM = "random"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Choose Play Order")
+        self.setModal(True)
+        self.setFixedWidth(280)
+
+        layout = QVBoxLayout(self)
+
+        # Radio buttons for sort options
+        self.button_group = QButtonGroup(self)
+
+        self.radio_filename_asc = QRadioButton("Filename (A → Z)")
+        self.radio_filename_desc = QRadioButton("Filename (Z → A)")
+        self.radio_date_asc = QRadioButton("Date created (oldest first)")
+        self.radio_date_desc = QRadioButton("Date created (newest first)")
+        self.radio_duration_asc = QRadioButton("Duration (shortest first)")
+        self.radio_duration_desc = QRadioButton("Duration (longest first)")
+        self.radio_random = QRadioButton("Random")
+
+        self.radio_filename_asc.setChecked(True)
+
+        self.button_group.addButton(self.radio_filename_asc, 0)
+        self.button_group.addButton(self.radio_filename_desc, 1)
+        self.button_group.addButton(self.radio_date_asc, 2)
+        self.button_group.addButton(self.radio_date_desc, 3)
+        self.button_group.addButton(self.radio_duration_asc, 4)
+        self.button_group.addButton(self.radio_duration_desc, 5)
+        self.button_group.addButton(self.radio_random, 6)
+
+        layout.addWidget(self.radio_filename_asc)
+        layout.addWidget(self.radio_filename_desc)
+        layout.addWidget(self.radio_date_asc)
+        layout.addWidget(self.radio_date_desc)
+        layout.addWidget(self.radio_duration_asc)
+        layout.addWidget(self.radio_duration_desc)
+        layout.addWidget(self.radio_random)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.ok_button = QPushButton("Play")
+        self.cancel_button = QPushButton("Cancel")
+        self.ok_button.clicked.connect(self.accept)
+        self.cancel_button.clicked.connect(self.reject)
+        button_layout.addWidget(self.ok_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addLayout(button_layout)
+
+        # Styling
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #0d1a2d;
+            }
+            QRadioButton {
+                color: #99bbee;
+                font-size: 13px;
+                padding: 5px;
+            }
+            QRadioButton::indicator {
+                width: 14px;
+                height: 14px;
+            }
+            QPushButton {
+                background-color: #1a3a5c;
+                color: #99bbee;
+                border: 1px solid #2a4a6d;
+                border-radius: 4px;
+                padding: 6px 16px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #2a4a6d;
+            }
+            QPushButton:pressed {
+                background-color: #3a5a7d;
+            }
+        """)
+
+    def get_sort_order(self) -> str:
+        """Return the selected sort order."""
+        button_id = self.button_group.checkedId()
+        orders = [
+            self.SORT_FILENAME_ASC,
+            self.SORT_FILENAME_DESC,
+            self.SORT_DATE_ASC,
+            self.SORT_DATE_DESC,
+            self.SORT_DURATION_ASC,
+            self.SORT_DURATION_DESC,
+            self.SORT_RANDOM,
+        ]
+        return orders[button_id]
+
 
 # Windows dark title bar support
 if sys.platform == 'win32':
@@ -62,10 +167,7 @@ class DropOverlay(QWidget):
                     video_files.append(file_path)
 
             if video_files:
-                # Build playlist and start playing
-                self.parent_player.build_playlist(video_files)
-                if self.parent_player.playlist:
-                    self.parent_player.play_current()
+                self.parent_player.handle_video_drop(video_files)
                 event.acceptProposedAction()
 
 
@@ -82,14 +184,20 @@ def get_icon_path():
 class VideoDropPlayer(QMainWindow):
     """Main window for the video drop player application."""
 
-    VERSION = "1.1.0"
+    VERSION = "1.2.0"
     SUPPORTED_FORMATS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm'}
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"Video Drop Player v{self.VERSION}")
-        self.setGeometry(100, 100, 800, 600)
+        self.resize(800, 600)
         self.setMinimumSize(400, 300)
+
+        # Center window on screen
+        screen = QApplication.primaryScreen().availableGeometry()
+        x = (screen.width() - 800) // 2
+        y = (screen.height() - 600) // 2
+        self.move(x, y)
 
         # Playlist state
         self.playlist = []  # List of (file_path, duration_ms) tuples
@@ -212,11 +320,24 @@ class VideoDropPlayer(QMainWindow):
                     video_files.append(file_path)
 
             if video_files:
-                # Build playlist and start playing
-                self.build_playlist(video_files)
+                self.handle_video_drop(video_files)
+                event.acceptProposedAction()
+
+    def handle_video_drop(self, video_files: list):
+        """Handle dropped video files - show sort dialog if multiple files."""
+        if len(video_files) == 1:
+            # Single file - play directly without dialog
+            self.build_playlist(video_files)
+            if self.playlist:
+                self.play_current()
+        else:
+            # Multiple files - show sort order dialog
+            dialog = SortOrderDialog(self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                sort_order = dialog.get_sort_order()
+                self.build_playlist(video_files, sort_order)
                 if self.playlist:
                     self.play_current()
-                event.acceptProposedAction()
 
     def is_supported_video(self, file_path: str) -> bool:
         """Check if the file is a supported video format."""
@@ -263,24 +384,58 @@ class VideoDropPlayer(QMainWindow):
 
         return duration
 
-    def build_playlist(self, file_paths: list):
+    def build_playlist(self, file_paths: list, sort_order: str = SortOrderDialog.SORT_FILENAME_ASC):
         """
-        Build a playlist from file paths, sorted by duration (shortest first).
+        Build a playlist from file paths, sorted according to sort_order.
         """
-        self.drop_label.setText("Loading video information...")
-        self.drop_label.show()
-        QApplication.processEvents()
+        # Helper to get filename from path
+        def get_filename(path):
+            return os.path.basename(path).lower()
 
-        # Get durations for all files
-        videos_with_duration = []
-        for i, path in enumerate(file_paths):
-            self.drop_label.setText(f"Scanning video {i+1}/{len(file_paths)}...")
+        # Helper to get file creation time
+        def get_creation_time(path):
+            try:
+                return os.path.getctime(path)
+            except OSError:
+                return 0
+
+        # Check if we need durations (only for duration-based sorting)
+        need_durations = sort_order in (
+            SortOrderDialog.SORT_DURATION_ASC,
+            SortOrderDialog.SORT_DURATION_DESC
+        )
+
+        if need_durations:
+            self.drop_label.setText("Loading video information...")
+            self.drop_label.show()
             QApplication.processEvents()
-            duration = self.get_video_duration(path)
-            videos_with_duration.append((path, duration))
 
-        # Sort by duration (shortest first)
-        videos_with_duration.sort(key=lambda x: x[1])
+            # Get durations for all files
+            videos_with_duration = []
+            for i, path in enumerate(file_paths):
+                self.drop_label.setText(f"Scanning video {i+1}/{len(file_paths)}...")
+                QApplication.processEvents()
+                duration = self.get_video_duration(path)
+                videos_with_duration.append((path, duration))
+        else:
+            # No duration needed, use 0 as placeholder
+            videos_with_duration = [(path, 0) for path in file_paths]
+
+        # Sort based on selected order
+        if sort_order == SortOrderDialog.SORT_FILENAME_ASC:
+            videos_with_duration.sort(key=lambda x: get_filename(x[0]))
+        elif sort_order == SortOrderDialog.SORT_FILENAME_DESC:
+            videos_with_duration.sort(key=lambda x: get_filename(x[0]), reverse=True)
+        elif sort_order == SortOrderDialog.SORT_DATE_ASC:
+            videos_with_duration.sort(key=lambda x: get_creation_time(x[0]))
+        elif sort_order == SortOrderDialog.SORT_DATE_DESC:
+            videos_with_duration.sort(key=lambda x: get_creation_time(x[0]), reverse=True)
+        elif sort_order == SortOrderDialog.SORT_DURATION_ASC:
+            videos_with_duration.sort(key=lambda x: x[1])
+        elif sort_order == SortOrderDialog.SORT_DURATION_DESC:
+            videos_with_duration.sort(key=lambda x: x[1], reverse=True)
+        elif sort_order == SortOrderDialog.SORT_RANDOM:
+            random.shuffle(videos_with_duration)
 
         self.playlist = videos_with_duration
         self.current_index = 0
