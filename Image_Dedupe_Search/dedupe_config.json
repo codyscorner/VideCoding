@@ -10,9 +10,9 @@
     "last_search_folder": "C:/Users/cody/OneDrive/Pictures/AI Pic to Vid/Pictures/1-Create",
     "duplicates_folder": "",
     "excluded_dirs": [],
-    "thumbnail_size": 150,
-    "batch_size": 512,
-    "io_workers": 24,
+    "thumbnail_size": 230,
+    "batch_size": 256,
+    "io_workers": 8,
     "use_gpu": true,
     "recursive_scan": true
 }

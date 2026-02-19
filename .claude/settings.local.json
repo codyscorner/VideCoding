@@ -35,7 +35,8 @@
       "Bash(p:)",
       "Bash(del \"p:\\\\AI\\\\VideCoding\\\\nul\")",
       "Bash(del \"p:\\\\AI\\\\VideCoding\\\\FaceFinder\\\\nul\")",
-      "Bash(start python main.py)"
+      "Bash(start python main.py)",
+      "Bash(start \"\" \"p:\\\\AI\\\\VideCoding\\\\File Rename Mover\\\\dist\\\\FileRenameMover.exe\")"
     ],
     "deny": [],
     "ask": []
