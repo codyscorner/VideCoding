@@ -145,6 +145,7 @@ class MainWindowQt(QMainWindow):
         self.template_combo = QComboBox()
         self.template_combo.addItems(self.template_manager.get_template_names())
         self.template_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.template_combo.currentTextChanged.connect(self._load_template)
         controls_layout.addWidget(self.template_combo)
 
         # Load button
