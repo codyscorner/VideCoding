@@ -3,7 +3,7 @@
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSpinBox, QCheckBox, QGroupBox, QFormLayout, QMessageBox,
-    QComboBox, QFrame
+    QComboBox, QFrame, QAbstractSpinBox, QWidget
 )
 from PySide6.QtCore import Qt, Slot
 from typing import Dict, Any, Optional
@@ -91,7 +91,12 @@ class SettingsDialog(QDialog):
         layout = QFormLayout(group)
 
         # Batch size
+        batch_row = QHBoxLayout()
+        batch_minus = QPushButton("\u2212")
+        batch_minus.setFixedSize(30, 30)
+        batch_minus.setProperty("cssClass", "spinbutton")
         self.batch_size_spin = QSpinBox()
+        self.batch_size_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.batch_size_spin.setRange(8, 1024)
         self.batch_size_spin.setSingleStep(8)
         self.batch_size_spin.setToolTip(
@@ -99,7 +104,15 @@ class SettingsDialog(QDialog):
             "Higher = faster but uses more VRAM.\n"
             "Recommended: 64-128 for 4GB VRAM, 256-512 for 8GB+, 512+ for 24GB+"
         )
-        layout.addRow("Batch Size:", self.batch_size_spin)
+        batch_plus = QPushButton("+")
+        batch_plus.setFixedSize(30, 30)
+        batch_plus.setProperty("cssClass", "spinbutton")
+        batch_minus.clicked.connect(lambda: self.batch_size_spin.stepDown())
+        batch_plus.clicked.connect(lambda: self.batch_size_spin.stepUp())
+        batch_row.addWidget(batch_minus)
+        batch_row.addWidget(self.batch_size_spin, 1)
+        batch_row.addWidget(batch_plus)
+        layout.addRow("Batch Size:", batch_row)
 
         # Batch size presets
         preset_layout = QHBoxLayout()
@@ -110,21 +123,34 @@ class SettingsDialog(QDialog):
         ]
         for label, value in presets:
             btn = QPushButton(label)
-            btn.setFixedWidth(90)
+            btn.setFixedWidth(150)
             btn.clicked.connect(lambda checked, v=value: self.batch_size_spin.setValue(v))
             preset_layout.addWidget(btn)
         preset_layout.addStretch()
         layout.addRow("Presets:", preset_layout)
 
         # IO Workers
+        io_row = QHBoxLayout()
+        io_minus = QPushButton("\u2212")
+        io_minus.setFixedSize(30, 30)
+        io_minus.setProperty("cssClass", "spinbutton")
         self.io_workers_spin = QSpinBox()
+        self.io_workers_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.io_workers_spin.setRange(1, 32)
         self.io_workers_spin.setToolTip(
             "Number of parallel threads for loading images from disk.\n"
             "Higher = faster loading but more CPU usage.\n"
             "Recommended: 4-8 for HDD, 8-16 for SSD, 12-24 for NVMe"
         )
-        layout.addRow("I/O Workers:", self.io_workers_spin)
+        io_plus = QPushButton("+")
+        io_plus.setFixedSize(30, 30)
+        io_plus.setProperty("cssClass", "spinbutton")
+        io_minus.clicked.connect(lambda: self.io_workers_spin.stepDown())
+        io_plus.clicked.connect(lambda: self.io_workers_spin.stepUp())
+        io_row.addWidget(io_minus)
+        io_row.addWidget(self.io_workers_spin, 1)
+        io_row.addWidget(io_plus)
+        layout.addRow("I/O Workers:", io_row)
 
         # IO Workers presets
         io_preset_layout = QHBoxLayout()
@@ -135,18 +161,31 @@ class SettingsDialog(QDialog):
         ]
         for label, value in io_presets:
             btn = QPushButton(label)
-            btn.setFixedWidth(90)
+            btn.setFixedWidth(150)
             btn.clicked.connect(lambda checked, v=value: self.io_workers_spin.setValue(v))
             io_preset_layout.addWidget(btn)
         io_preset_layout.addStretch()
         layout.addRow("Presets:", io_preset_layout)
 
         # Thumbnail size
+        thumb_row = QHBoxLayout()
+        thumb_minus = QPushButton("\u2212")
+        thumb_minus.setFixedSize(30, 30)
+        thumb_minus.setProperty("cssClass", "spinbutton")
         self.thumbnail_size_spin = QSpinBox()
+        self.thumbnail_size_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.thumbnail_size_spin.setRange(50, 300)
         self.thumbnail_size_spin.setSingleStep(10)
         self.thumbnail_size_spin.setToolTip("Size of thumbnail images in the grid view")
-        layout.addRow("Thumbnail Size:", self.thumbnail_size_spin)
+        thumb_plus = QPushButton("+")
+        thumb_plus.setFixedSize(30, 30)
+        thumb_plus.setProperty("cssClass", "spinbutton")
+        thumb_minus.clicked.connect(lambda: self.thumbnail_size_spin.stepDown())
+        thumb_plus.clicked.connect(lambda: self.thumbnail_size_spin.stepUp())
+        thumb_row.addWidget(thumb_minus)
+        thumb_row.addWidget(self.thumbnail_size_spin, 1)
+        thumb_row.addWidget(thumb_plus)
+        layout.addRow("Thumbnail Size:", thumb_row)
 
         parent_layout.addWidget(group)
 

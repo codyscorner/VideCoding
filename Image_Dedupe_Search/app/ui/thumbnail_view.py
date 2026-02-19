@@ -51,7 +51,7 @@ class ThumbnailView(QListWidget):
         # Set item size to accommodate thumbnail + text (filename + similarity %)
         self.setGridSize(QSize(
             self.thumbnail_size + 20,
-            self.thumbnail_size + 55
+            self.thumbnail_size + 75
         ))
 
     def _connect_signals(self) -> None:
@@ -92,9 +92,11 @@ class ThumbnailView(QListWidget):
                 item.setIcon(QIcon())
 
             # Set text (filename + optional similarity)
+            # Scale max filename length to thumbnail width (~1 char per 4px)
+            max_chars = max(20, (self.thumbnail_size + 20) // 4 * 2)
             filename = path.split('\\')[-1].split('/')[-1]
-            if len(filename) > 20:
-                filename = filename[:17] + "..."
+            if len(filename) > max_chars:
+                filename = filename[:max_chars - 3] + "..."
 
             if similarities and path in similarities:
                 score = similarities[path]
@@ -229,7 +231,7 @@ class ThumbnailView(QListWidget):
         """
         self.thumbnail_size = size
         self.setIconSize(QSize(size, size))
-        self.setGridSize(QSize(size + 20, size + 55))
+        self.setGridSize(QSize(size + 20, size + 75))
 
         # Clear cache to regenerate at new size
         self._thumbnails.clear()

@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QSplitter, QFrame, QScrollArea, QSizePolicy, QSlider
 )
 from PySide6.QtCore import Qt, Signal, Slot, QSize, QMimeData
-from PySide6.QtGui import QPixmap, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QKeyEvent
 from typing import Optional, List, Dict, Tuple
 from pathlib import Path
 import numpy as np
@@ -230,10 +230,17 @@ class SearchByImageDialog(QDialog):
         self.results_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.results_list.setWrapping(True)
         self.results_list.itemDoubleClicked.connect(self._on_result_double_clicked)
+        self.results_list.itemSelectionChanged.connect(self._on_selection_changed)
         layout.addWidget(self.results_list, 1)
 
         # Bottom buttons
         bottom_layout = QHBoxLayout()
+
+        self.delete_btn = QPushButton("Delete Selected (0)")
+        self.delete_btn.setEnabled(False)
+        self.delete_btn.clicked.connect(self._delete_selected)
+        bottom_layout.addWidget(self.delete_btn)
+
         bottom_layout.addStretch()
 
         self.close_btn = QPushButton("Close")
@@ -398,8 +405,12 @@ class SearchByImageDialog(QDialog):
 
         ref_emb = self.search_embedding.reshape(1, -1)
 
+        ref_resolved = os.path.normpath(os.path.abspath(self.search_image_path))
+
         for path, emb in embeddings.items():
-            if path == self.search_image_path or emb is None:
+            if emb is None:
+                continue
+            if os.path.normpath(os.path.abspath(path)) == ref_resolved:
                 continue
 
             score = cosine_similarity(ref_emb, emb.reshape(1, -1))[0, 0]
@@ -446,6 +457,80 @@ class SearchByImageDialog(QDialog):
                 item.setData(Qt.ItemDataRole.UserRole, path)
 
                 self.results_list.addItem(item)
+
+    def keyPressEvent(self, event: QKeyEvent):
+        """Handle Delete key to delete selected images"""
+        if event.key() == Qt.Key.Key_Delete:
+            if self.results_list.selectedItems():
+                self._delete_selected()
+                return
+        super().keyPressEvent(event)
+
+    @Slot()
+    def _on_selection_changed(self):
+        """Update delete button text with selection count"""
+        count = len(self.results_list.selectedItems())
+        self.delete_btn.setText(f"Delete Selected ({count})")
+        self.delete_btn.setEnabled(count > 0)
+
+    @Slot()
+    def _delete_selected(self):
+        """Delete selected images from disk and remove from results"""
+        selected = self.results_list.selectedItems()
+        if not selected:
+            return
+
+        paths = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
+
+        # Confirmation dialog
+        if len(paths) == 1:
+            filename = Path(paths[0]).name
+            msg = f"Are you sure you want to permanently delete:\n{filename}?"
+        else:
+            filenames = [Path(p).name for p in paths[:5]]
+            msg = f"Are you sure you want to permanently delete {len(paths)} files?\n\n"
+            msg += "\n".join(filenames)
+            if len(paths) > 5:
+                msg += f"\n...and {len(paths) - 5} more"
+
+        reply = QMessageBox.question(
+            self, "Confirm Delete", msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        deleted_paths = set()
+        errors = []
+        for path in paths:
+            try:
+                os.remove(path)
+                deleted_paths.add(path)
+            except OSError as e:
+                errors.append(f"{Path(path).name}: {e}")
+
+        # Remove deleted items from the list widget (iterate in reverse to keep indices valid)
+        for item in reversed(selected):
+            path = item.data(Qt.ItemDataRole.UserRole)
+            if path in deleted_paths:
+                self.results_list.takeItem(self.results_list.row(item))
+
+        # Update internal results list
+        self.results = [(p, s) for p, s in self.results if p not in deleted_paths]
+
+        # Update status
+        remaining = self.results_list.count()
+        self.status_label.setText(f"Deleted {len(deleted_paths)} file(s). {remaining} similar images remaining.")
+
+        if errors:
+            QMessageBox.warning(
+                self, "Delete Errors",
+                f"Successfully deleted {len(deleted_paths)} file(s).\n\nErrors:\n" + "\n".join(errors)
+            )
+
+        self._on_selection_changed()
 
     @Slot(QListWidgetItem)
     def _on_result_double_clicked(self, item: QListWidgetItem):

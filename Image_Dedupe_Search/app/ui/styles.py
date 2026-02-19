@@ -305,6 +305,52 @@ class DarkBlueTheme(Theme):
                 border: 1px solid {self.colors['foreground']};
             }}
 
+            QPushButton[cssClass="spinbutton"] {{
+                font-size: 14pt;
+                font-weight: bold;
+                padding: 0px;
+                min-width: 30px;
+                min-height: 30px;
+            }}
+
+            /* Combo Box */
+            QComboBox {{
+                background-color: {self.colors['input_bg']};
+                color: {self.colors['input_fg']};
+                border: 1px solid {self.colors['border']};
+                border-radius: 4px;
+                padding: 4px 8px;
+                padding-right: 22px;
+            }}
+
+            QComboBox:focus {{
+                border: 1px solid {self.colors['foreground']};
+            }}
+
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: center right;
+                width: 20px;
+                border: none;
+            }}
+
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid {self.colors['foreground']};
+                width: 0px;
+                height: 0px;
+            }}
+
+            QComboBox QAbstractItemView {{
+                background-color: {self.colors['input_bg']};
+                color: {self.colors['input_fg']};
+                border: 1px solid {self.colors['border']};
+                selection-background-color: {self.colors['select_bg']};
+                selection-color: {self.colors['select_fg']};
+            }}
+
             /* Check Box */
             QCheckBox {{
                 color: {self.colors['foreground']};
@@ -367,6 +413,11 @@ class DarkBlueTheme(Theme):
             /* Frame */
             QFrame {{
                 background-color: transparent;
+            }}
+
+            QFrame[frameShape="4"], QFrame[frameShape="5"] {{
+                background-color: {self.colors['border']};
+                color: {self.colors['border']};
             }}
 
             QFrame[cssClass="card"] {{
