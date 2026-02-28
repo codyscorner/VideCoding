@@ -20,7 +20,8 @@ class ConfigManager:
         "include_counter": True,
         "folder_structure": "flat",
         "custom_pattern": "{counter}",
-        "verify_hash": False
+        "verify_hash": False,
+        "last_template": ""
     }
 
     def __init__(self, config_path: Path):

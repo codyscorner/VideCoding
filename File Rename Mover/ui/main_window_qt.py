@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QProgressBar, QApplication
 )
 from PySide6.QtCore import Qt, Slot
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtGui import QFont, QIcon, QCloseEvent
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -384,6 +384,17 @@ class MainWindowQt(QMainWindow):
         if idx >= 0:
             self.folder_structure_combo.setCurrentIndex(idx)
 
+        # Restore last selected template in the dropdown (without loading it)
+        last_template = self.config.get("last_template", "")
+        if last_template:
+            idx = self.template_combo.findText(last_template)
+            if idx >= 0:
+                # Block the signal so it doesn't trigger _load_template and overwrite the
+                # config-restored settings we just applied above
+                self.template_combo.blockSignals(True)
+                self.template_combo.setCurrentIndex(idx)
+                self.template_combo.blockSignals(False)
+
         # Update visibility
         self._on_pattern_type_changed()
 
@@ -741,6 +752,8 @@ class MainWindowQt(QMainWindow):
         template = self.template_manager.get_template(template_name)
         if template:
             self._apply_settings(template)
+            self.config.set("last_template", template_name)
+            self.config.save()
             self.add_status(f"Template '{template_name}' loaded successfully.")
         else:
             QMessageBox.critical(self, "Error", f"Template '{template_name}' not found.")
@@ -758,3 +771,10 @@ class MainWindowQt(QMainWindow):
         from ui.manage_templates_dialog_qt import ManageTemplatesDialogQt
         dialog = ManageTemplatesDialogQt(self, self)
         dialog.exec()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Save all current UI state when the window is closed"""
+        self.config.update(self._get_current_settings())
+        self.config.set("last_template", self.template_combo.currentText())
+        self.config.save()
+        super().closeEvent(event)
