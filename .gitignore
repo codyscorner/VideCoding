@@ -10,6 +10,14 @@ dist/
 *.spec
 *.egg-info/
 
+# C# build artifacts
+bin/
+obj/
+*.pdb
+*.cache
+*.AssemblyInfo.cs
+*.AssemblyAttributes.cs
+
 # Virtual environments
 venv/
 .venv/
