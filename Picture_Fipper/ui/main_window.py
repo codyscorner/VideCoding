@@ -3,12 +3,13 @@ ui/main_window.py — Main application window (PySide6).
 """
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QProgressBar, QTextEdit, QFileDialog,
-    QGroupBox, QRadioButton, QButtonGroup,
+    QPushButton, QLabel, QProgressBar, QTextEdit, QFileDialog, QLineEdit,
+    QGroupBox, QRadioButton, QButtonGroup, QApplication,
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap
@@ -46,34 +47,50 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 16, 16, 16)
 
         # --- Folder picker row ---
+        layout.addWidget(QLabel("Source Folder:"))
         folder_row = QHBoxLayout()
-        self.btn_pick_folder = QPushButton("Select Folder…")
-        self.lbl_folder = QLabel("No folder selected")
-        self.lbl_folder.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        self.source_entry = QLineEdit()
+        self.source_entry.setPlaceholderText("Paste or type a folder path here…")
+        self.source_entry.textChanged.connect(self._on_folder_text_changed)
+        self.btn_pick_folder = QPushButton("...")
+        self.btn_pick_folder.setFixedWidth(40)
+        folder_row.addWidget(self.source_entry, stretch=1)
         folder_row.addWidget(self.btn_pick_folder)
-        folder_row.addWidget(self.lbl_folder, stretch=1)
         layout.addLayout(folder_row)
 
         # --- Reference face group ---
         face_group = QGroupBox("Reference Face (optional — leave blank to detect any person)")
-        face_layout = QHBoxLayout(face_group)
-        face_layout.setSpacing(8)
+        face_vlayout = QVBoxLayout(face_group)
+        face_vlayout.setSpacing(6)
 
-        self.btn_pick_face = QPushButton("Set Reference Face…")
+        # Row 1: path entry + browse + paste image + clear
+        face_row = QHBoxLayout()
+        self.face_entry = QLineEdit()
+        self.face_entry.setPlaceholderText("Paste a file path or use Browse…")
+        self.face_entry.textChanged.connect(self._on_face_path_changed)
+        self.btn_pick_face = QPushButton("...")
+        self.btn_pick_face.setFixedWidth(40)
+        self.btn_paste_face = QPushButton("Paste Image")
         self.btn_clear_face = QPushButton("Clear")
         self.btn_clear_face.setEnabled(False)
-        self.lbl_face_name = QLabel("None — will detect any person")
-        self.lbl_face_name.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        face_row.addWidget(self.face_entry, stretch=1)
+        face_row.addWidget(self.btn_pick_face)
+        face_row.addWidget(self.btn_paste_face)
+        face_row.addWidget(self.btn_clear_face)
+        face_vlayout.addLayout(face_row)
 
+        # Row 2: thumbnail + name label
+        face_info_row = QHBoxLayout()
         self.lbl_face_thumb = QLabel()
         self.lbl_face_thumb.setFixedSize(48, 48)
         self.lbl_face_thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_face_thumb.setStyleSheet("border: 1px solid #888; background: #222;")
+        self.lbl_face_name = QLabel("None — will detect any person")
+        self.lbl_face_name.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        face_info_row.addWidget(self.lbl_face_thumb)
+        face_info_row.addWidget(self.lbl_face_name, stretch=1)
+        face_vlayout.addLayout(face_info_row)
 
-        face_layout.addWidget(self.btn_pick_face)
-        face_layout.addWidget(self.btn_clear_face)
-        face_layout.addWidget(self.lbl_face_name, stretch=1)
-        face_layout.addWidget(self.lbl_face_thumb)
         layout.addWidget(face_group)
 
         # --- Target side group ---
@@ -124,33 +141,60 @@ class MainWindow(QMainWindow):
         self.btn_process.clicked.connect(self._on_process)
         self.btn_stop.clicked.connect(self._on_stop)
         self.btn_pick_face.clicked.connect(self._on_pick_face)
+        self.btn_paste_face.clicked.connect(self._on_paste_face)
         self.btn_clear_face.clicked.connect(self._on_clear_face)
 
     # ------------------------------------------------------------------
     # Slots — UI actions
     # ------------------------------------------------------------------
 
-    def _on_pick_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Select image folder")
-        if folder:
-            self.lbl_folder.setText(folder)
-            self.btn_process.setEnabled(True)
+    def _on_folder_text_changed(self, text: str) -> None:
+        has_folder = bool(text.strip())
+        self.btn_process.setEnabled(has_folder)
+        if has_folder:
             self.lbl_status.setText("Ready — press Scan & Process to start.")
 
+    def _on_pick_folder(self) -> None:
+        initial = self.source_entry.text().strip() or ""
+        folder = QFileDialog.getExistingDirectory(self, "Select image folder", initial)
+        if folder:
+            self.source_entry.setText(folder)
+
+    def _on_face_path_changed(self, text: str) -> None:
+        path = text.strip().strip('"')
+        if path and Path(path).is_file():
+            self._load_face(path)
+
     def _on_pick_face(self) -> None:
+        initial = self.face_entry.text().strip() or ""
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Select reference face image",
-            "",
+            initial,
             "Images (*.jpg *.jpeg *.png *.webp)",
         )
-        if not path:
+        if path:
+            self.face_entry.setText(path)
+
+    def _on_paste_face(self) -> None:
+        clipboard = QApplication.clipboard()
+        # Try image data first (e.g. screenshot or copied image)
+        img = clipboard.image()
+        if not img.isNull():
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            tmp.close()
+            img.save(tmp.name)
+            self.face_entry.setText(tmp.name)
             return
+        # Fall back to text (file path on clipboard)
+        text = clipboard.text().strip().strip('"')
+        if text:
+            self.face_entry.setText(text)
+
+    def _load_face(self, path: str) -> None:
         self._reference_face = path
         self.lbl_face_name.setText(Path(path).name)
         self.btn_clear_face.setEnabled(True)
-
-        # Show thumbnail
         pix = QPixmap(path).scaled(
             48, 48,
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -160,13 +204,14 @@ class MainWindow(QMainWindow):
 
     def _on_clear_face(self) -> None:
         self._reference_face = None
+        self.face_entry.clear()
         self.lbl_face_name.setText("None — will detect any person")
         self.lbl_face_thumb.clear()
         self.btn_clear_face.setEnabled(False)
 
     def _on_process(self) -> None:
-        folder = self.lbl_folder.text()
-        if not folder or folder == "No folder selected":
+        folder = self.source_entry.text().strip()
+        if not folder:
             return
 
         self.log_output.clear()
@@ -214,10 +259,11 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _set_running(self, running: bool) -> None:
-        has_folder = self.lbl_folder.text() not in ("", "No folder selected")
+        has_folder = bool(self.source_entry.text().strip())
         self.btn_process.setEnabled(not running and has_folder)
         self.btn_pick_folder.setEnabled(not running)
         self.btn_pick_face.setEnabled(not running)
+        self.btn_paste_face.setEnabled(not running)
         self.btn_clear_face.setEnabled(not running and self._reference_face is not None)
         self.btn_stop.setEnabled(running)
 
