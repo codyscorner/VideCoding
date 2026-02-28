@@ -2,9 +2,9 @@
 
 A powerful, object-oriented tool for batch renaming and moving files with sequential numbering.
 
-## Version 2.1.7
+## Version 3.2.0
 
-Enhanced version with advanced rename patterns, sorting options, folder organization features, and improved security.
+Enhanced version with advanced rename patterns, sorting options, folder organization features, template management, and improved security.
 
 ## Features
 
@@ -33,6 +33,12 @@ Enhanced version with advanced rename patterns, sorting options, folder organiza
   - Organize by date or month
 
 - **Standalone Executable**: No Python installation required
+
+- **Template System** (v3.0+):
+  - Save and load rename configurations as templates
+  - Template persistence (remembers last selected template)
+  - Quick access to frequently used settings
+  - Automatic state saving on window close
 
 ## Project Structure
 
@@ -183,6 +189,7 @@ Configuration is stored in `config.json` and includes:
 - Folder organization structure
 - Custom pattern template
 - Include counter preference
+- Last selected template (v3.2+)
 
 ## Adding New Features
 
@@ -291,6 +298,23 @@ MIT License - See [LICENSE](LICENSE) file for details.
 Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
+
+### v3.2.0 (February 28, 2026)
+- Added template persistence (remembers last selected template across sessions)
+- Implemented automatic state saving on window close
+- Template dropdown now restores last selection without auto-loading
+- Enhanced user experience with preserved workflow settings
+
+### v3.1.0 (February 2026)
+- Added template management system
+- Save and load rename configurations as templates
+- Quick access to frequently used settings
+
+### v3.0.0 (February 2026)
+- Migrated UI from Tkinter to PySide6 (Qt6)
+- Modern, professional interface
+- Enhanced template management dialog
+- Improved settings dialog
 
 ### v2.1.7 (January 9, 2026)
 - Fixed config initialization bug (ConfigManager._load calling save before _config existed)
