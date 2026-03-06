@@ -2,7 +2,7 @@
 
 An intelligent image orientation tool that automatically detects people in photos and flips images to ensure they face the desired direction.
 
-## Version 1.1.0
+## Version 1.2.0
 
 A desktop GUI application that scans folders of images, detects person positions using AI, and optionally flips images so people face a consistent direction.
 
@@ -111,7 +111,7 @@ python main.py
    - Log output displays detailed processing information
 
 6. **Find Results**:
-   - Processed images saved to `output/` subfolder in source directory
+   - Processed images saved to `Flipped/` subfolder inside the source directory
    - Original filenames preserved
 
 ### Processing Logic
@@ -174,6 +174,10 @@ The application automatically:
 - **Content Creation**: Prepare images for slideshows or videos
 
 ## Version History
+
+### v1.2.0 (March 6, 2026)
+- Source folder scan no longer recurses into subfolders
+- Output now saves to a `Flipped/` folder inside the source directory
 
 ### v1.1.0 (February 28, 2026)
 - Added direct path entry for source folder

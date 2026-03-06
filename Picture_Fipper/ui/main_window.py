@@ -17,13 +17,12 @@ from PySide6.QtGui import QPixmap
 from core.worker import FlipWorker
 
 _MODEL_PATH = str(Path(__file__).parent.parent / "models" / "yolov8n.pt")
-_OUTPUT_DIR = str(Path(__file__).parent.parent / "output")
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Picture Flipper v1.0.0 — Auto Orientation Fixer")
+        self.setWindowTitle("Picture Flipper v1.2.0 — Auto Orientation Fixer")
         self.setMinimumSize(700, 560)
         self._worker: FlipWorker | None = None
         self._reference_face: str | None = None
@@ -223,7 +222,7 @@ class MainWindow(QMainWindow):
 
         self._worker = FlipWorker(
             folder=folder,
-            output_dir=_OUTPUT_DIR,
+            output_dir=str(Path(folder) / "Flipped"),
             model_path=_MODEL_PATH,
             reference_face=self._reference_face,
             target_side=target_side,
