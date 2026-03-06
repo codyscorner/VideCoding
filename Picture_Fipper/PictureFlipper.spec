@@ -37,6 +37,8 @@ HIDDEN = [
     'tensorflow', 'tf_keras',
     # scipy (distance metrics used by deepface)
     'scipy', 'scipy.spatial', 'scipy.spatial.distance',
+    # pandas (required by deepface internals)
+    'pandas',
 ]
 
 a = Analysis(
@@ -47,8 +49,10 @@ a = Analysis(
         # deepface package data (detection / recognition model configs)
         (str(deepface_pkg), 'deepface'),
         # ultralytics cfg + assets
-        (str(Path(sys.prefix) / 'Lib/site-packages/ultralytics/cfg'), 'ultralytics/cfg'),
-        (str(Path(sys.prefix) / 'Lib/site-packages/ultralytics/assets'), 'ultralytics/assets'),
+        (str(Path(__import__('ultralytics').__file__).parent / 'cfg'), 'ultralytics/cfg'),
+        (str(Path(__import__('ultralytics').__file__).parent / 'assets'), 'ultralytics/assets'),
+        # OpenCV Haar cascade XML files (required by deepface opencv detector)
+        (str(Path(__import__('cv2').__file__).parent / 'data'), 'cv2/data'),
     ],
     hiddenimports=HIDDEN,
     hookspath=[],
@@ -56,7 +60,7 @@ a = Analysis(
     runtime_hooks=[str(HERE / 'runtime_hook.py')],
     excludes=[
         # Keep bundle lean — we don't use these
-        'matplotlib', 'pandas', 'sklearn', 'IPython',
+        'matplotlib', 'sklearn', 'IPython',
         'notebook', 'jupyter', 'sphinx', 'pytest',
         'tkinter', '_tkinter',
     ],

@@ -2,7 +2,7 @@
 
 An intelligent image orientation tool that automatically detects people in photos and flips images to ensure they face the desired direction.
 
-## Version 1.2.0
+## Version 1.3.0
 
 A desktop GUI application that scans folders of images, detects person positions using AI, and optionally flips images so people face a consistent direction.
 
@@ -174,6 +174,13 @@ The application automatically:
 - **Content Creation**: Prepare images for slideshows or videos
 
 ## Version History
+
+### v1.3.0 (March 6, 2026)
+- Fixed frozen EXE: bundled OpenCV Haar cascade XML files correctly
+- Fixed frozen EXE: added pandas to bundle (required by DeepFace)
+- Removed splash screen (was causing Tcl/Tk DLL errors on launch)
+- Added step-by-step log messages during face mode model loading
+- UI now logs folder selection, face selection, and process start to log window
 
 ### v1.2.0 (March 6, 2026)
 - Source folder scan no longer recurses into subfolders

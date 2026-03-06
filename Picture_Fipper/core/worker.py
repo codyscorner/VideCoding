@@ -108,25 +108,25 @@ class FlipWorker(QThread):
     # ------------------------------------------------------------------
 
     def _run_face_mode(self) -> None:
-        from core.face_matcher import FaceMatcher
-
         flipped = skipped = 0
         ref_name = Path(self.reference_face).name
         self.log_message.emit(f"Mode: match reference face ({ref_name}) → target side: {self.target_side}")
-        self.log_message.emit("Loading DeepFace model weights (first run may take a moment)…")
+        self.log_message.emit("Step 1/4: Importing DeepFace + TensorFlow…")
         self.status_message.emit("Loading DeepFace model weights…")
 
         try:
-            matcher = FaceMatcher(self.reference_face)
+            from core.face_matcher import FaceMatcher as _FM  # trigger TF import here
+            self.log_message.emit("Step 2/4: TensorFlow loaded. Encoding reference face…")
+            matcher = _FM(self.reference_face)
+            self.log_message.emit("Step 3/4: Reference face encoded.")
         except Exception as exc:
             self.log_message.emit(f"[ERROR] Could not encode reference face: {exc}")
             self.status_message.emit("Error — could not load model.")
             self.finished.emit(0, 0)
             return
 
-        self.log_message.emit("Model ready. Encoding reference face…")
         self.status_message.emit("Reference face encoded. Starting scan…")
-        self.log_message.emit("Reference face encoded. Scanning folder…")
+        self.log_message.emit("Step 4/4: Scanning folder…")
         images = scan_folder(self.folder)
         total = len(images)
 

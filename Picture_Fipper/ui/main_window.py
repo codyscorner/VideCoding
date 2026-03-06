@@ -22,7 +22,7 @@ _MODEL_PATH = str(Path(__file__).parent.parent / "models" / "yolov8n.pt")
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Picture Flipper v1.2.0 — Auto Orientation Fixer")
+        self.setWindowTitle("Picture Flipper v1.3.0 — Auto Orientation Fixer")
         self.setMinimumSize(700, 560)
         self._worker: FlipWorker | None = None
         self._reference_face: str | None = None
@@ -152,6 +152,7 @@ class MainWindow(QMainWindow):
         self.btn_process.setEnabled(has_folder)
         if has_folder:
             self.lbl_status.setText("Ready — press Scan & Process to start.")
+            self.append_log(f"Source folder set: {text.strip()}")
 
     def _on_pick_folder(self) -> None:
         initial = self.source_entry.text().strip() or ""
@@ -194,6 +195,7 @@ class MainWindow(QMainWindow):
         self._reference_face = path
         self.lbl_face_name.setText(Path(path).name)
         self.btn_clear_face.setEnabled(True)
+        self.append_log(f"Reference face set: {path}")
         pix = QPixmap(path).scaled(
             48, 48,
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -207,6 +209,7 @@ class MainWindow(QMainWindow):
         self.lbl_face_name.setText("None — will detect any person")
         self.lbl_face_thumb.clear()
         self.btn_clear_face.setEnabled(False)
+        self.append_log("Reference face cleared — will detect any person.")
 
     def _on_process(self) -> None:
         folder = self.source_entry.text().strip()
@@ -219,6 +222,9 @@ class MainWindow(QMainWindow):
         self._set_running(True)
 
         target_side = "right" if self.radio_right.isChecked() else "left"
+        self.append_log(f"Starting — source: {folder}")
+        self.append_log(f"Output: {str(Path(folder) / 'Flipped')}")
+        self.append_log(f"Target side: {target_side}")
 
         self._worker = FlipWorker(
             folder=folder,
