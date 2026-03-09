@@ -1,12 +1,13 @@
 # Video Drop Player
 
-A simple drag-and-drop video player for Windows with playlist support and customizable play order.
+A simple drag-and-drop video and image player for Windows with playlist support and customizable play order.
 
 ## Features
 
-- **Drag & Drop**: Simply drag video files onto the window to play
-- **Playlist Support**: Drop multiple files to create a playlist
-- **Customizable Play Order**: When dropping multiple files, choose how to sort them:
+- **Drag & Drop**: Simply drag video or image files onto the window to play/view
+- **Playlist Support**: Drop multiple video files to create a playlist
+- **Image Viewer**: Drop one or more images; use arrow keys to navigate between them
+- **Customizable Play Order**: When dropping multiple video files, choose how to sort them:
   - Filename (A-Z or Z-A)
   - Date created (oldest or newest first)
   - Duration (shortest or longest first)
@@ -16,9 +17,13 @@ A simple drag-and-drop video player for Windows with playlist support and custom
 
 ## Supported Formats
 
-MP4, AVI, MKV, MOV, WMV, FLV, WebM
+**Video:** MP4, AVI, MKV, MOV, WMV, FLV, WebM
+
+**Image:** JPG, PNG, GIF, BMP, WebP, TIFF
 
 ## Keyboard Shortcuts
+
+### Video Mode
 
 | Key | Action |
 |-----|--------|
@@ -31,6 +36,14 @@ MP4, AVI, MKV, MOV, WMV, FLV, WebM
 | M | Toggle mute |
 | N | Next video in playlist |
 | P | Previous video in playlist |
+
+### Image Mode
+
+| Key | Action |
+|-----|--------|
+| Left Arrow | Previous image |
+| Right Arrow | Next image |
+| Escape | Return to drop screen |
 
 ## Installation
 
@@ -57,4 +70,4 @@ pyinstaller VideoDropPlayer.spec --noconfirm
 
 ## Version
 
-1.2.0
+1.3.1

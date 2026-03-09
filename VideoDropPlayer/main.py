@@ -1,6 +1,6 @@
 """
-Video Drop Player - A simple drag-and-drop video player
-Supports MP4 and other common video formats
+Video Drop Player - A simple drag-and-drop video and image player
+Supports MP4 and other common video formats, plus common image formats
 """
 
 import sys
@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
 )
 import random
 from PyQt6.QtCore import Qt, QUrl, QEventLoop, QTimer
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QIcon
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QIcon, QPixmap
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 
@@ -148,8 +148,11 @@ class DropOverlay(QWidget):
         """Handle drag enter events."""
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
-            if urls and self.parent_player.is_supported_video(urls[0].toLocalFile()):
-                event.acceptProposedAction()
+            if urls:
+                file_path = urls[0].toLocalFile()
+                if (self.parent_player.is_supported_video(file_path) or
+                        self.parent_player.is_supported_image(file_path)):
+                    event.acceptProposedAction()
 
     def dragMoveEvent(self, event):
         """Handle drag move events."""
@@ -159,15 +162,20 @@ class DropOverlay(QWidget):
         """Handle drop events."""
         urls = event.mimeData().urls()
         if urls:
-            # Collect all supported video files
             video_files = []
+            image_files = []
             for url in urls:
                 file_path = url.toLocalFile()
                 if self.parent_player.is_supported_video(file_path):
                     video_files.append(file_path)
+                elif self.parent_player.is_supported_image(file_path):
+                    image_files.append(file_path)
 
             if video_files:
                 self.parent_player.handle_video_drop(video_files)
+                event.acceptProposedAction()
+            elif image_files:
+                self.parent_player.handle_image_drop(image_files)
                 event.acceptProposedAction()
 
 
@@ -181,11 +189,40 @@ def get_icon_path():
         return os.path.join(os.path.dirname(__file__), 'app_icon.ico')
 
 
+class ImageViewer(QLabel):
+    """A label-based image viewer that scales images to fit."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet("background-color: #0a1628;")
+        self._pixmap = None
+
+    def set_image(self, file_path: str):
+        """Load and display an image."""
+        self._pixmap = QPixmap(file_path)
+        self._scale_to_fit()
+
+    def _scale_to_fit(self):
+        if self._pixmap and not self._pixmap.isNull():
+            scaled = self._pixmap.scaled(
+                self.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.setPixmap(scaled)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._scale_to_fit()
+
+
 class VideoDropPlayer(QMainWindow):
     """Main window for the video drop player application."""
 
-    VERSION = "1.2.0"
+    VERSION = "1.3.1"
     SUPPORTED_FORMATS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm'}
+    SUPPORTED_IMAGE_FORMATS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif'}
 
     def __init__(self):
         super().__init__()
@@ -199,9 +236,21 @@ class VideoDropPlayer(QMainWindow):
         y = (screen.height() - 600) // 2
         self.move(x, y)
 
-        # Playlist state
+        # Playlist state (videos)
         self.playlist = []  # List of (file_path, duration_ms) tuples
         self.current_index = 0
+
+        # Image viewer state
+        self.image_list = []
+        self.image_index = 0
+        self._mode = 'drop'  # 'drop', 'video', 'image'
+
+        # Double-tap left arrow detection for previous video
+        self._left_tap_timer = QTimer()
+        self._left_tap_timer.setSingleShot(True)
+        self._left_tap_timer.setInterval(400)  # ms window for double-tap
+        self._left_tap_timer.timeout.connect(self._left_seek)
+        self._left_tap_pending = False
 
         # Set window icon
         icon_path = get_icon_path()
@@ -222,11 +271,14 @@ class VideoDropPlayer(QMainWindow):
         self.video_widget = QVideoWidget()
         self.video_widget.setStyleSheet("background-color: #0a1628;")
 
+        # Create image viewer
+        self.image_viewer = ImageViewer()
+
         # Create drop overlay (top layer - always captures drops)
         self.drop_overlay = DropOverlay(self)
 
         # Create drop hint label (shown when no video is playing)
-        self.drop_label = QLabel("Drag and drop a video file here")
+        self.drop_label = QLabel("Drag and drop a video or image file here")
         self.drop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.drop_label.setStyleSheet("""
             QLabel {
@@ -241,12 +293,12 @@ class VideoDropPlayer(QMainWindow):
 
         # Add widgets to stacked layout (order matters: bottom to top)
         self.stacked_layout.addWidget(self.video_widget)
+        self.stacked_layout.addWidget(self.image_viewer)
         self.stacked_layout.addWidget(self.drop_label)
         self.stacked_layout.addWidget(self.drop_overlay)
 
-        # Initially show label on top
-        self.drop_label.show()
-        self.video_widget.hide()
+        # Initially show drop screen
+        self._show_drop_screen()
 
         # Set up media player
         self.media_player = QMediaPlayer()
@@ -267,8 +319,6 @@ class VideoDropPlayer(QMainWindow):
 
         # Apply dark blue title bar on Windows
         if sys.platform == 'win32':
-            # Color format is BGR (0x00BBGGRR)
-            # #0a1628 -> R=0x0a, G=0x16, B=0x28 -> BGR = 0x28160a
             self._apply_title_bar_color()
 
     def _apply_title_bar_color(self):
@@ -278,22 +328,42 @@ class VideoDropPlayer(QMainWindow):
             # BGR color: #0a1628 -> 0x28160a
             set_dark_title_bar(hwnd, 0x28160a)
 
+    def _show_drop_screen(self):
+        self._mode = 'drop'
+        self.video_widget.hide()
+        self.image_viewer.hide()
+        self.drop_label.show()
+
+    def _show_video_screen(self):
+        self._mode = 'video'
+        self.image_viewer.hide()
+        self.drop_label.hide()
+        self.video_widget.show()
+
+    def _show_image_screen(self):
+        self._mode = 'image'
+        self.video_widget.hide()
+        self.drop_label.hide()
+        self.image_viewer.show()
+
     def dragEnterEvent(self, event: QDragEnterEvent):
         """Handle drag enter events."""
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
-            if urls and self.is_supported_video(urls[0].toLocalFile()):
-                event.acceptProposedAction()
-                self.drop_label.setStyleSheet("""
-                    QLabel {
-                        color: #99bbee;
-                        font-size: 18px;
-                        background-color: #152a45;
-                        border: 2px dashed #3a6a9d;
-                        border-radius: 10px;
-                        padding: 50px;
-                    }
-                """)
+            if urls:
+                file_path = urls[0].toLocalFile()
+                if self.is_supported_video(file_path) or self.is_supported_image(file_path):
+                    event.acceptProposedAction()
+                    self.drop_label.setStyleSheet("""
+                        QLabel {
+                            color: #99bbee;
+                            font-size: 18px;
+                            background-color: #152a45;
+                            border: 2px dashed #3a6a9d;
+                            border-radius: 10px;
+                            padding: 50px;
+                        }
+                    """)
 
     def dragLeaveEvent(self, event):
         """Handle drag leave events."""
@@ -312,26 +382,29 @@ class VideoDropPlayer(QMainWindow):
         """Handle drop events."""
         urls = event.mimeData().urls()
         if urls:
-            # Collect all supported video files
             video_files = []
+            image_files = []
             for url in urls:
                 file_path = url.toLocalFile()
                 if self.is_supported_video(file_path):
                     video_files.append(file_path)
+                elif self.is_supported_image(file_path):
+                    image_files.append(file_path)
 
             if video_files:
                 self.handle_video_drop(video_files)
+                event.acceptProposedAction()
+            elif image_files:
+                self.handle_image_drop(image_files)
                 event.acceptProposedAction()
 
     def handle_video_drop(self, video_files: list):
         """Handle dropped video files - show sort dialog if multiple files."""
         if len(video_files) == 1:
-            # Single file - play directly without dialog
             self.build_playlist(video_files)
             if self.playlist:
                 self.play_current()
         else:
-            # Multiple files - show sort order dialog
             dialog = SortOrderDialog(self)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 sort_order = dialog.get_sort_order()
@@ -339,9 +412,41 @@ class VideoDropPlayer(QMainWindow):
                 if self.playlist:
                     self.play_current()
 
+    def handle_image_drop(self, image_files: list):
+        """Handle dropped image files."""
+        self.media_player.stop()
+        self.media_player.setSource(QUrl())
+        self.playlist = []
+
+        # Sort by filename ascending
+        self.image_list = sorted(image_files, key=lambda p: os.path.basename(p).lower())
+        self.image_index = 0
+        self.show_current_image()
+
+    def show_current_image(self):
+        """Display the current image."""
+        if not self.image_list:
+            return
+        file_path = self.image_list[self.image_index]
+        self.image_viewer.set_image(file_path)
+        self._show_image_screen()
+
+        filename = os.path.basename(file_path)
+        if len(self.image_list) > 1:
+            self.setWindowTitle(
+                f"Video Drop Player v{self.VERSION} - "
+                f"Image {self.image_index + 1}/{len(self.image_list)} - {filename}"
+            )
+        else:
+            self.setWindowTitle(f"Video Drop Player v{self.VERSION} - {filename}")
+
     def is_supported_video(self, file_path: str) -> bool:
         """Check if the file is a supported video format."""
         return any(file_path.lower().endswith(fmt) for fmt in self.SUPPORTED_FORMATS)
+
+    def is_supported_image(self, file_path: str) -> bool:
+        """Check if the file is a supported image format."""
+        return any(file_path.lower().endswith(fmt) for fmt in self.SUPPORTED_IMAGE_FORMATS)
 
     def get_video_duration(self, file_path: str) -> int:
         """
@@ -363,7 +468,6 @@ class VideoDropPlayer(QMainWindow):
 
         def on_status_changed(status):
             if status == QMediaPlayer.MediaStatus.LoadedMedia:
-                # Give a moment for duration to be available
                 QTimer.singleShot(50, loop.quit)
             elif status in (QMediaPlayer.MediaStatus.InvalidMedia,
                            QMediaPlayer.MediaStatus.NoMedia):
@@ -375,31 +479,24 @@ class VideoDropPlayer(QMainWindow):
 
         probe_player.setSource(QUrl.fromLocalFile(file_path))
 
-        # Timeout after 3 seconds
         QTimer.singleShot(3000, loop.quit)
         loop.exec()
 
-        # Clean up
         probe_player.setSource(QUrl())
 
         return duration
 
     def build_playlist(self, file_paths: list, sort_order: str = SortOrderDialog.SORT_FILENAME_ASC):
-        """
-        Build a playlist from file paths, sorted according to sort_order.
-        """
-        # Helper to get filename from path
+        """Build a playlist from file paths, sorted according to sort_order."""
         def get_filename(path):
             return os.path.basename(path).lower()
 
-        # Helper to get file creation time
         def get_creation_time(path):
             try:
                 return os.path.getctime(path)
             except OSError:
                 return 0
 
-        # Check if we need durations (only for duration-based sorting)
         need_durations = sort_order in (
             SortOrderDialog.SORT_DURATION_ASC,
             SortOrderDialog.SORT_DURATION_DESC
@@ -410,7 +507,6 @@ class VideoDropPlayer(QMainWindow):
             self.drop_label.show()
             QApplication.processEvents()
 
-            # Get durations for all files
             videos_with_duration = []
             for i, path in enumerate(file_paths):
                 self.drop_label.setText(f"Scanning video {i+1}/{len(file_paths)}...")
@@ -418,10 +514,8 @@ class VideoDropPlayer(QMainWindow):
                 duration = self.get_video_duration(path)
                 videos_with_duration.append((path, duration))
         else:
-            # No duration needed, use 0 as placeholder
             videos_with_duration = [(path, 0) for path in file_paths]
 
-        # Sort based on selected order
         if sort_order == SortOrderDialog.SORT_FILENAME_ASC:
             videos_with_duration.sort(key=lambda x: get_filename(x[0]))
         elif sort_order == SortOrderDialog.SORT_FILENAME_DESC:
@@ -442,16 +536,12 @@ class VideoDropPlayer(QMainWindow):
 
     def play_video(self, file_path: str):
         """Play the specified video file."""
-        # Hide label, show video widget
-        self.drop_label.hide()
-        self.video_widget.show()
+        self._show_video_screen()
 
-        # Set and play the video
         self.media_player.setSource(QUrl.fromLocalFile(file_path))
         self.media_player.play()
 
-        # Update window title with filename and playlist position
-        filename = file_path.split('/')[-1].split('\\')[-1]
+        filename = os.path.basename(file_path)
         if len(self.playlist) > 1:
             self.setWindowTitle(
                 f"Video Drop Player v{self.VERSION} - "
@@ -472,7 +562,6 @@ class VideoDropPlayer(QMainWindow):
         if self.current_index < len(self.playlist):
             self.play_current()
         else:
-            # End of playlist
             self.release_video()
 
     def play_previous(self):
@@ -484,65 +573,80 @@ class VideoDropPlayer(QMainWindow):
     def on_media_status_changed(self, status):
         """Handle media status changes."""
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            # Video finished - play next or return to drop screen
             self.play_next()
 
     def release_video(self):
         """Stop playback and release the file handle."""
         self.media_player.stop()
-        self.media_player.setSource(QUrl())  # Clear source to release file handle
+        self.media_player.setSource(QUrl())
         self.playlist = []
         self.current_index = 0
-        self.video_widget.hide()
-        self.drop_label.setText("Drag and drop a video file here")
-        self.drop_label.show()
+        self.image_list = []
+        self.image_index = 0
+        self.drop_label.setText("Drag and drop a video or image file here")
+        self._show_drop_screen()
         self.setWindowTitle(f"Video Drop Player v{self.VERSION}")
 
     def on_error(self, error, error_string):
         """Handle media player errors."""
         print(f"Error: {error_string}")
-        self.media_player.setSource(QUrl())  # Release file handle
-        self.drop_label.setText(f"Error: {error_string}\n\nDrag and drop another video file")
-        self.drop_label.show()
-        self.video_widget.hide()
+        self.media_player.setSource(QUrl())
+        self.drop_label.setText(f"Error: {error_string}\n\nDrag and drop another file")
+        self._show_drop_screen()
+
+    def _left_seek(self):
+        """Seek backward 5 seconds — called after single left-tap timeout."""
+        self._left_tap_pending = False
+        pos = self.media_player.position() - 5000
+        self.media_player.setPosition(max(0, pos))
 
     def keyPressEvent(self, event):
         """Handle key press events for playback control."""
-        if event.key() == Qt.Key.Key_Space:
-            # Toggle play/pause
-            if self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-                self.media_player.pause()
-            else:
-                self.media_player.play()
-        elif event.key() == Qt.Key.Key_Escape:
-            # Stop and release file
+        key = event.key()
+
+        if key == Qt.Key.Key_Escape:
             self.release_video()
-        elif event.key() == Qt.Key.Key_Left:
-            # Seek backward 5 seconds
-            pos = self.media_player.position() - 5000
-            self.media_player.setPosition(max(0, pos))
-        elif event.key() == Qt.Key.Key_Right:
-            # Seek forward 5 seconds
-            pos = self.media_player.position() + 5000
-            self.media_player.setPosition(pos)
-        elif event.key() == Qt.Key.Key_Up:
-            # Volume up
-            volume = min(1.0, self.audio_output.volume() + 0.1)
-            self.audio_output.setVolume(volume)
-        elif event.key() == Qt.Key.Key_Down:
-            # Volume down
-            volume = max(0.0, self.audio_output.volume() - 0.1)
-            self.audio_output.setVolume(volume)
-        elif event.key() == Qt.Key.Key_M:
-            # Toggle mute
-            self.audio_output.setMuted(not self.audio_output.isMuted())
-        elif event.key() == Qt.Key.Key_N:
-            # Next video in playlist
-            if self.playlist and self.current_index < len(self.playlist) - 1:
-                self.play_next()
-        elif event.key() == Qt.Key.Key_P:
-            # Previous video in playlist
-            self.play_previous()
+
+        elif self._mode == 'image':
+            if key == Qt.Key.Key_Right and self.image_index < len(self.image_list) - 1:
+                self.image_index += 1
+                self.show_current_image()
+            elif key == Qt.Key.Key_Left and self.image_index > 0:
+                self.image_index -= 1
+                self.show_current_image()
+
+        elif self._mode == 'video':
+            if key == Qt.Key.Key_Space:
+                if self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                    self.media_player.pause()
+                else:
+                    self.media_player.play()
+            elif key == Qt.Key.Key_Left:
+                if self._left_tap_pending:
+                    # Double-tap: go to previous video
+                    self._left_tap_timer.stop()
+                    self._left_tap_pending = False
+                    self.play_previous()
+                else:
+                    # First tap: seek back after timeout if no second tap
+                    self._left_tap_pending = True
+                    self._left_tap_timer.start()
+            elif key == Qt.Key.Key_Right:
+                pos = self.media_player.position() + 5000
+                self.media_player.setPosition(pos)
+            elif key == Qt.Key.Key_Up:
+                volume = min(1.0, self.audio_output.volume() + 0.1)
+                self.audio_output.setVolume(volume)
+            elif key == Qt.Key.Key_Down:
+                volume = max(0.0, self.audio_output.volume() - 0.1)
+                self.audio_output.setVolume(volume)
+            elif key == Qt.Key.Key_M:
+                self.audio_output.setMuted(not self.audio_output.isMuted())
+            elif key == Qt.Key.Key_N:
+                if self.playlist and self.current_index < len(self.playlist) - 1:
+                    self.play_next()
+            elif key == Qt.Key.Key_P:
+                self.play_previous()
 
 
 def main():
