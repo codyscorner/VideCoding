@@ -12,6 +12,7 @@ $script:hourlyUploadBytes = 0
 $script:hourlyDownloadBytes = 0
 $script:hourlySeconds = 0
 $script:lastLogHour = -1
+$script:lastKnownConnected = $null  # tracks external adapter state changes
 
 # Resolve log folder next to the EXE (works for both compiled EXE and raw PS1)
 $script:exeDir = [System.AppDomain]::CurrentDomain.BaseDirectory.TrimEnd('\')
@@ -121,7 +122,7 @@ function Write-HourlyLog {
 
 # Create the form
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Network Control"
+$form.Text = "Network Control v1.2"
 $form.Size = New-Object System.Drawing.Size(512, 512)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedSingle"
@@ -182,7 +183,7 @@ $form.Controls.Add($uploadLabel)
 $uploadValue = New-Object System.Windows.Forms.Label
 $uploadValue.Location = New-Object System.Drawing.Point(280, $statsY)
 $uploadValue.Size = New-Object System.Drawing.Size(192, 20)
-$uploadValue.Text = "0 KB/s"
+$uploadValue.Text = "0.0000 MB/s"
 $uploadValue.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 $uploadValue.ForeColor = [System.Drawing.Color]::FromArgb(16, 185, 129)
 $uploadValue.TextAlign = "MiddleRight"
@@ -200,7 +201,7 @@ $form.Controls.Add($downloadLabel)
 $downloadValue = New-Object System.Windows.Forms.Label
 $downloadValue.Location = New-Object System.Drawing.Point(280, ($statsY + 35))
 $downloadValue.Size = New-Object System.Drawing.Size(192, 20)
-$downloadValue.Text = "0 KB/s"
+$downloadValue.Text = "0.0000 MB/s"
 $downloadValue.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 $downloadValue.ForeColor = [System.Drawing.Color]::FromArgb(59, 130, 246)
 $downloadValue.TextAlign = "MiddleRight"
@@ -262,6 +263,9 @@ $toggleButton.Add_Click({
             $toggleButton.Text = "OFF"
             $toggleButton.BackColor = [System.Drawing.Color]::FromArgb(239, 68, 68)
         }
+        $statusStr = if ($script:isConnected) { "Connected" } else { "Disconnected" }
+        Write-LogLine ("  [STATUS] {0}  Adapter={1}  Status={2}  Source=UserToggle" -f (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"), $script:adapterName, $statusStr)
+        Write-LogLine ""
     } else {
         $script:isConnected = -not $script:isConnected  # Revert on failure
     }
@@ -286,8 +290,38 @@ $timer.Add_Tick({
         $script:hourlyUploadBytes   = 0
         $script:hourlyDownloadBytes = 0
         $script:hourlySeconds       = 0
+
+        # Reset daily totals at midnight
+        if ($hour -eq 0) {
+            $script:dailyUploadBytes   = 0
+            $script:dailyDownloadBytes = 0
+            $dailyUploadValue.Text   = "0.00 MB"
+            $dailyDownloadValue.Text = "0.00 MB"
+        }
     }
     $script:lastLogHour = $hour
+
+    # Detect external adapter state changes (e.g., Windows re-enabling overnight)
+    if ($script:adapterName) {
+        $actualStatus = (Get-NetAdapter -Name $script:adapterName -ErrorAction SilentlyContinue).Status
+        $actuallyUp   = ($actualStatus -eq "Up")
+        if ($script:lastKnownConnected -ne $null -and $actuallyUp -ne $script:lastKnownConnected) {
+            $script:isConnected = $actuallyUp
+            if ($actuallyUp) {
+                $toggleButton.Text     = "ON"
+                $toggleButton.BackColor = [System.Drawing.Color]::FromArgb(16, 185, 129)
+                $script:lastUploadBytes   = 0
+                $script:lastDownloadBytes = 0
+            } else {
+                $toggleButton.Text     = "OFF"
+                $toggleButton.BackColor = [System.Drawing.Color]::FromArgb(239, 68, 68)
+            }
+            $statusStr = if ($actuallyUp) { "Connected" } else { "Disconnected" }
+            Write-LogLine ("  [STATUS] {0}  Adapter={1}  Status={2}  Source=ExternalChange" -f (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"), $script:adapterName, $statusStr)
+            Write-LogLine ""
+        }
+        $script:lastKnownConnected = $actuallyUp
+    }
 
     if ($script:isConnected) {
         $stats = Get-NetworkStats -adapterName $script:adapterName
@@ -296,11 +330,11 @@ $timer.Add_Tick({
             $uploadDelta   = [Math]::Max(0, $stats.Upload   - $script:lastUploadBytes)
             $downloadDelta = [Math]::Max(0, $stats.Download - $script:lastDownloadBytes)
 
-            $uploadSpeed   = $uploadDelta   / 1KB
-            $downloadSpeed = $downloadDelta / 1KB
+            $uploadSpeed   = $uploadDelta   / 1MB
+            $downloadSpeed = $downloadDelta / 1MB
 
-            $uploadValue.Text   = "{0:F1} KB/s" -f $uploadSpeed
-            $downloadValue.Text = "{0:F1} KB/s" -f $downloadSpeed
+            $uploadValue.Text   = "{0:F4} MB/s" -f $uploadSpeed
+            $downloadValue.Text = "{0:F4} MB/s" -f $downloadSpeed
 
             $script:dailyUploadBytes   += $uploadDelta
             $script:dailyDownloadBytes += $downloadDelta
@@ -316,8 +350,8 @@ $timer.Add_Tick({
         $script:lastDownloadBytes = $stats.Download
         $script:hourlySeconds++
     } else {
-        $uploadValue.Text   = "0 KB/s"
-        $downloadValue.Text = "0 KB/s"
+        $uploadValue.Text   = "0.0000 MB/s"
+        $downloadValue.Text = "0.0000 MB/s"
     }
 })
 
@@ -344,9 +378,9 @@ if ($script:adapterName) {
 # Create log folder/file and write session start entry
 Initialize-LogFile | Out-Null
 $startAdapter = if ($script:adapterName) { $script:adapterName } else { "unknown" }
+$startStatus = if ($script:isConnected) { "Connected" } else { "Disconnected" }
 $startLine = "[START] {0}  Adapter={1}  Status={2}" `
-             -f (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"), $startAdapter, `
-                (if ($script:isConnected) { "Connected" } else { "Disconnected" })
+             -f (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"), $startAdapter, $startStatus
 Write-LogLine $startLine
 Write-LogLine ""
 

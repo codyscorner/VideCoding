@@ -2,7 +2,7 @@
 
 A Windows PowerShell GUI application for controlling network connectivity with real-time statistics monitoring and usage logging.
 
-## Version 1.0.0
+## Version 1.2.0
 
 A lightweight network management tool that provides one-click network adapter control with comprehensive bandwidth monitoring and automatic hourly logging.
 
@@ -13,9 +13,11 @@ A lightweight network management tool that provides one-click network adapter co
 - **Real-time Statistics**: Monitor upload/download speeds in KB/s
 - **Daily Usage Tracking**: Cumulative daily upload and download totals
 - **Automatic Logging**: Hourly statistics saved to timestamped log files
+- **Status Change Logging**: Records every network state change with source (user toggle or external)
 - **Modern Dark UI**: Clean, minimalist interface with circular toggle button
 - **Auto-Detection**: Automatically finds active network adapter
 - **Session Persistence**: Tracks usage even when toggling connection
+- **Daily Reset**: Daily totals reset to zero at midnight
 
 ### Monitoring Features
 - **Upload Speed**: Real-time upload speed in KB/s (green indicator)
@@ -30,8 +32,10 @@ A lightweight network management tool that provides one-click network adapter co
 1. **Adapter Detection**: Automatically detects active physical network adapter (excludes virtual and Bluetooth adapters)
 2. **State Detection**: Detects current connection state (ON/OFF) on startup
 3. **Real-time Monitoring**: Updates statistics every second using `Get-NetAdapterStatistics`
-4. **Hourly Logging**: Writes comprehensive statistics to log file at the top of each hour
-5. **Session Tracking**: Maintains accurate counters even when toggling connection
+4. **External Change Detection**: Timer checks actual adapter state each second and logs any changes made outside the app (e.g., Windows re-enabling the adapter overnight)
+5. **Hourly Logging**: Writes comprehensive statistics to log file at the top of each hour
+6. **Midnight Reset**: Daily totals and UI counters reset to zero when the day rolls over
+7. **Session Tracking**: Maintains accurate counters even when toggling connection
 
 ## UI Components
 
@@ -64,6 +68,12 @@ Logs/network_YYYY-MM-DD.log
 ```
 [HOUR]  2026-02-28 15:00:00  Hour=15:00  Adapter=Ethernet  Upload=42.567 MB  Download=156.234 MB  AvgUp=12.3 KB/s  AvgDown=45.6 KB/s
 [TOTAL] 2026-02-28 15:00:00  DayTotal  Adapter=Ethernet  Upload=156.789 MB  Download=512.345 MB
+```
+
+#### Network Status Change
+```
+[STATUS] 2026-03-09 07:34:12  Adapter=Ethernet  Status=Connected  Source=ExternalChange
+[STATUS] 2026-03-09 23:15:00  Adapter=Ethernet  Status=Disconnected  Source=UserToggle
 ```
 
 #### Session End
@@ -166,7 +176,7 @@ Get-NetAdapter | Where-Object {
 - Requires Administrator privileges to toggle network adapters
 - Only controls the first detected active physical adapter
 - Statistics reset when application is closed
-- Daily totals reset at midnight (new log file)
+- Daily totals reset at midnight automatically
 - Does not block specific applications or ports
 
 ## Future Enhancements
@@ -212,6 +222,12 @@ MIT License
 Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
+
+### v1.2.0 (March 2026)
+- Fix: Daily totals now correctly reset to zero at midnight
+- Add: `[STATUS]` log entries on every network state change
+- Add: Detection of external adapter state changes (e.g., Windows re-enabling overnight) with `Source=ExternalChange`
+- Add: User-initiated toggles logged with `Source=UserToggle`
 
 ### v1.0.0 (February 2026)
 - Initial release
