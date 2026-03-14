@@ -5,7 +5,7 @@ a = Analysis(
     ['frame_extractor.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('frame_extractor.py', '.')],
     hiddenimports=['cv2', 'tkinter'],
     hookspath=[],
     hooksconfig={},
@@ -35,4 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='NONE',
 )
