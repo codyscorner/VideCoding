@@ -69,6 +69,7 @@
   <div id="gameContainer">
     <canvas id="game" width="800" height="600"></canvas>
     <div id="hud">
+      <div><span class="label">Level:</span> <span id="level" class="value"></span></div>
       <div><span class="label">Fuel:</span> <span id="fuel" class="value"></span></div>
       <div><span class="label">Vertical Speed:</span> <span id="vSpeed" class="value"></span></div>
       <div><span class="label">Horizontal Speed:</span> <span id="hSpeed" class="value"></span></div>
@@ -80,7 +81,9 @@
       Controls: 
       <strong>Up Arrow</strong> = Thrust, 
       <strong>Left / Right Arrows</strong> = Tilt, 
-      <strong>R</strong> = Restart after crash/landing. Landing pads are flat, highlighted sections of the surface – each with a different score value.
+      <strong>S</strong> = Start,
+      <strong>N</strong> = Next Level,
+      <strong>R</strong> = Retry level / Restart. Landing pads are flat, highlighted sections of the surface.
     </div>
   </div>
 
@@ -96,10 +99,11 @@
       const hSpeedEl = document.getElementById('hSpeed');
       const angleEl = document.getElementById('angle');
       const scoreEl = document.getElementById('score');
+      const levelEl = document.getElementById('level');
       const msgEl = document.getElementById('messages');
 
       // Physics constants
-      const GRAVITY = 0.03;       // downward acceleration
+      let GRAVITY = 0.03;         // downward acceleration (modified by level)
       const THRUST = 0.08;        // engine thrust
       const ROTATE_SPEED = 0.04;  // radians per frame while holding left/right
 
@@ -121,33 +125,107 @@
       let landingPads = [];
 
       let ship;
+      let gameStarted = false;
       let gameOver = false;
       let totalScore = 0;
+      let currentLevel = 1;
+      const MAX_LEVEL = 20;
 
       function createTerrain() {
         terrainPoints = [];
+        landingPads = [];
+        
+        let difficultyRatio = (currentLevel - 1) / (MAX_LEVEL - 1); // 0.0 to 1.0
 
-        terrainPoints.push({ x: 0,   y: 460 });
-        terrainPoints.push({ x: 80,  y: 430 });
-        terrainPoints.push({ x: 150, y: 470 });
-        // Pad 1 (easy, low points)
-        terrainPoints.push({ x: 230, y: 470 });
-        terrainPoints.push({ x: 320, y: 420 });
-        terrainPoints.push({ x: 380, y: 450 });
-        // Pad 2 (medium)
-        terrainPoints.push({ x: 460, y: 450 });
-        terrainPoints.push({ x: 550, y: 390 });
-        terrainPoints.push({ x: 620, y: 430 });
-        // Pad 3 (hard, high points)
-        terrainPoints.push({ x: 700, y: 430 });
-        terrainPoints.push({ x: 800, y: 470 });
-
-        // Landing pads: match flat segments in terrain
-        landingPads = [
-          { startX: 150, endX: 230, y: 470, points: 50, label: '50' },   // wide, low
-          { startX: 380, endX: 460, y: 450, points: 100, label: '100' }, // medium
-          { startX: 620, endX: 700, y: 430, points: 200, label: '200' }  // narrow, high
+        // Scale widths down as level increases
+        const width50 = Math.max(50, 180 - (difficultyRatio * 100)); // 180 down to 80
+        const width100 = Math.max(30, 100 - (difficultyRatio * 60)); // 100 down to 40
+        const width200 = Math.max(15, 60 - (difficultyRatio * 40));  // 60 down to 20
+        
+        const padConfigs = [
+          { width: width50, points: 50, label: '50' },
+          { width: width100, points: 100, label: '100' },
+          { width: width200, points: 200, label: '200' }
         ];
+        
+        // Shuffle pads to place them randomly across left, middle, right zones
+        for (let i = padConfigs.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [padConfigs[i], padConfigs[j]] = [padConfigs[j], padConfigs[i]];
+        }
+        
+        // Divide width into 3 zones to ensure pads are spread out
+        const zones = [
+          { minX: 40, maxX: 220 },
+          { minX: 300, maxX: 480 },
+          { minX: 560, maxX: 740 }
+        ];
+        
+        const pads = [];
+        for (let i = 0; i < 3; i++) {
+          const config = padConfigs[i];
+          const zone = zones[i];
+          const maxStartX = zone.maxX - config.width;
+          const startX = zone.minX + Math.random() * (maxStartX - zone.minX);
+          const y = 350 + Math.random() * 150; // Random height lower in screen
+          
+          pads.push({
+            startX: startX,
+            endX: startX + config.width,
+            y: y,
+            points: config.points,
+            label: config.label
+          });
+        }
+        
+        let currentX = 0;
+        let currentY = 250 + Math.random() * 200;
+        terrainPoints.push({ x: currentX, y: currentY });
+        
+        let padIndex = 0;
+        
+        while (currentX < W) {
+          let stepX = 15 + Math.random() * 25;
+          let nextX = currentX + stepX;
+          
+          if (padIndex < pads.length && nextX >= pads[padIndex].startX) {
+            const pad = pads[padIndex];
+            
+            // Add a jagged cliff right before the pad to connect roughly
+            let prePadX = pad.startX - (Math.random() * 10 + 5);
+            if (prePadX > currentX) {
+                let cliffY = currentY + (Math.random() - 0.5) * 150;
+                cliffY = Math.max(150, Math.min(550, cliffY));
+                terrainPoints.push({ x: prePadX, y: cliffY });
+            }
+            
+            // Flat pad surface
+            terrainPoints.push({ x: pad.startX, y: pad.y });
+            terrainPoints.push({ x: pad.endX, y: pad.y });
+            
+            currentX = pad.endX;
+            currentY = pad.y;
+            landingPads.push(pad);
+            padIndex++;
+          } else {
+            if (nextX >= W) {
+              nextX = W;
+            }
+            
+            // Jagged mountain generation based on difficulty
+            // Level 1: almost flat (variance ~30), Level 20: very jagged (variance ~250)
+            let maxVariance = 30 + difficultyRatio * 220;
+            let nextY = currentY + (Math.random() - 0.5) * maxVariance;
+            
+            // Tendency to push back into bounds
+            if (nextY < 150) nextY = 150 + Math.random() * 100;
+            if (nextY > 550) nextY = 550 - Math.random() * 100;
+            
+            terrainPoints.push({ x: nextX, y: nextY });
+            currentX = nextX;
+            currentY = nextY;
+          }
+        }
       }
 
       function resetShip() {
@@ -166,8 +244,15 @@
       }
 
       function resetGame(keepScore) {
+        GRAVITY = 0.01 + ((currentLevel - 1) * 0.0015); // gravity scales from 0.01 to ~0.0385
         createTerrain();
-        if (!keepScore) totalScore = 0;
+        if (!keepScore) {
+          totalScore = 0;
+          currentLevel = 1;
+          GRAVITY = 0.01;
+          createTerrain();
+          gameStarted = false; // Reset to start screen on hard reset
+        }
         resetShip();
         updateHUD();
       }
@@ -196,39 +281,66 @@
         return null;
       }
 
-      function updatePhysics() {
-        if (gameOver) return;
+      let lastTime = performance.now();
+
+      function updatePhysics(dt) {
+        if (!gameStarted || gameOver) return;
+
+        const timeScale = dt / 16.666; // Normalize to 60 FPS
 
         if (keys.left) {
-          ship.angle -= ROTATE_SPEED;
+          ship.angle -= ROTATE_SPEED * timeScale;
         }
         if (keys.right) {
-          ship.angle += ROTATE_SPEED;
+          ship.angle += ROTATE_SPEED * timeScale;
         }
 
         if (keys.thrust && ship.fuel > 0 && !ship.landed && !ship.crashed) {
-          const ax = Math.sin(ship.angle) * -THRUST; // negative because angle is from vertical
-          const ay = Math.cos(ship.angle) * -THRUST;
+          const ax = Math.sin(ship.angle) * THRUST * timeScale; // positive to push ship right when tilted right
+          const ay = Math.cos(ship.angle) * -THRUST * timeScale; // negative because Y is inverted
           ship.vx += ax;
           ship.vy += ay;
-          ship.fuel = Math.max(0, ship.fuel - 0.15);
+          ship.fuel = Math.max(0, ship.fuel - 0.15 * timeScale);
         }
 
-        ship.vy += GRAVITY;
+        ship.vy += GRAVITY * timeScale;
 
-        ship.x += ship.vx;
-        ship.y += ship.vy;
+        ship.x += ship.vx * timeScale;
+        ship.y += ship.vy * timeScale;
 
         // basic horizontal wrapping to keep ship on screen
         if (ship.x < 0) ship.x = 0;
         if (ship.x > W) ship.x = W;
 
-        // Check collision with ground using bottom of ship
-        const bottomX = ship.x;
-        const bottomY = ship.y + SHIP_HEIGHT * 0.5;
-        const groundY = groundYAt(bottomX);
+        // Better collision detection: Check bottom-left, bottom-right corners and bottom center
+        const cosA = Math.cos(ship.angle);
+        const sinA = Math.sin(ship.angle);
+        
+        const hw = SHIP_WIDTH * 0.5;
+        const hh = SHIP_HEIGHT * 0.5;
+        
+        // Relative unrotated positions of bottom corners
+        const blX_rot = (-hw) * cosA - (hh) * sinA;
+        const blY_rot = (-hw) * sinA + (hh) * cosA;
+        
+        const brX_rot = (hw) * cosA - (hh) * sinA;
+        const brY_rot = (hw) * sinA + (hh) * cosA;
 
-        if (!ship.landed && !ship.crashed && bottomY >= groundY) {
+        // Absolute world positions
+        const wBlX = ship.x + blX_rot;
+        const wBlY = ship.y + blY_rot;
+        
+        const wBrX = ship.x + brX_rot;
+        const wBrY = ship.y + brY_rot;
+        
+        const bottomY = ship.y + SHIP_HEIGHT * 0.5;
+
+        // Sample terrain height at all 3 points
+        const groundYBl = groundYAt(wBlX);
+        const groundYBr = groundYAt(wBrX);
+        const groundYCenter = groundYAt(ship.x);
+
+        if (!ship.landed && !ship.crashed && (wBlY >= groundYBl || wBrY >= groundYBr || bottomY >= groundYCenter)) {
           handleLandingOrCrash();
         }
       }
@@ -249,11 +361,15 @@
           gameOver = true;
           const earned = pad.points;
           totalScore += earned;
-          msgEl.textContent = `Nice landing! +${earned} points on ${pad.points}-point pad. Press R to fly again.`;
+          if (currentLevel < MAX_LEVEL) {
+            msgEl.innerHTML = `Great landing! +${earned} points. <br/> Press <strong>N</strong> for Next Level.`;
+          } else {
+            msgEl.innerHTML = `YOU WIN! +${earned} points. <br/> You completed all ${MAX_LEVEL} levels! Score: ${totalScore}. Press R to restart game.`;
+          }
         } else {
           ship.crashed = true;
           gameOver = true;
-          msgEl.textContent = 'CRASHED! Too hard, too fast, or bad angle. Press R to try again.';
+          msgEl.innerHTML = `CRASHED! Too hard, fast, or bad angle. <br/> Press <strong>R</strong> to retry Level ${currentLevel}.`;
         }
       }
 
@@ -315,6 +431,22 @@
       }
 
       function drawShip() {
+        if (ship.crashed) {
+          ctx.save();
+          ctx.translate(ship.x, ship.y);
+          // Explosion effect
+          ctx.beginPath();
+          ctx.arc(0, 0, 20, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255, 100, 0, 0.8)';
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(0, 0, 10, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255, 200, 0, 0.9)';
+          ctx.fill();
+          ctx.restore();
+          return;
+        }
+
         ctx.save();
         ctx.translate(ship.x, ship.y);
         ctx.rotate(ship.angle);
@@ -365,19 +497,39 @@
       }
 
       function updateHUD() {
+        levelEl.textContent = currentLevel.toString();
         fuelEl.textContent = ship.fuel.toFixed(0);
         vSpeedEl.textContent = ship.vy.toFixed(2);
         hSpeedEl.textContent = ship.vx.toFixed(2);
-        angleEl.textContent = (ship.angle * (180 / Math.PI)).toFixed(1) + '°';
+        
+        let degrees = (ship.angle * (180 / Math.PI)) % 360;
+        if (degrees > 180) degrees -= 360;
+        if (degrees < -180) degrees += 360;
+        angleEl.textContent = degrees.toFixed(1) + '°';
+        
         scoreEl.textContent = totalScore.toString();
       }
 
-      function gameLoop() {
-        updatePhysics();
+      function gameLoop(time) {
+        if (!lastTime) lastTime = time;
+        const dt = Math.min(time - lastTime, 100); // cap dt at 100ms to prevent huge jumps
+        lastTime = time;
+
+        updatePhysics(dt);
         drawBackground();
         drawTerrain();
         drawShip();
         updateHUD();
+        
+        if (!gameStarted) {
+          ctx.save();
+          ctx.fillStyle = '#ffcf77';
+          ctx.font = '28px system-ui';
+          ctx.textAlign = 'center';
+          ctx.fillText('PRESS S TO START', W / 2, H / 3);
+          ctx.restore();
+        }
+        
         requestAnimationFrame(gameLoop);
       }
 
@@ -388,8 +540,18 @@
           keys.right = true;
         } else if (e.code === 'ArrowUp') {
           keys.thrust = true;
+        } else if (e.code === 'KeyS' && !gameStarted) {
+          gameStarted = true;
+          lastTime = performance.now(); // reset the timer so dt isn't massive
         } else if (e.code === 'KeyR') {
-          resetShip();
+          if (gameOver && currentLevel === MAX_LEVEL && ship.landed) {
+             resetGame(false); // completely restart game
+          } else {
+             resetGame(true); // restart current level keeping score
+          }
+        } else if (e.code === 'KeyN' && gameOver && ship.landed && currentLevel < MAX_LEVEL) {
+          currentLevel++;
+          resetGame(true); // next level keeping score
         }
       });
 
@@ -405,7 +567,7 @@
 
       // Initial boot
       resetGame(false);
-      gameLoop();
+      requestAnimationFrame(gameLoop);
     })();
   </script>
 </body>

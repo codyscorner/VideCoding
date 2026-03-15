@@ -13,6 +13,7 @@ $script:hourlyDownloadBytes = 0
 $script:hourlySeconds = 0
 $script:lastLogHour = -1
 $script:lastKnownConnected = $null  # tracks external adapter state changes
+$script:pendingUserToggle = $false  # set after user toggle; suppresses blank line on next ExternalChange
 
 # Resolve log folder next to the EXE (works for both compiled EXE and raw PS1)
 $script:exeDir = [System.AppDomain]::CurrentDomain.BaseDirectory.TrimEnd('\')
@@ -263,9 +264,9 @@ $toggleButton.Add_Click({
             $toggleButton.Text = "OFF"
             $toggleButton.BackColor = [System.Drawing.Color]::FromArgb(239, 68, 68)
         }
+        $script:pendingUserToggle = $true
         $statusStr = if ($script:isConnected) { "Connected" } else { "Disconnected" }
         Write-LogLine ("  [STATUS] {0}  Adapter={1}  Status={2}  Source=UserToggle" -f (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"), $script:adapterName, $statusStr)
-        Write-LogLine ""
     } else {
         $script:isConnected = -not $script:isConnected  # Revert on failure
     }
@@ -319,6 +320,7 @@ $timer.Add_Tick({
             $statusStr = if ($actuallyUp) { "Connected" } else { "Disconnected" }
             Write-LogLine ("  [STATUS] {0}  Adapter={1}  Status={2}  Source=ExternalChange" -f (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"), $script:adapterName, $statusStr)
             Write-LogLine ""
+            $script:pendingUserToggle = $false
         }
         $script:lastKnownConnected = $actuallyUp
     }
