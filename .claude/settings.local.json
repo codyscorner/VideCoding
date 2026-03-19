@@ -41,7 +41,11 @@
       "Bash(pip list:*)",
       "Bash(pip download:*)",
       "Bash(dotnet build:*)",
-      "Bash(git ls-tree:*)"
+      "Bash(git ls-tree:*)",
+      "Bash(git rm:*)",
+      "Bash(git fetch:*)",
+      "Bash(cmd /c build_exe.bat)",
+      "Bash(start \"\" \"p:/AI/VideCoding/Calculator/dist/MidnightCalculator.exe\")"
     ],
     "deny": [],
     "ask": []
