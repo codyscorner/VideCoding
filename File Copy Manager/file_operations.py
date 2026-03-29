@@ -308,6 +308,7 @@ class FileCopier:
         self._log_status(f"Processing {len(filtered_files)} files after filtering")
 
         # Process each file
+        total = len(filtered_files)
         results = []
         for idx, (full_path, rel_path) in enumerate(filtered_files, 1):
             # Check for cancellation
@@ -318,20 +319,22 @@ class FileCopier:
             # Update progress
             if self.progress_callback:
                 filename = os.path.basename(full_path)
-                self.progress_callback(idx, len(filtered_files), filename, 0)
+                self.progress_callback(idx, total, filename, 0)
 
             result = self._process_single_file(
                 full_path,
                 rel_path,
                 source_folder,
                 dest_folder,
-                structure
+                structure,
+                idx,
+                total
             )
             results.append(result)
 
             # Update progress to 100% for this file
             if self.progress_callback:
-                self.progress_callback(idx, len(filtered_files), filename, 100)
+                self.progress_callback(idx, total, filename, 100)
 
         # Summary
         if self.cancel_check and self.cancel_check():
@@ -350,7 +353,9 @@ class FileCopier:
         rel_path: str,
         source_root: str,
         dest_folder: str,
-        structure: FolderStructure
+        structure: FolderStructure,
+        idx: int = 0,
+        total: int = 0
     ) -> FileOperationResult:
         """
         Process a single file
@@ -412,13 +417,31 @@ class FileCopier:
                     error_message="Skipped (duplicate)"
                 )
 
+        LARGE_FILE_THRESHOLD = 120 * 1024 * 1024  # 120 MB
+        CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB
+
         try:
             # Get file size
             file_size = os.path.getsize(source_path)
 
             # Copy the file and measure time
             start_time = time.time()
-            shutil.copy2(source_path, dest_path)
+            if file_size >= LARGE_FILE_THRESHOLD and self.progress_callback and total > 0:
+                copied = 0
+                with open(source_path, 'rb') as src, open(dest_path, 'wb') as dst:
+                    while True:
+                        if self.cancel_check and self.cancel_check():
+                            break
+                        chunk = src.read(CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        dst.write(chunk)
+                        copied += len(chunk)
+                        pct = int(copied / file_size * 100)
+                        self.progress_callback(idx, total, os.path.basename(source_path), pct)
+                shutil.copystat(source_path, dest_path)
+            else:
+                shutil.copy2(source_path, dest_path)
             copy_time = time.time() - start_time
 
             # Format file size

@@ -2,7 +2,7 @@
 
 A powerful tool for batch copying files with automatic duplicate numbering and flexible folder organization.
 
-## Version 2.0.0
+## Version 2.0.1
 
 **Yellow & Black Theme** - Easy to distinguish from the red File Rename Mover!
 
@@ -247,6 +247,12 @@ MIT License - See LICENSE file for details.
 Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
+
+### v2.0.1 (March 29, 2026)
+- **Accurate File Progress**: Current File progress bar now works correctly for large files
+- Files ≥ 120 MB use chunked 4 MB I/O with real-time progress updates
+- Files < 120 MB copy instantly via `shutil.copy2` (no false progress shown)
+- Chunked copy respects Cancel button mid-file and preserves file metadata
 
 ### v2.0.0 (January 21, 2026)
 - **Background Threading**: File copy operations now run in a background thread for responsive UI
