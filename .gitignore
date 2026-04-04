@@ -38,3 +38,12 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Sample / test media files
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Compiled executables
+*.exe
