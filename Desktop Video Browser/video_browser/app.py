@@ -2,8 +2,7 @@ import sys
 import os
 from PySide6.QtWidgets import QApplication
 from ui.main_window import MainWindow
-
-VERSION = "1.0.0"
+from version import VERSION
 
 def main():
     app = QApplication(sys.argv)

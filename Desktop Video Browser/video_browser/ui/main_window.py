@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt
 from ui.file_list_panel import FileListPanel
 from ui.video_player_panel import VideoPlayerPanel
 from core.settings import AppSettings
-from app import VERSION
+from version import VERSION
 
 SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "..", "settings.json")
 
