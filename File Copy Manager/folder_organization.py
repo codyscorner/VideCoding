@@ -51,11 +51,13 @@ class FolderOrganizer:
             return ""
 
         # Get datetime
+        dt = datetime.now()
         if use_file_date and os.path.exists(file_path):
-            timestamp = os.path.getmtime(file_path)
-            dt = datetime.fromtimestamp(timestamp)
-        else:
-            dt = datetime.now()
+            try:
+                timestamp = os.path.getmtime(file_path)
+                dt = datetime.fromtimestamp(timestamp)
+            except (OSError, ValueError, OverflowError):
+                pass  # Corrupt/zero timestamp — fall back to current date
 
         # Generate subfolder based on structure
         if structure == FolderStructure.BY_YEAR:
