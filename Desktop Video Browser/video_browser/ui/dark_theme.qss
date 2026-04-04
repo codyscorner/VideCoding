@@ -1,0 +1,18 @@
+/* Placeholder for Dark Theme */
+QMainWindow {
+    background-color: #2b2b2b;
+}
+
+QLabel {
+    color: #dfdfdf;
+}
+
+QListWidget {
+    background-color: #3b3b3b;
+    color: #dfdfdf;
+    border: 1px solid #555;
+}
+
+QListWidget::item:selected {
+    background-color: #555;
+}

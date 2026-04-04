@@ -4,6 +4,35 @@ A collection of utility tools and games developed for file management, image pro
 
 ## 📦 Projects Overview
 
+### 🎬 Desktop Video Browser
+**Version:** 1.0.0 | **Status:** Active Development | **Language:** Python
+
+A fast, lightweight desktop video browser with an embedded player for quick file previewing.
+
+**Features:**
+- Split-pane layout — file list left, video player right
+- Open folder via button or drag-and-drop
+- Refresh file list without closing the app (files never locked between plays)
+- Arrow key navigation (Up/Down) to step through videos automatically
+- Play/Pause (Space), Stop, Fullscreen (F / Esc) keyboard shortcuts
+- Toolbar with play/pause/stop/fullscreen buttons
+- Live time display (current position / total duration)
+- Persists last opened folder and window geometry across sessions
+- Dark gray theme
+- Standalone EXE via PyInstaller
+
+**Recent Updates (v1.0.0 - Apr 4, 2026):**
+- Initial release
+- QMediaPlayer + QVideoWidget embedded playback
+- Fullscreen with Esc/F exit, arrow-key navigation while fullscreen
+- File release on folder change — no file locks
+
+**Tech Stack:** Python, PySide6, QtMultimedia, PyInstaller
+
+**Directory:** `Desktop Video Browser/`
+
+---
+
 ### 🗂️ File Rename Mover
 **Version:** 2.1.7 | **Status:** Active Development | **Language:** Python
 
@@ -195,6 +224,7 @@ Simply open the HTML files in a modern web browser.
 
 | Project | Version | Status | Language | Last Updated |
 |---------|---------|--------|----------|--------------|
+| Desktop Video Browser | 1.0.0 | ✅ Active | Python | Apr 4, 2026 |
 | File Rename Mover | 2.1.7 | ✅ Active | Python | Jan 9, 2026 |
 | File Copy Manager | 1.2.0 | ✅ Active | Python | Jan 1, 2026 |
 | Prompt Archiver | 1.2.5 | ✅ Active | TypeScript/JS | Nov 2025 |
@@ -236,6 +266,9 @@ npm start
 ---
 
 ## 🔄 Recent Activity
+
+### April 4, 2026
+- **Desktop Video Browser v1.0.0**: Initial release — PySide6 video browser with embedded player, keyboard navigation, fullscreen, drag-and-drop, and dark theme
 
 ### January 9, 2026
 - **File Rename Mover v2.1.7**: Fixed config init bug, counter scanning for subfolders, icon loading
@@ -321,4 +354,4 @@ Each project contains its own documentation:
 
 ---
 
-**Last Updated:** January 9, 2026
+**Last Updated:** April 4, 2026
