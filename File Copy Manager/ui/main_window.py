@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Optional, Callable
 import threading
 import queue
+import logging
+import datetime
 
 from config import ConfigManager
 from file_operations import FileCopier
@@ -63,6 +65,16 @@ class MainWindow:
         self.enable_date_filter_var = tk.BooleanVar(value=self.config.get("enable_date_filter", False))
         self.days_old_var = tk.StringVar(value=self.config.get("days_old", "30"))
 
+        # Set up log file next to config file
+        log_path = Path(self.config.config_path).parent / "FileCopyManager.log"
+        logging.basicConfig(
+            filename=str(log_path),
+            level=logging.DEBUG,
+            format='%(asctime)s [%(levelname)s] %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        self._logger = logging.getLogger("FileCopyManager")
+
         # Threading state
         self._copy_thread: Optional[threading.Thread] = None
         self._progress_queue: queue.Queue = queue.Queue()
@@ -92,8 +104,12 @@ class MainWindow:
             lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
 
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
+
+        def _on_canvas_resize(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+        canvas.bind("<Configure>", _on_canvas_resize)
 
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
@@ -569,6 +585,22 @@ class MainWindow:
         )
         self.progress_label.pack(anchor='w', pady=(2, 0))
 
+        # Copied / Skipped counters
+        counters_frame = ttk.Frame(progress_frame, style='Dark.TFrame')
+        counters_frame.pack(anchor='w', pady=(4, 0))
+
+        ttk.Label(counters_frame, text="Copied:", style='Dark.TLabel').pack(side='left')
+        self.copied_count_label = ttk.Label(
+            counters_frame, text="0", style='Dark.TLabel', font=self.fonts['bold']
+        )
+        self.copied_count_label.pack(side='left', padx=(4, 20))
+
+        ttk.Label(counters_frame, text="Skipped:", style='Dark.TLabel').pack(side='left')
+        self.skipped_count_label = ttk.Label(
+            counters_frame, text="0", style='Dark.TLabel', font=self.fonts['bold']
+        )
+        self.skipped_count_label.pack(side='left', padx=(4, 0))
+
     def _create_status_listbox(self, parent: ttk.Frame) -> None:
         """Create status listbox with scrollbar"""
         status_frame = ttk.Frame(parent, style='Dark.TFrame')
@@ -725,6 +757,8 @@ class MainWindow:
         self.overall_progress['value'] = 0
         self.file_progress['value'] = 0
         self.progress_label.config(text="Preparing...")
+        self.copied_count_label.config(text="0")
+        self.skipped_count_label.config(text="0")
 
         # Gather all options for the thread
         copy_options = {
@@ -758,9 +792,22 @@ class MainWindow:
 
             folder_structure = FolderStructure(options['folder_structure'])
 
+            # Track live counts for the on-form counters
+            _live_copied = [0]
+            _live_skipped = [0]
+
+            def _status_with_counter(msg):
+                if msg.startswith("Copied:") or msg.startswith("Duplicate found:"):
+                    _live_copied[0] += 1
+                    self._queue_message('counters', {'copied': _live_copied[0], 'skipped': _live_skipped[0]})
+                elif msg.startswith("Skipped"):
+                    _live_skipped[0] += 1
+                    self._queue_message('counters', {'copied': _live_copied[0], 'skipped': _live_skipped[0]})
+                self._queue_message('status', msg)
+
             # Create file copier with thread-safe callbacks
             file_copier = FileCopier(
-                status_callback=lambda msg: self._queue_message('status', msg),
+                status_callback=_status_with_counter,
                 folder_structure=folder_structure,
                 number_duplicates=options['number_duplicates'],
                 progress_callback=lambda cur, tot, fname, fprog: self._queue_message(
@@ -786,13 +833,16 @@ class MainWindow:
                 self._queue_message('cancelled', None)
                 return
 
-            # Count results
-            success_count = sum(1 for r in results if r.success)
+            # Count results and send live counter update
+            copied_count = sum(1 for r in results if r.success and r.destination_file is not None)
+            skipped_count = sum(1 for r in results if r.success and r.destination_file is None)
             error_count = sum(1 for r in results if not r.success)
+            self._queue_message('counters', {'copied': copied_count, 'skipped': skipped_count})
 
             # Queue completion with results
             self._queue_message('complete', {
-                'success_count': success_count,
+                'copied_count': copied_count,
+                'skipped_count': skipped_count,
                 'error_count': error_count,
                 'options': options
             })
@@ -800,8 +850,16 @@ class MainWindow:
         except ValueError as e:
             self._queue_message('error', {'type': 'validation', 'message': str(e)})
         except OSError as e:
+            import traceback
+            tb = traceback.format_exc()
+            self._logger.error(f"FILE SYSTEM ERROR: {e}\n{tb}")
+            self._queue_message('status', f"FILE SYSTEM ERROR: {e}")
+            self._queue_message('status', f"Traceback: {tb}")
             self._queue_message('error', {'type': 'filesystem', 'message': str(e)})
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            self._logger.error(f"UNEXPECTED ERROR: {e}\n{tb}")
             self._queue_message('error', {'type': 'unexpected', 'message': str(e)})
 
     def _queue_message(self, msg_type: str, data) -> None:
@@ -829,6 +887,10 @@ class MainWindow:
                         self.progress_label.config(
                             text=f"Processing {current}/{total}: {data['filename']}"
                         )
+
+                    elif msg_type == 'counters':
+                        self.copied_count_label.config(text=str(data['copied']))
+                        self.skipped_count_label.config(text=str(data['skipped']))
 
                     elif msg_type == 'complete':
                         self._on_copy_complete(data)
@@ -859,7 +921,8 @@ class MainWindow:
         self.copy_button.config(state='normal')
         self.cancel_button.config(state='disabled')
 
-        success_count = data['success_count']
+        copied_count = data['copied_count']
+        skipped_count = data['skipped_count']
         error_count = data['error_count']
         options = data['options']
 
@@ -879,14 +942,19 @@ class MainWindow:
         self.config.set("days_old", self.days_old_var.get())
         self.config.save()
 
-        # Show result
-        self.progress_label.config(text="Complete!")
-        if error_count == 0 and success_count > 0:
-            messagebox.showinfo("Success", f"Successfully copied {success_count} files")
-        elif success_count > 0:
+        # Update final counter display
+        self.copied_count_label.config(text=str(copied_count))
+        self.skipped_count_label.config(text=str(skipped_count))
+
+        summary = f"Total Copied: {copied_count}\nTotal Skipped: {skipped_count}"
+        self.progress_label.config(text=f"Complete! Copied: {copied_count}  Skipped: {skipped_count}")
+
+        if error_count == 0 and copied_count > 0:
+            messagebox.showinfo("Complete", summary)
+        elif copied_count > 0:
             messagebox.showwarning(
                 "Completed with errors",
-                f"Copied {success_count} files with {error_count} errors. Check status for details."
+                f"{summary}\nErrors: {error_count}\n\nCheck status for details."
             )
         elif error_count == 0:
             messagebox.showinfo("No Files", "No files were found to process")

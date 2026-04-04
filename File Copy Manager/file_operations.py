@@ -166,6 +166,26 @@ class FileCopier:
         if self.status_callback:
             self.status_callback(message)
 
+    def _truncate_path(self, folder: str, filename: str, max_len: int = 245) -> str:
+        """
+        If the full path exceeds max_len, truncate the filename stem and append _tr001.
+        Returns the (possibly truncated) filename only.
+        """
+        full_path = os.path.join(folder, filename)
+        if len(full_path) <= max_len:
+            return filename
+        base_name, ext = os.path.splitext(filename)
+        counter = 1
+        while True:
+            suffix = f"_tr_{counter:03d}"
+            allowed = max_len - len(folder) - len(os.sep) - len(suffix) - len(ext)
+            truncated = f"{base_name[:allowed]}{suffix}{ext}"
+            if not os.path.exists(os.path.join(folder, truncated)):
+                break
+            counter += 1
+        self._log_status(f"Path too long, truncated: {filename} → {truncated}")
+        return truncated
+
     def _format_file_size(self, size_bytes: int) -> str:
         """
         Format file size in human-readable format
@@ -338,12 +358,13 @@ class FileCopier:
 
         # Summary
         if self.cancel_check and self.cancel_check():
-            success_count = sum(1 for r in results if r.success)
-            self._log_status(f"Operation cancelled: {success_count} files copied before cancellation")
+            copied_count = sum(1 for r in results if r.success and r.destination_file is not None)
+            self._log_status(f"Operation cancelled: {copied_count} files copied before cancellation")
         else:
-            success_count = sum(1 for r in results if r.success)
+            copied_count = sum(1 for r in results if r.success and r.destination_file is not None)
+            skipped_count = sum(1 for r in results if r.success and r.destination_file is None)
             error_count = sum(1 for r in results if not r.success)
-            self._log_status(f"Operation completed: {success_count} files copied, {error_count} errors")
+            self._log_status(f"Operation completed: {copied_count} copied, {skipped_count} skipped, {error_count} errors")
 
         return results
 
@@ -393,34 +414,33 @@ class FileCopier:
             else:
                 final_dest_folder = dest_folder
 
-        # Determine final filename (handle duplicates)
-        dest_path = os.path.join(final_dest_folder, filename)
-        final_filename = filename
-
-        if os.path.exists(dest_path):
-            if self.number_duplicates:
-                # Add number to filename
-                base_name, ext = os.path.splitext(filename)
-                counter = 1
-                while os.path.exists(dest_path):
-                    final_filename = f"{base_name}_{counter:03d}{ext}"
-                    dest_path = os.path.join(final_dest_folder, final_filename)
-                    counter += 1
-                self._log_status(f"Duplicate found: {filename} → {final_filename}")
-            else:
-                # Skip duplicate
-                self._log_status(f"Skipped (duplicate): {filename}")
-                return FileOperationResult(
-                    success=True,
-                    source_file=filename,
-                    destination_file=None,
-                    error_message="Skipped (duplicate)"
-                )
-
         LARGE_FILE_THRESHOLD = 120 * 1024 * 1024  # 120 MB
         CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB
 
         try:
+            # Determine final filename (handle duplicates)
+            final_filename = self._truncate_path(final_dest_folder, filename)
+            dest_path = os.path.join(final_dest_folder, final_filename)
+
+            if os.path.exists(dest_path):
+                if self.number_duplicates:
+                    # Add number to filename
+                    base_name, ext = os.path.splitext(filename)
+                    counter = 1
+                    while os.path.exists(dest_path):
+                        final_filename = f"{base_name}_{counter:03d}{ext}"
+                        dest_path = os.path.join(final_dest_folder, final_filename)
+                        counter += 1
+                    self._log_status(f"Duplicate found: {filename} → {final_filename}")
+                else:
+                    # Skip duplicate
+                    self._log_status(f"Skipped (duplicate): {filename}")
+                    return FileOperationResult(
+                        success=True,
+                        source_file=filename,
+                        destination_file=None,
+                        error_message="Skipped (duplicate)"
+                    )
             # Get file size
             file_size = os.path.getsize(source_path)
 
