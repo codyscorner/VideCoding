@@ -47,3 +47,6 @@ Thumbs.db
 
 # Compiled executables
 *.exe
+
+# Nested repos with their own git history
+PromptArchiver/
