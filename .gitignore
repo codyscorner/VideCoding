@@ -45,8 +45,9 @@ Thumbs.db
 *.mov
 *.mkv
 
-# Compiled executables
+# Compiled executables and archives
 *.exe
+*.zip
 
 # Nested repos with their own git history
 PromptArchiver/
