@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import time
 from typing import Optional
 
@@ -24,16 +25,14 @@ from models import FileRecord
 def _long_path(p: str) -> str:
     """Prepend the Windows extended-length path prefix to bypass MAX_PATH.
 
-    The NT kernel supports paths up to 32 767 characters when the caller
-    uses the ``\\\\?\\`` prefix.  Without it, any path longer than 260
-    characters raises FileNotFoundError or similar OS errors.
-
-    UNC paths (``\\\\server\\share\\...``) are returned unchanged because
-    they require a different prefix (``\\\\?\\UNC\\...``) that is beyond
-    the scope of this tool.
+    Only applied when the path actually exceeds 260 characters, and only
+    for local drive paths — mapped drives and UNC paths are returned as-is
+    because \\\\?\\ does not resolve correctly against them.
     """
-    p = os.path.abspath(p)          # guarantee absolute + normalised
-    if p.startswith("\\\\"):        # UNC — leave as-is
+    p = os.path.abspath(p)
+    if len(p) <= 260:
+        return p                     # short enough — no prefix needed
+    if p.startswith("\\\\"):         # UNC or mapped drive — leave as-is
         return p
     if not p.startswith("\\\\?\\"):
         p = "\\\\?\\" + p
@@ -59,34 +58,56 @@ def _safe_size(path: str) -> int:
         return 0
 
 
-def _move_file(src: str, dst: str) -> None:
-    """Move *src* to *dst*, applying long-path prefixes on both ends.
+def _clear_readonly(path: str) -> None:
+    """Remove the read-only attribute from *path* if it is set.
 
-    Strategy:
-    - Same drive  → ``os.rename`` (atomic, instant, no extra disk I/O)
-    - Cross drive → ``shutil.copy2`` then ``os.remove``
-                    (shutil.move would work too, but being explicit about
-                     the fallback path makes error attribution clearer)
-
-    The destination directory is created (including any intermediate
-    parents) before the move is attempted.
+    Old files (especially scanned photos) often carry the read-only flag.
+    Clearing it before a copy/move prevents [Errno 13] Permission denied
+    when overwriting an existing destination file.
     """
-    src_lp = _long_path(src)
+    try:
+        mode = os.stat(path).st_mode
+        if not (mode & stat.S_IWRITE):
+            os.chmod(path, mode | stat.S_IWRITE)
+    except OSError:
+        pass
+
+
+def _copy_file(src: str, dst: str) -> None:
+    """Copy *src* to *dst* (fallback when a move is denied).
+
+    Used when a PermissionError prevents the source file from being
+    deleted — the data is still safely duplicated at the destination.
+    """
     dst_lp = _long_path(dst)
+    os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
+    if os.path.exists(dst_lp):
+        _clear_readonly(dst_lp)
+    shutil.copy2(_long_path(src), dst_lp)
 
-    dst_dir = os.path.dirname(dst_lp)
-    os.makedirs(dst_dir, exist_ok=True)
 
-    src_drive = os.path.splitdrive(src)[0].lower()
-    dst_drive = os.path.splitdrive(dst)[0].lower()
+def _move_file(src: str, dst: str) -> None:
+    """Move *src* to *dst*.
 
-    if src_drive == dst_drive:
-        # Same volume: rename is O(1) and never leaves a partial copy.
-        os.rename(src_lp, dst_lp)
-    else:
-        # Cross-volume: full byte copy then source deletion.
-        shutil.copy2(src_lp, dst_lp)
-        os.remove(src_lp)
+    Uses ``shutil.move`` as the primary method — it handles same-drive,
+    cross-drive, and mapped network drives correctly without needing
+    manual long-path prefix logic.  The ``\\\\?\\`` prefix is only
+    applied when a path genuinely exceeds 260 characters and is a local
+    drive path.
+
+    Read-only attributes on the source and any existing destination file
+    are cleared before the move so that old/archived files (e.g. scanned
+    photos with the read-only flag) transfer without permission errors.
+    """
+    dst_lp = _long_path(dst)
+    src_lp = _long_path(src)
+    os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
+    # Clear read-only on source (needed for delete after cross-drive copy)
+    _clear_readonly(src_lp)
+    # Clear read-only on destination if it already exists
+    if os.path.exists(dst_lp):
+        _clear_readonly(dst_lp)
+    shutil.move(src_lp, dst_lp)
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +175,8 @@ class MoveWorker(QThread):
         records: list[FileRecord] = []
 
         # ---- Phase 1: scan -----------------------------------------------
+        self.log_signal.emit(f"Source:      {self.source}")
+        self.log_signal.emit(f"Destination: {self.dest}")
         self.log_signal.emit("Scanning source directory…")
 
         all_files: list[str] = []
@@ -193,16 +216,49 @@ class MoveWorker(QThread):
             error_detail: Optional[str] = None
             t_start = time.perf_counter()
 
+            # ── Duplicate check ───────────────────────────────────────
+            # If the destination already exists and is the same size,
+            # skip the move entirely — source is left untouched.
+            if os.path.exists(dst_path) and _safe_size(dst_path) == size_bytes:
+                status       = "Skipped"
+                error_detail = "Duplicate — same size at destination, source left intact"
+                self.log_signal.emit(f"  ↷ Skipped — already exists at destination")
+                elapsed_ms = (time.perf_counter() - t_start) * 1_000
+                records.append(FileRecord(
+                    source_path    = src_path,
+                    dest_path      = dst_path,
+                    file_size_bytes= size_bytes,
+                    file_size_human= size_human,
+                    time_taken_ms  = elapsed_ms,
+                    status         = status,
+                    error_detail   = error_detail,
+                ))
+                self.progress_signal.emit(round(idx / total * 100))
+                continue
+
             try:
                 _move_file(src_path, dst_path)
 
             except PermissionError as exc:
-                # File locked by another process, or insufficient privileges.
-                status       = "Failed"
-                error_detail = f"PermissionError: {exc}"
+                # Move was denied — attempt a copy-only fallback so the
+                # data still reaches the destination even if the source
+                # file cannot be deleted (e.g. locked by another process).
                 self.log_signal.emit(
-                    f"  ✗ Permission denied — {exc}"
+                    f"  ⚠ Permission denied — attempting copy fallback…"
                 )
+                try:
+                    _copy_file(src_path, dst_path)
+                    status       = "Copied"
+                    error_detail = f"Moved denied, copied only — {exc}"
+                    self.log_signal.emit(
+                        f"  ✓ Copied (source not deleted)"
+                    )
+                except Exception as copy_exc:
+                    status       = "Failed"
+                    error_detail = f"PermissionError: {exc} | Copy also failed: {copy_exc}"
+                    self.log_signal.emit(
+                        f"  ✗ Copy fallback also failed — {copy_exc}"
+                    )
 
             except FileNotFoundError as exc:
                 # Source vanished mid-run, or an extremely long path slipped
@@ -238,13 +294,17 @@ class MoveWorker(QThread):
             self.progress_signal.emit(round(idx / total * 100))
 
         # ---- Summary line -----------------------------------------------
-        succeeded = sum(1 for r in records if r.status == "Success")
-        failed    = sum(1 for r in records if r.status == "Failed")
+        moved   = sum(1 for r in records if r.status == "Success")
+        copied  = sum(1 for r in records if r.status == "Copied")
+        skipped = sum(1 for r in records if r.status == "Skipped")
+        failed  = sum(1 for r in records if r.status == "Failed")
         self.log_signal.emit(
             f"\n── Finished ──\n"
-            f"  Moved:  {succeeded:,}\n"
-            f"  Failed: {failed:,}\n"
-            f"  Total:  {len(records):,}"
+            f"  Moved:   {moved:,}\n"
+            f"  Copied:  {copied:,}\n"
+            f"  Skipped: {skipped:,}\n"
+            f"  Failed:  {failed:,}\n"
+            f"  Total:   {len(records):,}"
         )
 
         return records

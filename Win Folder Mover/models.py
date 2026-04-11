@@ -18,7 +18,7 @@ class FileRecord:
     file_size_bytes: int      # Raw byte count (0 if stat failed)
     file_size_human: str      # Human-readable string, e.g. "1.23 MB"
     time_taken_ms: float      # Wall-clock duration of the move call
-    status: str               # "Success" | "Failed" | "Skipped"
+    status: str               # "Success" | "Copied" | "Failed" | "Skipped"
     error_detail: Optional[str] = None   # Exception message on failure
 
     # ------------------------------------------------------------------
