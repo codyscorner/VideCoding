@@ -45,9 +45,19 @@ Thumbs.db
 *.mov
 *.mkv
 
-# Compiled executables and archives
+# Compiled executables and archives (too large for git)
 *.exe
 *.zip
+*.msi
+*.dmg
+*.pkg
+*.tar.gz
+*.7z
+*.rar
+
+# Compiled binary extensions
+*.dll
+*.pyd
 
 # Nested repos with their own git history
 PromptArchiver/
