@@ -33,6 +33,32 @@ A fast, lightweight desktop video browser with an embedded player for quick file
 
 ---
 
+### 📦 Windows Folder Mover
+**Version:** 1.0.0 | **Status:** Active Development | **Language:** Python
+
+A desktop utility for recursively moving entire folder trees on Windows, with live progress tracking and detailed per-file logging.
+
+**Features:**
+- Recursive folder move with real-time progress bar and live status log
+- Background worker thread — UI stays fully responsive during operations
+- Windows `MAX_PATH` (260 char) workaround via `\\?\` long-path prefix
+- Graceful mid-operation cancel — stops cleanly after the current file
+- Per-file metrics: size, time taken, status (Success / Failed / Skipped)
+- Specific handling for `PermissionError` (locked files) and `OSError`
+- Same-drive moves use `os.rename` (atomic, instant); cross-drive uses copy+delete
+- CSV log export with timestamped filename (`move_log_mmddyyyy_hhmm.csv`)
+- Medium red dark theme
+- Standalone EXE via PyInstaller
+
+**Recent Updates (v1.0.0 - Apr 11, 2026):**
+- Initial release
+
+**Tech Stack:** Python, PyQt6, PyInstaller
+
+**Directory:** `WinFolderMover/`
+
+---
+
 ### 🗂️ File Rename Mover
 **Version:** 2.1.7 | **Status:** Active Development | **Language:** Python
 
@@ -224,6 +250,7 @@ Simply open the HTML files in a modern web browser.
 
 | Project | Version | Status | Language | Last Updated |
 |---------|---------|--------|----------|--------------|
+| Windows Folder Mover | 1.0.0 | ✅ Active | Python | Apr 11, 2026 |
 | Desktop Video Browser | 1.0.0 | ✅ Active | Python | Apr 4, 2026 |
 | File Rename Mover | 2.1.7 | ✅ Active | Python | Jan 9, 2026 |
 | File Copy Manager | 1.2.0 | ✅ Active | Python | Jan 1, 2026 |
@@ -266,6 +293,9 @@ npm start
 ---
 
 ## 🔄 Recent Activity
+
+### April 11, 2026
+- **Windows Folder Mover v1.0.0**: Initial release — PyQt6 folder mover with background worker thread, live progress/log, long-path support, PermissionError handling, and CSV export
 
 ### April 4, 2026
 - **Desktop Video Browser v1.0.0**: Initial release — PySide6 video browser with embedded player, keyboard navigation, fullscreen, drag-and-drop, and dark theme
@@ -354,4 +384,4 @@ Each project contains its own documentation:
 
 ---
 
-**Last Updated:** April 4, 2026
+**Last Updated:** April 11, 2026
