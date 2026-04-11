@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import csv
+from datetime import datetime
 from typing import Optional
 
 from PyQt6.QtCore import Qt
@@ -307,7 +308,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Export Move Log",
-            "move_log.csv",
+            f"move_log_{datetime.now().strftime('%m%d%Y_%H%M')}.csv",
             "CSV Files (*.csv);;All Files (*)",
         )
         if not path:

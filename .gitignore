@@ -45,8 +45,18 @@ Thumbs.db
 *.mov
 *.mkv
 
-# Compiled executables
+# Compiled executables and archives (too large for git)
 *.exe
+*.zip
+*.msi
+*.dmg
+*.pkg
+*.tar.gz
+*.7z
+*.rar
+
+# NOTE: *.dll and *.pyd are NOT ignored — some apps bundle required
+# binary dependencies. Include them if under GitHub's 50 MB file limit.
 
 # Nested repos with their own git history
 PromptArchiver/
