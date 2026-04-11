@@ -55,9 +55,8 @@ Thumbs.db
 *.7z
 *.rar
 
-# Compiled binary extensions
-*.dll
-*.pyd
+# NOTE: *.dll and *.pyd are NOT ignored — some apps bundle required
+# binary dependencies. Include them if under GitHub's 50 MB file limit.
 
 # Nested repos with their own git history
 PromptArchiver/
