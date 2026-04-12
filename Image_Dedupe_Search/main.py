@@ -68,11 +68,15 @@ def main():
     config_file = get_config_file()
     config_manager = ConfigManager(config_file)
 
+    # Set app-level icon
+    icon_path = get_resource_path("app_icon.ico")
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+
     # Create main window
     window = MainWindow(config_manager, VERSION)
 
     # Set window icon if available
-    icon_path = get_resource_path("app_icon.ico")
     if icon_path.exists():
         window.setWindowIcon(QIcon(str(icon_path)))
 

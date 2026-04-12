@@ -4,12 +4,13 @@ Dark Blue / Midnight theme PyQt6 Calculator
 """
 
 import sys
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QGridLayout, QPushButton, QLabel
 )
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 
 __version__ = "1.0.0"
 
@@ -136,6 +137,9 @@ class Calculator(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"Midnight Calculator  v{__version__}")
         self.setFixedSize(QSize(370, 580))
+        icon_path = Path(__file__).parent / "app_icon.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
 
         # State
         self._expression = ""      # full expression string shown above result
@@ -387,6 +391,9 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Midnight Calculator")
     app.setApplicationVersion(__version__)
+    icon_path = Path(__file__).parent / "app_icon.ico"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     window = Calculator()
     window.show()
     sys.exit(app.exec())

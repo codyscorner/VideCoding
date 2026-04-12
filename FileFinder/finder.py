@@ -1,11 +1,13 @@
 import os
 import sys
 import string
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QListWidget, QLabel, QMessageBox, QSpinBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QIcon
 
 VERSION = "1.0.2"
 
@@ -64,6 +66,9 @@ class FileFinderApp(QMainWindow):
         self.setWindowTitle(f"File Finder v{VERSION}")
         self.resize(800, 600)
         self.found_count = 0
+        icon_path = Path(__file__).parent / "app_icon.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
 
         # Main Widget and Layout
         central_widget = QWidget()
@@ -205,6 +210,9 @@ class FileFinderApp(QMainWindow):
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    icon_path = Path(__file__).parent / "app_icon.ico"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     window = FileFinderApp()
     window.show()
     sys.exit(app.exec())

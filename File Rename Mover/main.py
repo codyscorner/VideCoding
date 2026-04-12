@@ -93,11 +93,15 @@ def main():
     templates_file = get_templates_file()
     template_manager = TemplateManager(templates_file)
 
+    # Set app-level icon
+    icon_path = get_resource_path("app_icon.ico")
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+
     # Create main window
     window = MainWindowQt(config_manager, VERSION, template_manager)
 
     # Set window icon if available
-    icon_path = get_resource_path("app_icon.ico")
     if icon_path.exists():
         window.setWindowIcon(QIcon(str(icon_path)))
 

@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QRadioButton, QButtonGroup, QApplication,
 )
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QIcon
 
 from core.worker import FlipWorker
 
@@ -24,6 +24,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Picture Flipper v1.3.0 — Auto Orientation Fixer")
         self.setMinimumSize(700, 560)
+        icon_path = Path(__file__).parent.parent / "app_icon.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
         self._worker: FlipWorker | None = None
         self._reference_face: str | None = None
         self._loading_timer = QTimer(self)

@@ -295,6 +295,12 @@ class FrameExtractorApp:
 
 def main():
     root = tk.Tk()
+    _icon = Path(__file__).parent / "app_icon.ico"
+    if _icon.exists():
+        try:
+            root.iconbitmap(str(_icon))
+        except Exception:
+            pass
     app = FrameExtractorApp(root)
     root.mainloop()
 

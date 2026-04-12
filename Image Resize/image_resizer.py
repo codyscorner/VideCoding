@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QFileDialog, QComboBox,
@@ -8,6 +9,7 @@ from PyQt6.QtWidgets import (
     QSpinBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QIcon
 from PIL import Image
 
 VERSION = "1.1.0"
@@ -320,6 +322,9 @@ class ImageResizerApp(QMainWindow):
         self.setWindowTitle(f"Image Resizer v{VERSION}")
         self.setMinimumSize(700, 750)
         self.resize(750, 780)
+        icon_path = Path(__file__).parent / "app_icon.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
         self.worker = None
         self.setup_ui()
         self.load_settings()
@@ -624,6 +629,9 @@ class ImageResizerApp(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLESHEET)
+    icon_path = Path(__file__).parent / "app_icon.ico"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     window = ImageResizerApp()
     window.show()
     sys.exit(app.exec())

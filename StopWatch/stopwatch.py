@@ -354,6 +354,14 @@ class StopwatchTimerApp:
         messagebox.showinfo("Time's Up!", "The timer has finished!")
 
 if __name__ == "__main__":
+    import os
+    from pathlib import Path
     root = tk.Tk()
+    _icon = Path(__file__).parent / "app_icon.ico"
+    if _icon.exists():
+        try:
+            root.iconbitmap(str(_icon))
+        except Exception:
+            pass
     app = StopwatchTimerApp(root)
     root.mainloop()

@@ -7,6 +7,7 @@ Supports drag-and-drop and file browser import.
 
 import sys
 import json
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 from PyQt5.QtWidgets import (
@@ -17,7 +18,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QMessageBox
 )
 from PyQt5.QtCore import Qt, QMimeData
-from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QFont, QClipboard
+from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QFont, QClipboard, QIcon
 
 
 class MetadataParser:
@@ -339,6 +340,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.parser = MetadataParser()
+        icon_path = Path(__file__).parent / "app_icon.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
         self.setup_ui()
 
     def setup_ui(self):
@@ -857,6 +861,10 @@ def main():
 
     # Set application style
     app.setStyle('Fusion')
+
+    icon_path = Path(__file__).parent / "app_icon.ico"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
 
     window = MainWindow()
     window.show()

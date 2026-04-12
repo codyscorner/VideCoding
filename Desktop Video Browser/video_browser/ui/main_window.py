@@ -1,7 +1,9 @@
 import os
 import base64
+from pathlib import Path
 from PySide6.QtWidgets import QMainWindow, QSplitter
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 from ui.file_list_panel import FileListPanel
 from ui.video_player_panel import VideoPlayerPanel
 from core.settings import AppSettings
@@ -15,6 +17,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"Desktop Video Browser v{VERSION}")
         self.resize(1200, 700)
+        icon_path = Path(__file__).parent.parent.parent / "app_icon.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
 
         self.file_list_panel = FileListPanel()
         self.video_player_panel = VideoPlayerPanel()

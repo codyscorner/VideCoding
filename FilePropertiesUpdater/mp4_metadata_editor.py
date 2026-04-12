@@ -402,6 +402,15 @@ def main():
     else:
         root = tk.Tk()
 
+    import os as _os
+    from pathlib import Path as _Path
+    _icon = _Path(__file__).parent / "app_icon.ico"
+    if _icon.exists():
+        try:
+            root.iconbitmap(str(_icon))
+        except Exception:
+            pass
+
     App(root)
     root.mainloop()
 
