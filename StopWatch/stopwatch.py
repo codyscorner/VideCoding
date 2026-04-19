@@ -3,9 +3,16 @@ from tkinter import ttk, messagebox
 import time
 from datetime import datetime
 import os
+import sys
 
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import pygame
+
+# PyInstaller-compatible base path
+def _base_path():
+    if getattr(sys, 'frozen', False):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
 
 class StopwatchTimerApp:
     def __init__(self, root):
@@ -35,7 +42,7 @@ class StopwatchTimerApp:
             print(f"Failed to initialize pygame mixer: {e}")
             self.sound_loaded = False
             
-        self.chime_file = os.path.join(os.path.dirname(__file__), "TimerChime.mp3")
+        self.chime_file = os.path.join(_base_path(), "TimerChime.mp3")
 
         # Configure Styling
         style = ttk.Style()
@@ -354,10 +361,9 @@ class StopwatchTimerApp:
         messagebox.showinfo("Time's Up!", "The timer has finished!")
 
 if __name__ == "__main__":
-    import os
     from pathlib import Path
     root = tk.Tk()
-    _icon = Path(__file__).parent / "app_icon.ico"
+    _icon = Path(_base_path()) / "app_icon.ico"
     if _icon.exists():
         try:
             root.iconbitmap(str(_icon))

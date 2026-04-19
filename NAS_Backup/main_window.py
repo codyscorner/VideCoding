@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -54,6 +54,7 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(f"NAS Backup v{VERSION}")
         self.setMinimumSize(780, 660)
+        self.setWindowIcon(QIcon(str(Path(__file__).parent / "app_icon.ico")))
 
         self._build_ui()
         self._apply_style()

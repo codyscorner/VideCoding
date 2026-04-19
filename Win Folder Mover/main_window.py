@@ -10,10 +10,11 @@ from __future__ import annotations
 import csv
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QColor, QPalette
+from PyQt6.QtGui import QFont, QColor, QPalette, QIcon
 from PyQt6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -52,6 +53,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"Windows Folder Mover v{VERSION}")
         self.setMinimumSize(720, 560)
+        self.setWindowIcon(QIcon(str(Path(__file__).parent / "app_icon.ico")))
 
         self._worker:  Optional[MoveWorker]  = None
         self._records: list[FileRecord]      = []

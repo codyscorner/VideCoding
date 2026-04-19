@@ -30,10 +30,15 @@ class ConfigManager:
 
     def _get_defaults(self) -> dict:
         """Get default configuration values"""
+        import os
+        # Default to half the logical CPU count, clamped between 2 and 16
+        cpu_count = os.cpu_count() or 4
+        default_workers = max(2, min(16, cpu_count // 2))
         return {
             'source_folder': '',
             'recursive': True,
-            'window_geometry': None
+            'window_geometry': None,
+            'io_workers': default_workers,
         }
 
     def save(self) -> None:

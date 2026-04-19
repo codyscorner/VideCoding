@@ -63,6 +63,7 @@ exe = EXE(
     a.datas,
     [],
     name='NAS_Backup',
+    icon='app_icon.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

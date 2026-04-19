@@ -180,6 +180,37 @@ class MainWindow:
         )
         recursive_cb.pack(anchor='w')
 
+        # Worker count row
+        workers_frame = ttk.Frame(options_frame)
+        workers_frame.pack(anchor='w', pady=(8, 0))
+
+        import os
+        cpu_count = os.cpu_count() or 4
+
+        ttk.Label(
+            workers_frame,
+            text="Hashing workers:",
+            foreground=ThemeManager.COLORS['fg_secondary']
+        ).pack(side=tk.LEFT)
+
+        self.workers_var = tk.IntVar(value=max(2, min(16, cpu_count // 2)))
+        workers_spin = ttk.Spinbox(
+            workers_frame,
+            from_=1,
+            to=cpu_count,
+            textvariable=self.workers_var,
+            width=5,
+            state='readonly'
+        )
+        workers_spin.pack(side=tk.LEFT, padx=(8, 8))
+
+        ttk.Label(
+            workers_frame,
+            text=f"(1 – {cpu_count} logical CPUs on this machine)",
+            foreground=ThemeManager.COLORS['fg_dim'],
+            font=('Segoe UI', 9)
+        ).pack(side=tk.LEFT)
+
     def _create_action_buttons(self, parent: ttk.Frame) -> None:
         """Create the action buttons"""
         button_frame = ttk.Frame(parent)
@@ -283,12 +314,14 @@ class MainWindow:
             self.source_entry.insert(0, self.config.source_folder)
 
         self.recursive_var.set(self.config.recursive)
+        self.workers_var.set(self.config.get('io_workers', self.workers_var.get()))
 
     def _save_config(self) -> None:
         """Save UI values to configuration"""
         self.config.source_folder = self.source_entry.get()
         self.config.recursive = self.recursive_var.get()
         self.config.window_geometry = self.root.geometry()
+        self.config.set('io_workers', self.workers_var.get())
         self.config.save()
 
     def _start_dedupe(self) -> None:
@@ -317,12 +350,12 @@ class MainWindow:
         # Start worker thread
         thread = threading.Thread(
             target=self._dedupe_worker,
-            args=(source, self.recursive_var.get()),
+            args=(source, self.recursive_var.get(), self.workers_var.get()),
             daemon=True
         )
         thread.start()
 
-    def _dedupe_worker(self, source: str, recursive: bool) -> None:
+    def _dedupe_worker(self, source: str, recursive: bool, io_workers: int = 4) -> None:
         """Worker thread for deduplication"""
         try:
             deduplicator = FileDeduplicator(
@@ -330,7 +363,8 @@ class MainWindow:
                 progress_callback=lambda cur, total, fname: self._message_queue.put(
                     ('progress', {'current': cur, 'total': total, 'filename': fname})
                 ),
-                cancel_check=lambda: self._cancel_requested
+                cancel_check=lambda: self._cancel_requested,
+                max_workers=io_workers
             )
 
             results, total, unique, moved = deduplicator.find_and_move_duplicates(

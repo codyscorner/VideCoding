@@ -5,7 +5,9 @@
 #   python main.py
 
 import sys
+from pathlib import Path
 
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
 from main_window import MainWindow
@@ -17,6 +19,7 @@ def main() -> None:
     # Fusion gives a clean, modern cross-platform look and plays nicely
     # with the custom stylesheet applied inside MainWindow.
     app.setStyle("Fusion")
+    app.setWindowIcon(QIcon(str(Path(__file__).parent / "app_icon.ico")))
 
     window = MainWindow()
     window.show()

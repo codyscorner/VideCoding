@@ -192,11 +192,15 @@ def main() -> None:
     if "--run" in sys.argv:
         sys.exit(run_headless(config))
 
+    from pathlib import Path
+
+    from PyQt6.QtGui import QIcon
     from PyQt6.QtWidgets import QApplication
     from main_window import MainWindow
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setWindowIcon(QIcon(str(Path(__file__).parent / "app_icon.ico")))
 
     window = MainWindow(config)
     window.show()
