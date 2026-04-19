@@ -1,4 +1,4 @@
-# Video Frame Extractor v1.3
+# Video Frame Extractor v1.4
 
 A GUI application for extracting frames from video files and saving them as PNG images.
 
@@ -54,7 +54,7 @@ python frame_extractor.py
 
 - Python 3.7 or higher
 - opencv-python 4.8.0 or higher
-- tkinter (usually included with Python)
+- PyQt6 6.0 or higher
 
 ## Notes
 
@@ -64,6 +64,7 @@ python frame_extractor.py
 
 ## Version History
 
+- **v1.4**: Migrated UI from tkinter to PyQt6.
 - **v1.3**: Added custom UI dark theme (Orange & Black) and refined GUI layout.
 - **v1.2**: Added support for extracting the "Last Frame" of videos.
 - **v1.0**: Initial release for numeric frame extraction.
