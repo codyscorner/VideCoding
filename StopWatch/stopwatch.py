@@ -1,373 +1,415 @@
-import tkinter as tk
-from tkinter import ttk, messagebox
-import time
-from datetime import datetime
 import os
 import sys
+import time
+from datetime import datetime
+from pathlib import Path
 
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import pygame
 
-# PyInstaller-compatible base path
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QTabWidget,
+    QLabel, QPushButton, QSpinBox, QTextEdit,
+    QGridLayout, QVBoxLayout, QHBoxLayout, QFrame, QMessageBox,
+)
+from PyQt6.QtGui import QIcon, QFont
+from PyQt6.QtCore import Qt, QTimer
+
+
 def _base_path():
     if getattr(sys, 'frozen', False):
         return sys._MEIPASS
     return os.path.dirname(os.path.abspath(__file__))
 
-class StopwatchTimerApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Stopwatch & Timer v1.0.0")
-        self.root.geometry("450x650")
-        self.root.minsize(400, 600)
-        
-        # Color Theme (Aqua)
-        self.colors = {
-            "bg": "#E0FFFF",          # Light Cyan / Aqua background
-            "fg": "#004B4B",          # Dark Cyan text
-            "accent1": "#00FFFF",     # Cyan / Aqua
-            "accent2": "#008B8B",     # Dark Cyan
-            "button_bg": "#00CED1",   # Dark Turquoise
-            "button_fg": "#FFFFFF",
-            "button_active": "#20B2AA" # Light Sea Green
-        }
-        
-        self.root.configure(bg=self.colors["bg"])
-        
-        # Initialize Audio
+
+COLORS = {
+    "bg":           "#1a1a2e",
+    "bg_mid":       "#16213e",
+    "fg":           "#e0d7ff",
+    "accent1":      "#7b2fff",
+    "accent2":      "#c77dff",
+    "button_bg":    "#7b2fff",
+    "button_fg":    "#ffffff",
+    "button_hover": "#9d4edd",
+    "input_bg":     "#0f3460",
+}
+
+STYLESHEET = f"""
+QMainWindow, QWidget {{
+    background-color: {COLORS['bg']};
+    color: {COLORS['fg']};
+    font-family: Helvetica;
+}}
+QTabWidget::pane {{
+    border: 1px solid {COLORS['accent1']};
+    background-color: {COLORS['bg']};
+}}
+QTabBar::tab {{
+    background-color: {COLORS['bg_mid']};
+    color: {COLORS['fg']};
+    font-size: 11pt;
+    font-weight: bold;
+    padding: 6px 16px;
+    border: 1px solid {COLORS['accent1']};
+}}
+QTabBar::tab:selected {{
+    background-color: {COLORS['accent1']};
+    color: #ffffff;
+}}
+QPushButton {{
+    background-color: {COLORS['button_bg']};
+    color: {COLORS['button_fg']};
+    font-size: 12pt;
+    font-weight: bold;
+    border: none;
+    border-radius: 4px;
+    padding: 8px 16px;
+    min-width: 90px;
+}}
+QPushButton:hover {{
+    background-color: {COLORS['button_hover']};
+}}
+QPushButton:disabled {{
+    background-color: #333355;
+    color: #666688;
+}}
+QTextEdit {{
+    background-color: {COLORS['input_bg']};
+    color: {COLORS['fg']};
+    font-family: Consolas;
+    font-size: 11pt;
+    border: 1px solid {COLORS['accent1']};
+    border-radius: 3px;
+}}
+QSpinBox {{
+    background-color: {COLORS['input_bg']};
+    color: {COLORS['fg']};
+    font-size: 14pt;
+    font-family: Helvetica;
+    padding: 4px;
+    min-width: 50px;
+    border: 1px solid {COLORS['accent1']};
+    border-radius: 3px;
+}}
+QLabel#display {{
+    font-size: 40pt;
+    font-weight: bold;
+    color: {COLORS['accent2']};
+}}
+QLabel#display_alarm {{
+    font-size: 40pt;
+    font-weight: bold;
+    color: red;
+}}
+QLabel#section_title {{
+    font-size: 12pt;
+    font-weight: bold;
+    color: {COLORS['accent2']};
+}}
+QLabel#spin_label {{
+    font-size: 10pt;
+    font-weight: bold;
+    color: {COLORS['accent2']};
+}}
+"""
+
+
+class StopwatchTimerApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Stopwatch & Timer v1.1.0")
+        self.setMinimumSize(400, 600)
+        self.resize(450, 650)
+        self.setStyleSheet(STYLESHEET)
+
+        # Audio
         try:
             pygame.mixer.init()
             self.sound_loaded = True
         except Exception as e:
             print(f"Failed to initialize pygame mixer: {e}")
             self.sound_loaded = False
-            
         self.chime_file = os.path.join(_base_path(), "TimerChime.mp3")
+        self.channel = None
+        self.is_ringing = False
 
-        # Configure Styling
-        style = ttk.Style()
-        style.theme_use('clam')
-        
-        # Notebook (Tabs) style
-        style.configure('TNotebook', background=self.colors["bg"])
-        style.configure('TNotebook.Tab', background=self.colors["accent1"], foreground=self.colors["fg"], padding=[15, 5], font=('Helvetica', 11, 'bold'))
-        style.map('TNotebook.Tab', background=[('selected', self.colors["bg"])], foreground=[('selected', self.colors["accent2"])])
-        
-        # Frames style
-        style.configure('Aqua.TFrame', background=self.colors["bg"])
-        
-        # Notebook setup
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        self.stopwatch_frame = ttk.Frame(self.notebook, style='Aqua.TFrame')
-        self.timer_frame = ttk.Frame(self.notebook, style='Aqua.TFrame')
-        
-        self.notebook.add(self.stopwatch_frame, text="Stopwatch")
-        self.notebook.add(self.timer_frame, text="Timer")
-        
-        self._init_stopwatch_ui()
-        self._init_timer_ui()
+        tabs = QTabWidget()
+        self.setCentralWidget(tabs)
+        tabs.addTab(self._build_stopwatch_tab(), "Stopwatch")
+        tabs.addTab(self._build_timer_tab(), "Timer")
 
-    def _create_button(self, parent, text, command, width=10):
-        btn = tk.Button(
-            parent, 
-            text=text, 
-            command=command, 
-            bg=self.colors["button_bg"], 
-            fg=self.colors["button_fg"],
-            activebackground=self.colors["button_active"],
-            activeforeground=self.colors["button_fg"],
-            font=('Helvetica', 12, 'bold'),
-            borderwidth=0,
-            cursor="hand2",
-            width=width,
-            pady=8
-        )
-        return btn
+        # Timers
+        self._sw_timer = QTimer()
+        self._sw_timer.setInterval(50)
+        self._sw_timer.timeout.connect(self._update_stopwatch)
 
-    # ================= STOPWATCH LOGIC =================
-    def _init_stopwatch_ui(self):
-        # State variables
+        self._tmr_timer = QTimer()
+        self._tmr_timer.setInterval(100)
+        self._tmr_timer.timeout.connect(self._update_timer)
+
+    # ── Stopwatch tab ─────────────────────────────────────────────────────
+
+    def _build_stopwatch_tab(self):
         self.sw_running = False
-        self.sw_start_time = 0
-        self.sw_elapsed = 0
+        self.sw_start_time = 0.0
+        self.sw_elapsed = 0.0
         self.sw_laps = []
         self.MAX_LAPS = 50
-        
-        # Display
-        self.sw_display = tk.Label(self.stopwatch_frame, text="00:00:00.00", font=('Helvetica', 40, 'bold'), bg=self.colors["bg"], fg=self.colors["accent2"])
-        self.sw_display.pack(pady=30)
-        
-        # Buttons Frame
-        btn_frame = tk.Frame(self.stopwatch_frame, bg=self.colors["bg"])
-        btn_frame.pack(pady=10)
-        
-        self.sw_btn_start = self._create_button(btn_frame, "Start", self.sw_start)
-        self.sw_btn_start.grid(row=0, column=0, padx=5)
-        
-        self.sw_btn_stop = self._create_button(btn_frame, "Stop", self.sw_stop)
-        self.sw_btn_stop.grid(row=0, column=1, padx=5)
-        self.sw_btn_stop.config(state=tk.DISABLED)
-        
-        self.sw_btn_lap = self._create_button(btn_frame, "Lap", self.sw_lap)
-        self.sw_btn_lap.grid(row=1, column=0, padx=5, pady=10)
-        self.sw_btn_lap.config(state=tk.DISABLED)
-        
-        self.sw_btn_reset = self._create_button(btn_frame, "Reset", self.sw_reset)
-        self.sw_btn_reset.grid(row=1, column=1, padx=5, pady=10)
-        
-        # Status Box (Laps)
-        status_label = tk.Label(self.stopwatch_frame, text="Laps & Status", font=('Helvetica', 12, 'bold'), bg=self.colors["bg"], fg=self.colors["fg"])
-        status_label.pack(anchor='w', padx=20, pady=(10, 0))
-        
-        self.sw_status_box = tk.Text(self.stopwatch_frame, height=15, width=40, font=('Consolas', 11), bg="#FFFFFF", fg=self.colors["fg"], state=tk.DISABLED, relief=tk.FLAT)
-        self.sw_status_box.pack(padx=20, pady=5, fill=tk.BOTH, expand=True)
-        
-        # Scrollbar for status box
-        scrollbar = ttk.Scrollbar(self.sw_status_box, command=self.sw_status_box.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.sw_status_box.config(yscrollcommand=scrollbar.set)
-        
-        self._log_sw_status("Stopwatch initialized. Ready.")
 
-    def format_time(self, t):
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(10)
+
+        self.sw_display = QLabel("00:00:00.00")
+        self.sw_display.setObjectName("display")
+        self.sw_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.sw_display)
+
+        btn_grid = QGridLayout()
+        btn_grid.setSpacing(8)
+        self.sw_btn_start = QPushButton("Start")
+        self.sw_btn_stop  = QPushButton("Stop")
+        self.sw_btn_lap   = QPushButton("Lap")
+        self.sw_btn_reset = QPushButton("Reset")
+        self.sw_btn_stop.setEnabled(False)
+        self.sw_btn_lap.setEnabled(False)
+        self.sw_btn_start.clicked.connect(self.sw_start)
+        self.sw_btn_stop.clicked.connect(self.sw_stop)
+        self.sw_btn_lap.clicked.connect(self.sw_lap)
+        self.sw_btn_reset.clicked.connect(self.sw_reset)
+        btn_grid.addWidget(self.sw_btn_start, 0, 0)
+        btn_grid.addWidget(self.sw_btn_stop,  0, 1)
+        btn_grid.addWidget(self.sw_btn_lap,   1, 0)
+        btn_grid.addWidget(self.sw_btn_reset, 1, 1)
+        layout.addLayout(btn_grid)
+
+        lbl = QLabel("Laps & Status")
+        lbl.setObjectName("section_title")
+        layout.addWidget(lbl)
+
+        self.sw_status_box = QTextEdit()
+        self.sw_status_box.setReadOnly(True)
+        layout.addWidget(self.sw_status_box)
+
+        self._log_sw("Stopwatch initialized. Ready.")
+        return w
+
+    def _log_sw(self, message: str):
+        self.sw_status_box.append(message)
+
+    def format_time(self, t: float) -> str:
         mins, secs = divmod(t, 60)
         hours, mins = divmod(mins, 60)
-        millisecs = int((t % 1) * 100)
-        return f"{int(hours):02d}:{int(mins):02d}:{int(secs):02d}.{millisecs:02d}"
-
-    def _log_sw_status(self, message):
-        self.sw_status_box.config(state=tk.NORMAL)
-        self.sw_status_box.insert(tk.END, message + "\n")
-        self.sw_status_box.see(tk.END)
-        self.sw_status_box.config(state=tk.DISABLED)
+        ms = int((t % 1) * 100)
+        return f"{int(hours):02d}:{int(mins):02d}:{int(secs):02d}.{ms:02d}"
 
     def sw_start(self):
         if not self.sw_running:
             self.sw_start_time = time.time() - self.sw_elapsed
             self.sw_running = True
-            self._update_stopwatch()
-            
-            self.sw_btn_start.config(state=tk.DISABLED)
-            self.sw_btn_stop.config(state=tk.NORMAL)
+            self._sw_timer.start()
+            self.sw_btn_start.setEnabled(False)
+            self.sw_btn_stop.setEnabled(True)
             if len(self.sw_laps) < self.MAX_LAPS:
-                self.sw_btn_lap.config(state=tk.NORMAL)
-                
+                self.sw_btn_lap.setEnabled(True)
             if self.sw_elapsed == 0:
-                start_str = datetime.now().strftime("%I:%M:%S %p")
-                self._log_sw_status(f"Session Started: {start_str}")
-                self._log_sw_status("-" * 35)
+                self._log_sw(f"Session Started: {datetime.now().strftime('%I:%M:%S %p')}")
+                self._log_sw("-" * 35)
 
     def _update_stopwatch(self):
-        if self.sw_running:
-            self.sw_elapsed = time.time() - self.sw_start_time
-            self.sw_display.config(text=self.format_time(self.sw_elapsed))
-            self.root.after(50, self._update_stopwatch)
+        self.sw_elapsed = time.time() - self.sw_start_time
+        self.sw_display.setText(self.format_time(self.sw_elapsed))
 
     def sw_stop(self):
         if self.sw_running:
             self.sw_running = False
-            self.sw_btn_start.config(state=tk.NORMAL)
-            self.sw_btn_stop.config(state=tk.DISABLED)
-            self.sw_btn_lap.config(state=tk.DISABLED)
+            self._sw_timer.stop()
+            self.sw_btn_start.setEnabled(True)
+            self.sw_btn_stop.setEnabled(False)
+            self.sw_btn_lap.setEnabled(False)
 
     def sw_lap(self):
         if self.sw_running and len(self.sw_laps) < self.MAX_LAPS:
             lap_time = self.sw_elapsed
             self.sw_laps.append(lap_time)
-            
-            # Calculate lap split (difference from previous lap)
-            if len(self.sw_laps) == 1:
-                split_time = lap_time
-            else:
-                split_time = lap_time - self.sw_laps[-2]
-                
-            lap_num = len(self.sw_laps)
-            self._log_sw_status(f"Lap {lap_num:02d}: {self.format_time(lap_time)}  (Split: {self.format_time(split_time)})")
-            
-            if lap_num >= self.MAX_LAPS:
-                self.sw_btn_lap.config(state=tk.DISABLED)
-                self._log_sw_status("Maximum 50 laps reached.")
+            split = lap_time if len(self.sw_laps) == 1 else lap_time - self.sw_laps[-2]
+            n = len(self.sw_laps)
+            self._log_sw(f"Lap {n:02d}: {self.format_time(lap_time)}  (Split: {self.format_time(split)})")
+            if n >= self.MAX_LAPS:
+                self.sw_btn_lap.setEnabled(False)
+                self._log_sw("Maximum 50 laps reached.")
 
     def sw_reset(self):
         self.sw_running = False
-        self.sw_elapsed = 0
+        self._sw_timer.stop()
+        self.sw_elapsed = 0.0
         self.sw_laps = []
-        self.sw_display.config(text="00:00:00.00")
-        
-        self.sw_btn_start.config(state=tk.NORMAL)
-        self.sw_btn_stop.config(state=tk.DISABLED)
-        self.sw_btn_lap.config(state=tk.DISABLED)
-        
-        self.sw_status_box.config(state=tk.NORMAL)
-        self.sw_status_box.delete('1.0', tk.END)
-        self.sw_status_box.config(state=tk.DISABLED)
-        self._log_sw_status("Stopwatch reset. Ready.")
+        self.sw_display.setText("00:00:00.00")
+        self.sw_btn_start.setEnabled(True)
+        self.sw_btn_stop.setEnabled(False)
+        self.sw_btn_lap.setEnabled(False)
+        self.sw_status_box.clear()
+        self._log_sw("Stopwatch reset. Ready.")
 
-    # ================= TIMER LOGIC =================
-    def _init_timer_ui(self):
+    # ── Timer tab ─────────────────────────────────────────────────────────
+
+    def _build_timer_tab(self):
         self.tmr_running = False
         self.tmr_paused = False
-        self.tmr_remaining = 0
-        self.tmr_end_time = 0
-        self.is_ringing = False
-        self.channel = None
-        
-        # Display
-        self.tmr_display = tk.Label(self.timer_frame, text="00:00:00", font=('Helvetica', 40, 'bold'), bg=self.colors["bg"], fg=self.colors["accent2"])
-        self.tmr_display.pack(pady=(30, 10))
-        
-        # Input Frame
-        input_frame = tk.Frame(self.timer_frame, bg=self.colors["bg"])
-        input_frame.pack(pady=10)
-        
-        tk.Label(input_frame, text="HH", bg=self.colors["bg"], fg=self.colors["fg"], font=('Helvetica', 10, 'bold')).grid(row=0, column=0)
-        tk.Label(input_frame, text="MM", bg=self.colors["bg"], fg=self.colors["fg"], font=('Helvetica', 10, 'bold')).grid(row=0, column=1)
-        tk.Label(input_frame, text="SS", bg=self.colors["bg"], fg=self.colors["fg"], font=('Helvetica', 10, 'bold')).grid(row=0, column=2)
-        
-        # Spinboxes for time entry
-        spinbox_font = ('Helvetica', 14)
-        self.tmr_hh = ttk.Spinbox(input_frame, from_=0, to=99, width=3, font=spinbox_font, justify=tk.CENTER)
-        self.tmr_hh.grid(row=1, column=0, padx=5)
-        self.tmr_hh.set(0)
-        
-        self.tmr_mm = ttk.Spinbox(input_frame, from_=0, to=59, width=3, font=spinbox_font, justify=tk.CENTER)
-        self.tmr_mm.grid(row=1, column=1, padx=5)
-        self.tmr_mm.set(0)
-        
-        self.tmr_ss = ttk.Spinbox(input_frame, from_=0, to=59, width=3, font=spinbox_font, justify=tk.CENTER)
-        self.tmr_ss.grid(row=1, column=2, padx=5)
-        self.tmr_ss.set(0)
-        
-        # Buttons Frame
-        btn_frame = tk.Frame(self.timer_frame, bg=self.colors["bg"])
-        btn_frame.pack(pady=20)
-        
-        self.tmr_btn_start = self._create_button(btn_frame, "Start", self.tmr_start)
-        self.tmr_btn_start.grid(row=0, column=0, padx=5)
-        
-        self.tmr_btn_pause = self._create_button(btn_frame, "Pause", self.tmr_pause)
-        self.tmr_btn_pause.grid(row=0, column=1, padx=5)
-        self.tmr_btn_pause.config(state=tk.DISABLED)
-        
-        self.tmr_btn_reset = self._create_button(btn_frame, "Reset", self.tmr_reset)
-        self.tmr_btn_reset.grid(row=1, column=0, columnspan=2, padx=5, pady=10, sticky="ew")
+        self.tmr_remaining = 0.0
+        self.tmr_end_time = 0.0
 
-    def _get_input_seconds(self):
-        try:
-            h = int(self.tmr_hh.get() or 0)
-            m = int(self.tmr_mm.get() or 0)
-            s = int(self.tmr_ss.get() or 0)
-            return h * 3600 + m * 60 + s
-        except ValueError:
-            return 0
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(10)
 
-    def format_timer(self, seconds):
-        if seconds < 0:
-            seconds = 0
-        mins, secs = divmod(seconds, 60)
+        self.tmr_display = QLabel("00:00:00")
+        self.tmr_display.setObjectName("display")
+        self.tmr_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.tmr_display)
+
+        # Spinbox row
+        spin_layout = QHBoxLayout()
+        spin_layout.setSpacing(10)
+        for text, attr, max_val in [("HH", "tmr_hh", 99), ("MM", "tmr_mm", 59), ("SS", "tmr_ss", 59)]:
+            col = QVBoxLayout()
+            lbl = QLabel(text)
+            lbl.setObjectName("spin_label")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            spin = QSpinBox()
+            spin.setRange(0, max_val)
+            spin.setValue(0)
+            spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            setattr(self, attr, spin)
+            col.addWidget(lbl)
+            col.addWidget(spin)
+            spin_layout.addLayout(col)
+        layout.addLayout(spin_layout)
+
+        btn_grid = QGridLayout()
+        btn_grid.setSpacing(8)
+        self.tmr_btn_start = QPushButton("Start")
+        self.tmr_btn_pause = QPushButton("Pause")
+        self.tmr_btn_reset = QPushButton("Reset")
+        self.tmr_btn_pause.setEnabled(False)
+        self.tmr_btn_start.clicked.connect(self.tmr_start)
+        self.tmr_btn_pause.clicked.connect(self.tmr_pause)
+        self.tmr_btn_reset.clicked.connect(self.tmr_reset)
+        btn_grid.addWidget(self.tmr_btn_start, 0, 0)
+        btn_grid.addWidget(self.tmr_btn_pause, 0, 1)
+        btn_grid.addWidget(self.tmr_btn_reset, 1, 0, 1, 2)
+        layout.addLayout(btn_grid)
+        layout.addStretch()
+
+        return w
+
+    def format_timer(self, seconds: float) -> str:
+        seconds = max(0, seconds)
+        mins, secs = divmod(int(seconds), 60)
         hours, mins = divmod(mins, 60)
-        return f"{int(hours):02d}:{int(mins):02d}:{int(secs):02d}"
+        return f"{hours:02d}:{mins:02d}:{secs:02d}"
+
+    def _get_input_seconds(self) -> int:
+        return self.tmr_hh.value() * 3600 + self.tmr_mm.value() * 60 + self.tmr_ss.value()
 
     def tmr_start(self):
         if self.is_ringing:
             self.stop_ringing()
             return
-
         if not self.tmr_running:
             if not self.tmr_paused:
                 self.tmr_remaining = self._get_input_seconds()
-            
             if self.tmr_remaining <= 0:
-                messagebox.showwarning("Invalid Time", "Please enter a time greater than zero.")
+                QMessageBox.warning(self, "Invalid Time", "Please enter a time greater than zero.")
                 return
-                
             self.tmr_running = True
             self.tmr_paused = False
             self.tmr_end_time = time.time() + self.tmr_remaining
-            
-            # Disable inputs
-            self.tmr_hh.config(state="disabled")
-            self.tmr_mm.config(state="disabled")
-            self.tmr_ss.config(state="disabled")
-            
-            self.tmr_btn_start.config(state=tk.DISABLED)
-            self.tmr_btn_pause.config(state=tk.NORMAL)
-            
-            self._update_timer()
+            self.tmr_hh.setEnabled(False)
+            self.tmr_mm.setEnabled(False)
+            self.tmr_ss.setEnabled(False)
+            self.tmr_btn_start.setEnabled(False)
+            self.tmr_btn_pause.setEnabled(True)
+            self._tmr_timer.start()
 
     def _update_timer(self):
         if self.tmr_running:
             self.tmr_remaining = self.tmr_end_time - time.time()
             if self.tmr_remaining <= 0:
                 self.tmr_remaining = 0
-                self.tmr_display.config(text="00:00:00")
+                self.tmr_display.setText("00:00:00")
+                self._tmr_timer.stop()
                 self.play_chime()
                 self._reset_timer_state()
             else:
-                self.tmr_display.config(text=self.format_timer(self.tmr_remaining))
-                self.root.after(100, self._update_timer)
+                self.tmr_display.setText(self.format_timer(self.tmr_remaining))
 
     def tmr_pause(self):
         if self.tmr_running:
             self.tmr_running = False
+            self._tmr_timer.stop()
             self.tmr_paused = True
-            self.tmr_btn_start.config(state=tk.NORMAL)
-            self.tmr_btn_pause.config(state=tk.DISABLED)
+            self.tmr_btn_start.setEnabled(True)
+            self.tmr_btn_pause.setEnabled(False)
 
     def tmr_reset(self):
         if self.is_ringing:
             self.stop_ringing()
-            
+        self._tmr_timer.stop()
         self._reset_timer_state()
-        self.tmr_display.config(text="00:00:00")
-        
+        self.tmr_display.setText("00:00:00")
+
     def _reset_timer_state(self):
         self.tmr_running = False
         self.tmr_paused = False
-        self.tmr_remaining = 0
-        
-        self.tmr_hh.config(state="normal")
-        self.tmr_mm.config(state="normal")
-        self.tmr_ss.config(state="normal")
-        
-        self.tmr_btn_start.config(state=tk.NORMAL)
-        self.tmr_btn_pause.config(state=tk.DISABLED)
+        self.tmr_remaining = 0.0
+        self.tmr_hh.setEnabled(True)
+        self.tmr_mm.setEnabled(True)
+        self.tmr_ss.setEnabled(True)
+        self.tmr_btn_start.setEnabled(True)
+        self.tmr_btn_pause.setEnabled(False)
 
     def play_chime(self):
         if self.sound_loaded and os.path.exists(self.chime_file):
             try:
                 sound = pygame.mixer.Sound(self.chime_file)
-                self.channel = sound.play(loops=-1) # Loop until stopped
+                self.channel = sound.play(loops=-1)
                 self.is_ringing = True
-                self.tmr_btn_start.config(text="STOP ALARM", state=tk.NORMAL, bg="red", fg="white")
-                self.tmr_display.config(fg="red")
+                self.tmr_btn_start.setObjectName("alarm_btn")
+                self.tmr_btn_start.setStyleSheet("background-color: red; color: white;")
+                self.tmr_btn_start.setText("STOP ALARM")
+                self.tmr_btn_start.setEnabled(True)
+                self.tmr_display.setObjectName("display_alarm")
+                self.tmr_display.setStyleSheet("font-size: 40pt; font-weight: bold; color: red;")
+                return
             except Exception as e:
                 print(f"Error playing sound: {e}")
-                self.fallback_alert()
-        else:
-            self.fallback_alert()
-            
+        self.fallback_alert()
+
     def stop_ringing(self):
         if self.channel:
             self.channel.stop()
         self.is_ringing = False
-        self.tmr_btn_start.config(text="Start", bg=self.colors["button_bg"], fg=self.colors["button_fg"])
-        self.tmr_display.config(fg=self.colors["accent2"])
-        
+        self.tmr_btn_start.setText("Start")
+        self.tmr_btn_start.setStyleSheet("")
+        self.tmr_display.setStyleSheet("")
+
     def fallback_alert(self):
-        self.root.bell()
-        messagebox.showinfo("Time's Up!", "The timer has finished!")
+        QApplication.beep()
+        QMessageBox.information(self, "Time's Up!", "The timer has finished!")
+
+
+def main():
+    app = QApplication(sys.argv)
+    window = StopwatchTimerApp()
+    icon_path = Path(_base_path()) / "app_icon.ico"
+    if icon_path.exists():
+        window.setWindowIcon(QIcon(str(icon_path)))
+    window.show()
+    sys.exit(app.exec())
+
 
 if __name__ == "__main__":
-    from pathlib import Path
-    root = tk.Tk()
-    _icon = Path(_base_path()) / "app_icon.ico"
-    if _icon.exists():
-        try:
-            root.iconbitmap(str(_icon))
-        except Exception:
-            pass
-    app = StopwatchTimerApp(root)
-    root.mainloop()
+    main()

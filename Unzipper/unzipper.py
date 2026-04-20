@@ -1,185 +1,230 @@
-import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext
-import zipfile
 import os
+import sys
 import shutil
+import zipfile
+from pathlib import Path
 
-# ── Colour palette ──────────────────────────────────────────────────────────
-BG_DARK      = "#1a1f2e"
-BG_MID       = "#222840"
-BG_PANEL     = "#2a3150"
-ACCENT       = "#4a90d9"
-ACCENT_HOVER = "#5ba3f0"
-ACCENT_DIM   = "#2e5f99"
-TEXT_BRIGHT  = "#e8eaf6"
-TEXT_DIM     = "#8899bb"
-BORDER       = "#3a4a70"
-SUCCESS      = "#4dd0a0"
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QLabel, QLineEdit,
+    QPushButton, QTextEdit, QGridLayout, QVBoxLayout,
+    QHBoxLayout, QFrame, QFileDialog, QMessageBox,
+)
+from PyQt6.QtGui import QIcon, QColor, QTextCharFormat
+from PyQt6.QtCore import Qt
+
+BG_DARK      = "#0d1f0d"
+BG_MID       = "#122112"
+BG_PANEL     = "#1a3a1a"
+ACCENT       = "#39d353"
+ACCENT_HOVER = "#57e870"
+ACCENT_DIM   = "#1a6b1a"
+TEXT_BRIGHT  = "#d4f5d4"
+TEXT_DIM     = "#7aaa7a"
+BORDER       = "#2d5a2d"
+SUCCESS      = "#39d353"
 ERROR_COL    = "#e05c5c"
 
-FONT_TITLE  = ("Segoe UI", 11, "bold")
-FONT_LABEL  = ("Segoe UI", 9)
-FONT_ENTRY  = ("Segoe UI", 9)
-FONT_BTN    = ("Segoe UI", 9, "bold")
-FONT_STATUS = ("Consolas", 8)
+STYLESHEET = f"""
+QMainWindow, QWidget {{
+    background-color: {BG_DARK};
+    color: {TEXT_BRIGHT};
+    font-family: "Segoe UI";
+    font-size: 9pt;
+}}
+QLabel {{
+    background-color: transparent;
+    color: {TEXT_DIM};
+}}
+QLabel#title {{
+    font-size: 13pt;
+    font-weight: bold;
+    color: {TEXT_BRIGHT};
+}}
+QLabel#version {{
+    font-size: 8pt;
+    color: {TEXT_DIM};
+}}
+QLineEdit {{
+    background-color: {BG_PANEL};
+    color: {TEXT_BRIGHT};
+    border: 1px solid {BORDER};
+    border-radius: 3px;
+    padding: 5px;
+    font-size: 9pt;
+}}
+QLineEdit:focus {{
+    border: 1px solid {ACCENT};
+}}
+QPushButton {{
+    background-color: {ACCENT};
+    color: {TEXT_BRIGHT};
+    font-weight: bold;
+    border: none;
+    border-radius: 3px;
+    padding: 6px 14px;
+    font-size: 9pt;
+}}
+QPushButton:hover {{
+    background-color: {ACCENT_HOVER};
+}}
+QPushButton#secondary {{
+    background-color: {BG_PANEL};
+}}
+QPushButton#secondary:hover {{
+    background-color: {BORDER};
+}}
+QTextEdit {{
+    background-color: {BG_MID};
+    color: {TEXT_BRIGHT};
+    border: 1px solid {BORDER};
+    border-radius: 3px;
+    font-family: Consolas;
+    font-size: 8pt;
+}}
+QFrame#divider {{
+    background-color: {BORDER};
+}}
+QFrame#titlebar {{
+    background-color: {ACCENT_DIM};
+}}
+"""
 
 
-class HoverButton(tk.Button):
-    def __init__(self, master, **kw):
-        self._bg      = kw.pop("bg",            ACCENT)
-        self._hover   = kw.pop("hover_bg",      ACCENT_HOVER)
-        self._fg      = kw.pop("fg",            TEXT_BRIGHT)
-        super().__init__(master, bg=self._bg, fg=self._fg,
-                         activebackground=self._hover, activeforeground=TEXT_BRIGHT,
-                         relief="flat", cursor="hand2", bd=0, **kw)
-        self.bind("<Enter>", lambda _: self.config(bg=self._hover))
-        self.bind("<Leave>", lambda _: self.config(bg=self._bg))
+class UnzipperApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Unzipper  V-1.1.0")
+        self.setFixedSize(660, 480)
+        self.setStyleSheet(STYLESHEET)
 
+        central = QWidget()
+        self.setCentralWidget(central)
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-class UnzipperApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Unzipper  V-1.0.0")
-        self.root.geometry("660x480")
-        self.root.resizable(False, False)
-        self.root.configure(bg=BG_DARK)
+        # Title bar
+        titlebar = QFrame()
+        titlebar.setObjectName("titlebar")
+        titlebar.setFixedHeight(42)
+        tb_layout = QHBoxLayout(titlebar)
+        tb_layout.setContentsMargins(16, 0, 16, 0)
+        lbl_title = QLabel("⚡  Unzipper")
+        lbl_title.setObjectName("title")
+        lbl_ver = QLabel("V-1.1.0")
+        lbl_ver.setObjectName("version")
+        tb_layout.addWidget(lbl_title)
+        tb_layout.addWidget(lbl_ver)
+        tb_layout.addStretch()
+        outer.addWidget(titlebar)
 
-        self._build_ui()
+        # Body
+        body = QWidget()
+        body_layout = QGridLayout(body)
+        body_layout.setContentsMargins(20, 14, 20, 14)
+        body_layout.setSpacing(6)
+        body_layout.setColumnStretch(0, 1)
+        outer.addWidget(body)
 
-    # ── UI construction ───────────────────────────────────────────────────
-    def _build_ui(self):
-        # ── Title bar strip ──────────────────────────────────────────────
-        title_bar = tk.Frame(self.root, bg=ACCENT_DIM, height=42)
-        title_bar.pack(fill="x")
-        title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="⚡  Unzipper", font=("Segoe UI", 13, "bold"),
-                 bg=ACCENT_DIM, fg=TEXT_BRIGHT).pack(side="left", padx=16, pady=8)
-        tk.Label(title_bar, text="V-1.0.0", font=("Segoe UI", 8),
-                 bg=ACCENT_DIM, fg=TEXT_DIM).pack(side="left", pady=12)
+        # Source row
+        body_layout.addWidget(QLabel("Source Folder"), 0, 0, 1, 3)
+        self.source_edit = QLineEdit()
+        browse_src = QPushButton("Browse")
+        browse_src.setFixedWidth(80)
+        browse_src.setObjectName("secondary")
+        browse_src.clicked.connect(self.browse_source)
+        body_layout.addWidget(self.source_edit, 1, 0, 1, 2)
+        body_layout.addWidget(browse_src, 1, 2)
 
-        # ── Main content frame ───────────────────────────────────────────
-        body = tk.Frame(self.root, bg=BG_DARK, padx=20, pady=14)
-        body.pack(fill="both", expand=True)
+        # Dest row
+        body_layout.addWidget(QLabel("Destination Folder"), 2, 0, 1, 3)
+        self.dest_edit = QLineEdit()
+        browse_dst = QPushButton("Browse")
+        browse_dst.setFixedWidth(80)
+        browse_dst.setObjectName("secondary")
+        browse_dst.clicked.connect(self.browse_dest)
+        body_layout.addWidget(self.dest_edit, 3, 0, 1, 2)
+        body_layout.addWidget(browse_dst, 3, 2)
 
-        # ── Path rows ────────────────────────────────────────────────────
-        self.source_entry = self._path_row(body, "Source Folder", 0, self.browse_source)
-        self.dest_entry   = self._path_row(body, "Destination Folder", 1, self.browse_dest)
+        # Filename row
+        body_layout.addWidget(QLabel("Filename  (Flat Unzip)"), 4, 0, 1, 3)
+        self.filename_edit = QLineEdit("UnzippedFile")
+        body_layout.addWidget(self.filename_edit, 5, 0, 1, 3)
 
-        # ── Filename row ─────────────────────────────────────────────────
-        tk.Label(body, text="Filename  (Flat Unzip)", font=FONT_LABEL,
-                 bg=BG_DARK, fg=TEXT_DIM).grid(row=2, column=0, sticky="w", pady=(10, 2))
-        self.filename_entry = tk.Entry(body, font=FONT_ENTRY, width=46,
-                                       bg=BG_PANEL, fg=TEXT_BRIGHT,
-                                       insertbackground=TEXT_BRIGHT,
-                                       relief="flat", bd=0,
-                                       highlightthickness=1,
-                                       highlightbackground=BORDER,
-                                       highlightcolor=ACCENT)
-        self.filename_entry.grid(row=3, column=0, columnspan=3, sticky="ew", ipady=5)
-        self.filename_entry.insert(0, "UnzippedFile")
+        # Action buttons
+        btn_layout = QHBoxLayout()
+        btn_flat = QPushButton("Unzip  —  Flat")
+        btn_struct = QPushButton("Unzip  —  Keep Structure")
+        btn_struct.setObjectName("secondary")
+        btn_flat.clicked.connect(self.unzip_flat)
+        btn_struct.clicked.connect(self.unzip_with_structure)
+        btn_layout.addWidget(btn_flat)
+        btn_layout.addWidget(btn_struct)
+        body_layout.addLayout(btn_layout, 6, 0, 1, 3)
 
-        # ── Action buttons ────────────────────────────────────────────────
-        btn_frame = tk.Frame(body, bg=BG_DARK)
-        btn_frame.grid(row=4, column=0, columnspan=3, pady=16, sticky="ew")
-        btn_frame.columnconfigure((0, 1), weight=1)
+        # Divider
+        divider = QFrame()
+        divider.setObjectName("divider")
+        divider.setFixedHeight(1)
+        body_layout.addWidget(divider, 7, 0, 1, 3)
 
-        HoverButton(btn_frame, text="Unzip  —  Flat",
-                    font=FONT_BTN, padx=14, pady=8,
-                    command=self.unzip_flat).grid(row=0, column=0, padx=(0, 6), sticky="ew")
+        # Status
+        body_layout.addWidget(QLabel("Status"), 8, 0)
+        self.status_box = QTextEdit()
+        self.status_box.setReadOnly(True)
+        body_layout.addWidget(self.status_box, 9, 0, 1, 3)
+        body_layout.setRowStretch(9, 1)
 
-        HoverButton(btn_frame, text="Unzip  —  Keep Structure",
-                    font=FONT_BTN, padx=14, pady=8,
-                    bg=BG_PANEL, hover_bg=BORDER,
-                    command=self.unzip_with_structure).grid(row=0, column=1, padx=(6, 0), sticky="ew")
-
-        # ── Divider ───────────────────────────────────────────────────────
-        tk.Frame(body, bg=BORDER, height=1).grid(row=5, column=0, columnspan=3,
-                                                  sticky="ew", pady=(0, 8))
-
-        # ── Status box ────────────────────────────────────────────────────
-        tk.Label(body, text="Status", font=FONT_LABEL,
-                 bg=BG_DARK, fg=TEXT_DIM).grid(row=6, column=0, sticky="w")
-        self.status_box = scrolledtext.ScrolledText(
-            body, font=FONT_STATUS, width=72, height=9,
-            bg=BG_MID, fg=TEXT_BRIGHT, insertbackground=TEXT_BRIGHT,
-            relief="flat", bd=0,
-            highlightthickness=1, highlightbackground=BORDER,
-            highlightcolor=ACCENT, state="disabled",
-            wrap="word"
-        )
-        self.status_box.grid(row=7, column=0, columnspan=3, sticky="nsew")
-        self.status_box.tag_config("ok",  foreground=SUCCESS)
-        self.status_box.tag_config("err", foreground=ERROR_COL)
-        self.status_box.tag_config("inf", foreground=ACCENT)
-
-        body.columnconfigure(0, weight=1)
-
-    def _path_row(self, parent, label_text, row_base, browse_cmd):
-        tk.Label(parent, text=label_text, font=FONT_LABEL,
-                 bg=BG_DARK, fg=TEXT_DIM).grid(row=row_base * 2, column=0,
-                                                sticky="w", pady=(8, 2))
-        row = row_base * 2 + 1
-        entry = tk.Entry(parent, font=FONT_ENTRY, width=46,
-                         bg=BG_PANEL, fg=TEXT_BRIGHT,
-                         insertbackground=TEXT_BRIGHT,
-                         relief="flat", bd=0,
-                         highlightthickness=1,
-                         highlightbackground=BORDER,
-                         highlightcolor=ACCENT)
-        entry.grid(row=row, column=0, columnspan=2, sticky="ew", ipady=5)
-        HoverButton(parent, text="Browse", font=FONT_BTN,
-                    padx=10, pady=4, command=browse_cmd,
-                    bg=BG_PANEL, hover_bg=BORDER
-                    ).grid(row=row, column=2, padx=(8, 0), sticky="ew")
-        return entry
-
-    # ── Helpers ───────────────────────────────────────────────────────────
     def browse_source(self):
-        folder = filedialog.askdirectory()
+        existing = self.source_edit.text().strip()
+        start = existing if existing and os.path.isdir(existing) else ""
+        folder = QFileDialog.getExistingDirectory(self, "Select Source Folder", start)
         if folder:
-            self.source_entry.delete(0, tk.END)
-            self.source_entry.insert(0, folder)
+            self.source_edit.setText(folder)
 
     def browse_dest(self):
-        folder = filedialog.askdirectory()
+        existing = self.dest_edit.text().strip()
+        start = existing if existing and os.path.isdir(existing) else ""
+        folder = QFileDialog.getExistingDirectory(self, "Select Destination Folder", start)
         if folder:
-            self.dest_entry.delete(0, tk.END)
-            self.dest_entry.insert(0, folder)
+            self.dest_edit.setText(folder)
 
-    def log_status(self, message, tag=""):
-        self.status_box.config(state="normal")
-        self.status_box.insert(tk.END, message + "\n", tag)
-        self.status_box.see(tk.END)
-        self.status_box.config(state="disabled")
+    def _log(self, message: str, color: str = TEXT_BRIGHT):
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        cursor = self.status_box.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        cursor.insertText(message + "\n", fmt)
+        self.status_box.setTextCursor(cursor)
+        self.status_box.ensureCursorVisible()
 
-    def _validate_folders(self, source, dest):
+    def _validate_folders(self, source: str, dest: str) -> bool:
         if not source or not dest:
-            messagebox.showerror("Error", "Please select source and destination folders.")
+            QMessageBox.critical(self, "Error", "Please select source and destination folders.")
             return False
         if not os.path.exists(source):
-            messagebox.showerror("Error", f"Source folder does not exist:\n{source}")
+            QMessageBox.critical(self, "Error", f"Source folder does not exist:\n{source}")
             return False
         if not os.path.exists(dest):
             os.makedirs(dest)
         return True
 
-    # ── Unzip modes ───────────────────────────────────────────────────────
     def unzip_flat(self):
-        source   = self.source_entry.get()
-        dest     = self.dest_entry.get()
-        filename = self.filename_entry.get().strip()
+        source   = self.source_edit.text().strip()
+        dest     = self.dest_edit.text().strip()
+        filename = self.filename_edit.text().strip()
         if not filename:
-            messagebox.showerror("Error", "Please provide a filename for flat unzip.")
+            QMessageBox.critical(self, "Error", "Please provide a filename for flat unzip.")
             return
         if not self._validate_folders(source, dest):
             return
 
         zip_files = [f for f in os.listdir(source) if f.lower().endswith(".zip")]
         if not zip_files:
-            self.log_status("No ZIP files found in source folder.", "err")
+            self._log("No ZIP files found in source folder.", ERROR_COL)
             return
 
-        self.log_status(f"Starting flat unzip — {len(zip_files)} ZIP(s) found…", "inf")
+        self._log(f"Starting flat unzip — {len(zip_files)} ZIP(s) found…", ACCENT)
         counter = 1
         for zip_file in zip_files:
             zip_path = os.path.join(source, zip_file)
@@ -187,59 +232,58 @@ class UnzipperApp:
                 with zipfile.ZipFile(zip_path, "r") as zf:
                     for file_info in zf.filelist:
                         if not file_info.is_dir():
-                            ext      = os.path.splitext(file_info.filename)[1]
+                            ext = os.path.splitext(file_info.filename)[1]
                             new_name = f"{filename}_{counter:06d}{ext}"
                             new_path = os.path.join(dest, new_name)
                             with zf.open(file_info) as src, open(new_path, "wb") as dst:
                                 shutil.copyfileobj(src, dst)
-                            self.log_status(f"  Extracted: {new_name}", "ok")
+                            self._log(f"  Extracted: {new_name}", SUCCESS)
                             counter += 1
             except Exception as e:
-                self.log_status(f"  Error extracting {zip_file}: {e}", "err")
+                self._log(f"  Error extracting {zip_file}: {e}", ERROR_COL)
 
-        self.log_status("Flat unzip completed.", "inf")
+        self._log("Flat unzip completed.", ACCENT)
 
     def unzip_with_structure(self):
-        source = self.source_entry.get()
-        dest   = self.dest_entry.get()
+        source = self.source_edit.text().strip()
+        dest   = self.dest_edit.text().strip()
         if not self._validate_folders(source, dest):
             return
 
         zip_files = [f for f in os.listdir(source) if f.lower().endswith(".zip")]
         if not zip_files:
-            self.log_status("No ZIP files found in source folder.", "err")
+            self._log("No ZIP files found in source folder.", ERROR_COL)
             return
 
-        self.log_status(f"Starting structured unzip — {len(zip_files)} ZIP(s) found…", "inf")
+        self._log(f"Starting structured unzip — {len(zip_files)} ZIP(s) found…", ACCENT)
         for zip_file in zip_files:
-            zip_name    = os.path.splitext(zip_file)[0]
+            zip_name = os.path.splitext(zip_file)[0]
             folder_name = zip_name
-            counter     = 0
+            counter = 0
             while os.path.exists(os.path.join(dest, folder_name)):
-                counter    += 1
+                counter += 1
                 folder_name = f"{zip_name}_{counter:06d}"
             folder_path = os.path.join(dest, folder_name)
-
             zip_path = os.path.join(source, zip_file)
             try:
                 with zipfile.ZipFile(zip_path, "r") as zf:
                     zf.extractall(folder_path)
-                self.log_status(f"  Extracted  {zip_file}  →  {folder_name}", "ok")
+                self._log(f"  Extracted  {zip_file}  →  {folder_name}", SUCCESS)
             except Exception as e:
-                self.log_status(f"  Error extracting {zip_file}: {e}", "err")
+                self._log(f"  Error extracting {zip_file}: {e}", ERROR_COL)
 
-        self.log_status("Structured unzip completed.", "inf")
+        self._log("Structured unzip completed.", ACCENT)
+
+
+def main():
+    app = QApplication(sys.argv)
+    window = UnzipperApp()
+    icon_path = Path(__file__).parent / "app_icon.ico"
+    if icon_path.exists():
+        window.setWindowIcon(QIcon(str(icon_path)))
+    window.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
-    import os
-    from pathlib import Path
-    root = tk.Tk()
-    _icon = Path(__file__).parent / "app_icon.ico"
-    if _icon.exists():
-        try:
-            root.iconbitmap(str(_icon))
-        except Exception:
-            pass
-    app  = UnzipperApp(root)
-    root.mainloop()
+    main()
