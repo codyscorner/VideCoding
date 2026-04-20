@@ -1,1018 +1,526 @@
-"""Main window UI for File Copy Manager application"""
+"""Main window UI for File Copy Manager"""
 
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-from pathlib import Path
-from typing import Optional, Callable
+import os
+import logging
 import threading
 import queue
-import logging
-import datetime
+from pathlib import Path
+
+from PyQt6.QtWidgets import (
+    QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
+    QCheckBox, QComboBox, QProgressBar, QListWidget,
+    QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QScrollArea, QFrame, QFileDialog, QMessageBox,
+)
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QIcon
 
 from config import ConfigManager
 from file_operations import FileCopier
-from ui.styles import ThemeManager
 from folder_organization import FolderStructure, FolderOrganizer
+from ui.styles import STYLESHEET, COLORS
 
 
-class MainWindow:
-    """Main application window"""
-
-    def __init__(self, root: tk.Tk, config_manager: ConfigManager, version: str):
-        """
-        Initialize main window
-
-        Args:
-            root: Tkinter root window
-            config_manager: Configuration manager instance
-            version: Application version string
-        """
-        self.root = root
+class MainWindow(QMainWindow):
+    def __init__(self, config_manager: ConfigManager, version: str):
+        super().__init__()
         self.config = config_manager
         self.version = version
 
-        # Set up window
-        self.root.title(f"File Copy Manager (V-{self.version})")
-        self.root.geometry("1200x900")
-        self.root.configure(bg='#1a1a1a')
+        self._copy_thread = None
+        self._progress_queue = queue.Queue()
+        self._cancel_requested = False
+        self._is_copying = False
 
-        # Set minimum window size (75% of starting dimensions)
-        self.root.minsize(900, 675)
+        self.setWindowTitle(f"File Copy Manager (V-{self.version})")
+        self.setMinimumSize(900, 675)
+        self.resize(1200, 900)
+        self.setStyleSheet(STYLESHEET)
 
-        # Initialize theme
-        self.style = ttk.Style()
-        self.theme = ThemeManager(self.style, 'yellow_black')
-        self.colors = self.theme.get_all_colors()
-        self.fonts = self.theme.get_all_fonts()
-
-        # UI Variables
-        self.source_var = tk.StringVar(value=self.config.get("default_source_folder", ""))
-        self.dest_var = tk.StringVar(value=self.config.get("default_destination_folder", ""))
-        self.ext_var = tk.StringVar(value=self.config.get("last_extension", ""))
-
-        # Copy options
-        self.preserve_structure_var = tk.BooleanVar(value=self.config.get("preserve_structure", True))
-        self.folder_structure_var = tk.StringVar(value=self.config.get("folder_structure", "flat"))
-        self.number_duplicates_var = tk.BooleanVar(value=self.config.get("number_duplicates", True))
-        self.recursive_search_var = tk.BooleanVar(value=self.config.get("recursive_search", True))
-
-        # Filter options
-        self.enable_size_filter_var = tk.BooleanVar(value=self.config.get("enable_size_filter", False))
-        self.min_size_var = tk.StringVar(value=self.config.get("min_size", "0"))
-        self.max_size_var = tk.StringVar(value=self.config.get("max_size", ""))
-        self.size_unit_var = tk.StringVar(value=self.config.get("size_unit", "MB"))
-
-        self.enable_date_filter_var = tk.BooleanVar(value=self.config.get("enable_date_filter", False))
-        self.days_old_var = tk.StringVar(value=self.config.get("days_old", "30"))
-
-        # Set up log file next to config file
         log_path = Path(self.config.config_path).parent / "FileCopyManager.log"
         logging.basicConfig(
-            filename=str(log_path),
-            level=logging.DEBUG,
+            filename=str(log_path), level=logging.DEBUG,
             format='%(asctime)s [%(levelname)s] %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
         self._logger = logging.getLogger("FileCopyManager")
 
-        # Threading state
-        self._copy_thread: Optional[threading.Thread] = None
-        self._progress_queue: queue.Queue = queue.Queue()
-        self._cancel_requested: bool = False
-        self._is_copying: bool = False
+        self._build_ui()
+        self._load_config()
 
-        # Build UI
-        self._setup_ui()
+        self._poll_timer = QTimer()
+        self._poll_timer.setInterval(50)
+        self._poll_timer.timeout.connect(self._poll_progress_queue)
 
-        # Set up variable traces
-        self.preserve_structure_var.trace_add('write', self._on_preserve_structure_changed)
-        self.folder_structure_var.trace_add('write', self._update_folder_example)
+    def _build_ui(self):
+        # Scrollable central area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.setCentralWidget(scroll)
 
-    def _setup_ui(self) -> None:
-        """Set up the main UI components"""
-        # Create main container with scrollbar
-        main_container = ttk.Frame(self.root, style='Dark.TFrame')
-        main_container.pack(fill='both', expand=True)
-
-        # Canvas for scrolling
-        canvas = tk.Canvas(main_container, bg=self.colors['background'], highlightthickness=0)
-        scrollbar = tk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas, style='Dark.TFrame')
-
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
-        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        def _on_canvas_resize(event):
-            canvas.itemconfig(canvas_window, width=event.width)
-        canvas.bind("<Configure>", _on_canvas_resize)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        main_frame = ttk.Frame(scrollable_frame, style='Dark.TFrame')
-        main_frame.pack(fill='both', expand=True, padx=15, pady=10)
+        container = QWidget()
+        scroll.setWidget(container)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(15, 10, 15, 10)
+        layout.setSpacing(8)
 
         # Title
-        self._create_title(main_frame)
+        title = QLabel("File Copy Manager")
+        title.setObjectName("title_label")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
 
-        # Source and Destination folders
-        self._create_folder_inputs(main_frame)
+        sub = QLabel("Copy files with automatic numbering and folder organization")
+        sub.setObjectName("subtitle_label")
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(sub)
 
-        # Extension
-        self._create_extension_input(main_frame)
+        # Source folder
+        layout.addWidget(QLabel("Source Folder:"))
+        src_row = QHBoxLayout()
+        self.source_edit = QLineEdit()
+        self.source_edit.setText(self.config.get("default_source_folder", ""))
+        src_browse = QPushButton("Browse...")
+        src_browse.setMinimumWidth(100)
+        src_browse.clicked.connect(self._browse_source)
+        src_row.addWidget(self.source_edit)
+        src_row.addWidget(src_browse)
+        layout.addLayout(src_row)
 
-        # Copy options
-        self._create_copy_options(main_frame)
+        # Dest folder
+        layout.addWidget(QLabel("Destination Folder:"))
+        dst_row = QHBoxLayout()
+        self.dest_edit = QLineEdit()
+        self.dest_edit.setText(self.config.get("default_destination_folder", ""))
+        dst_browse = QPushButton("Browse...")
+        dst_browse.setMinimumWidth(100)
+        dst_browse.clicked.connect(self._browse_destination)
+        dst_row.addWidget(self.dest_edit)
+        dst_row.addWidget(dst_browse)
+        layout.addLayout(dst_row)
 
-        # Filter options
-        self._create_filter_options(main_frame)
-
-        # Folder organization
-        self._create_folder_organization_section(main_frame)
-
-        # Buttons
-        self._create_buttons(main_frame)
-
-        # Progress bars
-        self._create_progress_section(main_frame)
-
-        # Status listbox
-        self._create_status_listbox(main_frame)
-
-    def _create_title(self, parent: ttk.Frame) -> None:
-        """Create title label"""
-        title_frame = ttk.Frame(parent, style='Dark.TFrame')
-        title_frame.pack(fill='x', pady=(0, 15))
-
-        ttk.Label(
-            title_frame,
-            text="File Copy Manager",
-            style='Dark.TLabel',
-            font=self.fonts['title']
-        ).pack(anchor='center')
-
-        ttk.Label(
-            title_frame,
-            text="Copy files with automatic numbering and folder organization",
-            style='Dark.TLabel',
-            font=self.fonts['italic']
-        ).pack(anchor='center')
-
-    def _create_folder_inputs(self, parent: ttk.Frame) -> None:
-        """Create source and destination folder inputs"""
-        # Source Folder
-        self._create_folder_input(
-            parent,
-            "Source Folder:",
-            self.source_var,
-            self._browse_source
-        )
-
-        # Destination Folder
-        self._create_folder_input(
-            parent,
-            "Destination Folder:",
-            self.dest_var,
-            self._browse_destination
-        )
-
-    def _create_extension_input(self, parent: ttk.Frame) -> None:
-        """Create extension input with preset dropdown"""
-        # Define file type presets
+        # File mask
+        mask_header = QHBoxLayout()
+        mask_header.addWidget(QLabel("File Mask:"))
+        mask_header.addSpacing(20)
+        mask_header.addWidget(QLabel("Presets:"))
         self.file_type_presets = {
             "-- Select Preset --": "",
-            "Images": "*.jpg, *.jpeg, *.png, *.gif, *.bmp, *.tiff, *.tif, *.webp, *.svg, *.ico, *.raw, *.heic, *.heif",
-            "Videos": "*.mp4, *.avi, *.mkv, *.mov, *.wmv, *.flv, *.webm, *.m4v, *.mpeg, *.mpg, *.3gp, *.ts",
-            "Audio": "*.mp3, *.wav, *.flac, *.aac, *.ogg, *.wma, *.m4a, *.opus, *.aiff, *.alac",
+            "Images":    "*.jpg, *.jpeg, *.png, *.gif, *.bmp, *.tiff, *.tif, *.webp, *.svg, *.ico, *.raw, *.heic, *.heif",
+            "Videos":    "*.mp4, *.avi, *.mkv, *.mov, *.wmv, *.flv, *.webm, *.m4v, *.mpeg, *.mpg, *.3gp, *.ts",
+            "Audio":     "*.mp3, *.wav, *.flac, *.aac, *.ogg, *.wma, *.m4a, *.opus, *.aiff, *.alac",
             "Documents": "*.pdf, *.doc, *.docx, *.xls, *.xlsx, *.ppt, *.pptx, *.txt, *.rtf, *.odt, *.ods, *.odp",
-            "Archives": "*.zip, *.rar, *.7z, *.tar, *.gz, *.bz2, *.xz, *.iso, *.cab",
-            "Code": "*.py, *.js, *.ts, *.html, *.css, *.java, *.cpp, *.c, *.h, *.cs, *.php, *.rb, *.go, *.rs, *.swift",
-            "Data": "*.json, *.xml, *.csv, *.yaml, *.yml, *.sql, *.db, *.sqlite, *.mdb",
+            "Archives":  "*.zip, *.rar, *.7z, *.tar, *.gz, *.bz2, *.xz, *.iso, *.cab",
+            "Code":      "*.py, *.js, *.ts, *.html, *.css, *.java, *.cpp, *.c, *.h, *.cs, *.php, *.rb, *.go, *.rs, *.swift",
+            "Data":      "*.json, *.xml, *.csv, *.yaml, *.yml, *.sql, *.db, *.sqlite, *.mdb",
         }
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItems(list(self.file_type_presets.keys()))
+        self.preset_combo.setFixedWidth(160)
+        self.preset_combo.currentTextChanged.connect(self._on_preset_selected)
+        mask_header.addWidget(self.preset_combo)
+        mask_header.addStretch()
+        layout.addLayout(mask_header)
+        self.ext_edit = QLineEdit()
+        self.ext_edit.setText(self.config.get("last_extension", ""))
+        layout.addWidget(self.ext_edit)
+        hint = QLabel("Example: *.jpg, *.png  or  oct*.*  or  .pdf")
+        hint.setObjectName("dim_label")
+        layout.addWidget(hint)
 
-        frame = ttk.Frame(parent, style='Dark.TFrame')
-        frame.pack(fill='x', pady=(0, 5))
+        # Copy options
+        copy_section = QLabel("Copy Options")
+        copy_section.setObjectName("section_label")
+        layout.addWidget(copy_section)
+        self.recursive_check = QCheckBox("Search subfolders recursively (include all files from nested folders)")
+        self.preserve_check = QCheckBox("Preserve original folder structure")
+        self.number_check = QCheckBox("Number duplicate files (e.g., file_001.jpg, file_002.jpg)")
+        self.recursive_check.setChecked(self.config.get("recursive_search", True))
+        self.preserve_check.setChecked(self.config.get("preserve_structure", True))
+        self.number_check.setChecked(self.config.get("number_duplicates", True))
+        self.preserve_check.stateChanged.connect(self._on_preserve_changed)
+        layout.addWidget(self.recursive_check)
+        layout.addWidget(self.preserve_check)
+        layout.addWidget(self.number_check)
 
-        # Label row with preset dropdown
-        label_frame = ttk.Frame(frame, style='Dark.TFrame')
-        label_frame.pack(fill='x')
+        # File filters
+        filter_section = QLabel("File Filters")
+        filter_section.setObjectName("section_label")
+        layout.addWidget(filter_section)
 
-        ttk.Label(label_frame, text="File Mask:", style='Dark.TLabel').pack(side='left')
+        self.size_check = QCheckBox("Filter by file size:")
+        self.size_check.stateChanged.connect(self._on_size_filter_changed)
+        layout.addWidget(self.size_check)
+        self.size_widget = QWidget()
+        size_row = QHBoxLayout(self.size_widget)
+        size_row.setContentsMargins(20, 0, 0, 0)
+        size_row.addWidget(QLabel("Min:"))
+        self.min_size_edit = QLineEdit("0")
+        self.min_size_edit.setFixedWidth(80)
+        size_row.addWidget(self.min_size_edit)
+        size_row.addWidget(QLabel("Max:"))
+        self.max_size_edit = QLineEdit()
+        self.max_size_edit.setFixedWidth(80)
+        size_row.addWidget(self.max_size_edit)
+        size_row.addWidget(QLabel("Unit:"))
+        self.unit_combo = QComboBox()
+        self.unit_combo.addItems(["B", "KB", "MB", "GB"])
+        self.unit_combo.setCurrentText(self.config.get("size_unit", "MB"))
+        self.unit_combo.setFixedWidth(60)
+        size_row.addWidget(self.unit_combo)
+        size_row.addStretch()
+        layout.addWidget(self.size_widget)
+        self.size_widget.setVisible(False)
 
-        # Preset dropdown
-        ttk.Label(label_frame, text="Presets:", style='Dark.TLabel').pack(side='left', padx=(20, 5))
-        self.preset_var = tk.StringVar(value="-- Select Preset --")
-        preset_combo = ttk.Combobox(
-            label_frame,
-            textvariable=self.preset_var,
-            values=list(self.file_type_presets.keys()),
-            state="readonly",
-            width=20
-        )
-        preset_combo.pack(side='left')
-        preset_combo.bind('<<ComboboxSelected>>', self._on_preset_selected)
+        self.date_check = QCheckBox("Filter by file age:")
+        self.date_check.stateChanged.connect(self._on_date_filter_changed)
+        layout.addWidget(self.date_check)
+        self.date_widget = QWidget()
+        date_row = QHBoxLayout(self.date_widget)
+        date_row.setContentsMargins(20, 0, 0, 0)
+        date_row.addWidget(QLabel("Modified within last:"))
+        self.days_edit = QLineEdit(str(self.config.get("days_old", "30")))
+        self.days_edit.setFixedWidth(80)
+        date_row.addWidget(self.days_edit)
+        date_row.addWidget(QLabel("days"))
+        date_row.addStretch()
+        layout.addWidget(self.date_widget)
+        self.date_widget.setVisible(False)
 
-        entry = tk.Entry(
-            frame,
-            textvariable=self.ext_var,
-            width=150,
-            bg=self.colors['input_bg'],
-            fg=self.colors['input_fg'],
-            insertbackground=self.colors['insert_cursor'],
-            bd=1,
-            relief='solid'
-        )
-        entry.pack(fill='x', pady=(2, 0))
-
-        ttk.Label(
-            frame,
-            text="Example: *.jpg, *.png  or  oct*.*  or  .pdf",
-            style='Dark.TLabel',
-            font=self.fonts['italic']
-        ).pack(anchor='w', pady=(2, 0))
-
-    def _on_preset_selected(self, event=None) -> None:
-        """Handle preset selection from dropdown"""
-        preset_name = self.preset_var.get()
-        if preset_name in self.file_type_presets:
-            preset_value = self.file_type_presets[preset_name]
-            if preset_value:  # Don't clear if selecting the placeholder
-                self.ext_var.set(preset_value)
-
-    def _create_copy_options(self, parent: ttk.Frame) -> None:
-        """Create copy options section"""
-        section_frame = ttk.Frame(parent, style='Dark.TFrame')
-        section_frame.pack(fill='x', pady=(5, 5))
-
-        ttk.Label(
-            section_frame,
-            text="Copy Options",
-            style='Dark.TLabel',
-            font=self.fonts['bold']
-        ).pack(anchor='w', pady=(0, 5))
-
-        # Recursive search checkbox
-        recursive_check = tk.Checkbutton(
-            section_frame,
-            text="Search subfolders recursively (include all files from nested folders)",
-            variable=self.recursive_search_var,
-            bg=self.colors['background'],
-            fg=self.colors['foreground'],
-            selectcolor=self.colors['input_bg'],
-            activebackground=self.colors['background'],
-            activeforeground=self.colors['foreground'],
-            font=self.fonts['default']
-        )
-        recursive_check.pack(anchor='w', pady=(0, 5))
-
-        # Preserve structure checkbox
-        preserve_check = tk.Checkbutton(
-            section_frame,
-            text="Preserve original folder structure",
-            variable=self.preserve_structure_var,
-            bg=self.colors['background'],
-            fg=self.colors['foreground'],
-            selectcolor=self.colors['input_bg'],
-            activebackground=self.colors['background'],
-            activeforeground=self.colors['foreground'],
-            font=self.fonts['default']
-        )
-        preserve_check.pack(anchor='w', pady=(0, 5))
-
-        # Number duplicates checkbox
-        number_check = tk.Checkbutton(
-            section_frame,
-            text="Number duplicate files (e.g., file_001.jpg, file_002.jpg)",
-            variable=self.number_duplicates_var,
-            bg=self.colors['background'],
-            fg=self.colors['foreground'],
-            selectcolor=self.colors['input_bg'],
-            activebackground=self.colors['background'],
-            activeforeground=self.colors['foreground'],
-            font=self.fonts['default']
-        )
-        number_check.pack(anchor='w')
-
-    def _create_filter_options(self, parent: ttk.Frame) -> None:
-        """Create filter options section"""
-        section_frame = ttk.Frame(parent, style='Dark.TFrame')
-        section_frame.pack(fill='x', pady=(5, 5))
-
-        ttk.Label(
-            section_frame,
-            text="File Filters",
-            style='Dark.TLabel',
-            font=self.fonts['bold']
-        ).pack(anchor='w', pady=(0, 5))
-
-        # Size filter
-        size_frame = ttk.Frame(section_frame, style='Dark.TFrame')
-        size_frame.pack(fill='x', pady=(0, 5))
-
-        size_check = tk.Checkbutton(
-            size_frame,
-            text="Filter by file size:",
-            variable=self.enable_size_filter_var,
-            bg=self.colors['background'],
-            fg=self.colors['foreground'],
-            selectcolor=self.colors['input_bg'],
-            activebackground=self.colors['background'],
-            activeforeground=self.colors['foreground'],
-            font=self.fonts['default'],
-            command=self._on_size_filter_changed
-        )
-        size_check.pack(anchor='w')
-
-        # Size inputs frame
-        self.size_inputs_frame = ttk.Frame(size_frame, style='Dark.TFrame')
-        self.size_inputs_frame.pack(fill='x', padx=(20, 0), pady=(5, 0))
-
-        # Min size
-        min_frame = ttk.Frame(self.size_inputs_frame, style='Dark.TFrame')
-        min_frame.pack(side='left', padx=(0, 10))
-
-        ttk.Label(min_frame, text="Min:", style='Dark.TLabel').pack(side='left', padx=(0, 5))
-        tk.Entry(
-            min_frame,
-            textvariable=self.min_size_var,
-            width=10,
-            bg=self.colors['input_bg'],
-            fg=self.colors['input_fg'],
-            insertbackground=self.colors['insert_cursor'],
-            bd=1,
-            relief='solid'
-        ).pack(side='left')
-
-        # Max size
-        max_frame = ttk.Frame(self.size_inputs_frame, style='Dark.TFrame')
-        max_frame.pack(side='left', padx=(0, 10))
-
-        ttk.Label(max_frame, text="Max:", style='Dark.TLabel').pack(side='left', padx=(0, 5))
-        tk.Entry(
-            max_frame,
-            textvariable=self.max_size_var,
-            width=10,
-            bg=self.colors['input_bg'],
-            fg=self.colors['input_fg'],
-            insertbackground=self.colors['insert_cursor'],
-            bd=1,
-            relief='solid'
-        ).pack(side='left')
-
-        # Unit
-        unit_frame = ttk.Frame(self.size_inputs_frame, style='Dark.TFrame')
-        unit_frame.pack(side='left')
-
-        ttk.Label(unit_frame, text="Unit:", style='Dark.TLabel').pack(side='left', padx=(0, 5))
-        ttk.Combobox(
-            unit_frame,
-            textvariable=self.size_unit_var,
-            values=["B", "KB", "MB", "GB"],
-            state="readonly",
-            width=5
-        ).pack(side='left')
-
-        # Date filter
-        date_frame = ttk.Frame(section_frame, style='Dark.TFrame')
-        date_frame.pack(fill='x')
-
-        date_check = tk.Checkbutton(
-            date_frame,
-            text="Filter by file age:",
-            variable=self.enable_date_filter_var,
-            bg=self.colors['background'],
-            fg=self.colors['foreground'],
-            selectcolor=self.colors['input_bg'],
-            activebackground=self.colors['background'],
-            activeforeground=self.colors['foreground'],
-            font=self.fonts['default'],
-            command=self._on_date_filter_changed
-        )
-        date_check.pack(anchor='w')
-
-        # Date inputs frame
-        self.date_inputs_frame = ttk.Frame(date_frame, style='Dark.TFrame')
-        self.date_inputs_frame.pack(fill='x', padx=(20, 0), pady=(5, 0))
-
-        days_frame = ttk.Frame(self.date_inputs_frame, style='Dark.TFrame')
-        days_frame.pack(side='left')
-
-        ttk.Label(days_frame, text="Modified within last:", style='Dark.TLabel').pack(side='left', padx=(0, 5))
-        tk.Entry(
-            days_frame,
-            textvariable=self.days_old_var,
-            width=10,
-            bg=self.colors['input_bg'],
-            fg=self.colors['input_fg'],
-            insertbackground=self.colors['insert_cursor'],
-            bd=1,
-            relief='solid'
-        ).pack(side='left', padx=(0, 5))
-        ttk.Label(days_frame, text="days", style='Dark.TLabel').pack(side='left')
-
-        # Initialize visibility
-        self._on_size_filter_changed()
-        self._on_date_filter_changed()
-
-    def _create_folder_organization_section(self, parent: ttk.Frame) -> None:
-        """Create folder organization section"""
-        self.folder_org_frame = ttk.Frame(parent, style='Dark.TFrame')
-        self.folder_org_frame.pack(fill='x', pady=(5, 5))
-
-        # Title
-        ttk.Label(
-            self.folder_org_frame,
-            text="Folder Organization (when not preserving structure)",
-            style='Dark.TLabel',
-            font=self.fonts['bold']
-        ).pack(anchor='w', pady=(0, 5))
-
-        # Folder structure
-        folder_frame = ttk.Frame(self.folder_org_frame, style='Dark.TFrame')
-        folder_frame.pack(fill='x')
-
-        ttk.Label(folder_frame, text="Organize into:", style='Dark.TLabel').pack(anchor='w')
-        folder_combo = ttk.Combobox(
-            folder_frame,
-            textvariable=self.folder_structure_var,
-            values=["flat", "year", "year_month", "year_month_day", "date", "month"],
-            state="readonly",
-            width=30
-        )
-        folder_combo.pack(fill='x', pady=(5, 0))
-
-        # Example label
-        self.folder_example_label = ttk.Label(
-            folder_frame,
-            text="",
-            style='Dark.TLabel',
-            font=self.fonts['italic']
-        )
-        self.folder_example_label.pack(anchor='w', pady=(2, 0))
+        # Folder organization
+        self.folder_org_widget = QWidget()
+        fo_layout = QVBoxLayout(self.folder_org_widget)
+        fo_layout.setContentsMargins(0, 0, 0, 0)
+        fo_lbl = QLabel("Folder Organization (when not preserving structure)")
+        fo_lbl.setObjectName("section_label")
+        fo_layout.addWidget(fo_lbl)
+        fo_layout.addWidget(QLabel("Organize into:"))
+        self.folder_combo = QComboBox()
+        self.folder_combo.addItems(["flat", "year", "year_month", "year_month_day", "date", "month"])
+        self.folder_combo.setCurrentText(self.config.get("folder_structure", "flat"))
+        self.folder_combo.setFixedWidth(200)
+        self.folder_combo.currentTextChanged.connect(self._update_folder_example)
+        fo_layout.addWidget(self.folder_combo)
+        self.folder_example_label = QLabel("")
+        self.folder_example_label.setObjectName("dim_label")
+        fo_layout.addWidget(self.folder_example_label)
+        layout.addWidget(self.folder_org_widget)
         self._update_folder_example()
+        self._on_preserve_changed()
 
-        # Update visibility based on preserve structure
-        self._on_preserve_structure_changed()
+        # Action buttons
+        btn_row = QHBoxLayout()
+        self.copy_btn = QPushButton("Copy Files")
+        self.copy_btn.clicked.connect(self._start_copy)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setObjectName("cancel_btn")
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.clicked.connect(self._cancel_copy)
+        btn_row.addWidget(self.copy_btn)
+        btn_row.addWidget(self.cancel_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
 
-    def _create_folder_input(
-        self,
-        parent: ttk.Frame,
-        label: str,
-        variable: tk.StringVar,
-        browse_command: Callable
-    ) -> None:
-        """Create a folder input field with browse button"""
-        frame = ttk.Frame(parent, style='Dark.TFrame')
-        frame.pack(fill='x', pady=(0, 5))
+        # Progress
+        layout.addWidget(QLabel("Overall Progress:"))
+        self.overall_progress = QProgressBar()
+        self.overall_progress.setRange(0, 100)
+        layout.addWidget(self.overall_progress)
+        layout.addWidget(QLabel("Current File:"))
+        self.file_progress = QProgressBar()
+        self.file_progress.setRange(0, 100)
+        layout.addWidget(self.file_progress)
+        self.progress_label = QLabel("Ready")
+        self.progress_label.setObjectName("dim_label")
+        layout.addWidget(self.progress_label)
 
-        ttk.Label(frame, text=label, style='Dark.TLabel').pack(anchor='w')
+        counters_row = QHBoxLayout()
+        counters_row.addWidget(QLabel("Copied:"))
+        self.copied_label = QLabel("0")
+        self.copied_label.setObjectName("section_label")
+        counters_row.addWidget(self.copied_label)
+        counters_row.addSpacing(20)
+        counters_row.addWidget(QLabel("Skipped:"))
+        self.skipped_label = QLabel("0")
+        self.skipped_label.setObjectName("section_label")
+        counters_row.addWidget(self.skipped_label)
+        counters_row.addStretch()
+        layout.addLayout(counters_row)
 
-        input_frame = tk.Frame(frame, bg=self.colors['background'])
-        input_frame.pack(fill='x', pady=(2, 0))
+        # Status log
+        layout.addWidget(QLabel("Status:"))
+        self.status_list = QListWidget()
+        self.status_list.setMinimumHeight(160)
+        layout.addWidget(self.status_list, stretch=1)
+        self._add_status("Ready to copy files...")
 
-        entry = tk.Entry(
-            input_frame,
-            textvariable=variable,
-            width=120,
-            bg=self.colors['input_bg'],
-            fg=self.colors['input_fg'],
-            insertbackground=self.colors['insert_cursor'],
-            bd=1,
-            relief='solid'
-        )
-        entry.pack(side='left', fill='x', expand=True, padx=(0, 5))
+    def _load_config(self):
+        self.size_check.setChecked(self.config.get("enable_size_filter", False))
+        self.date_check.setChecked(self.config.get("enable_date_filter", False))
+        self.min_size_edit.setText(str(self.config.get("min_size", "0")))
+        self.max_size_edit.setText(str(self.config.get("max_size", "")))
 
-        browse_btn = tk.Button(
-            input_frame,
-            text="...",
-            command=browse_command,
-            bg=self.colors['button_bg'],
-            fg=self.colors['button_fg'],
-            relief='raised',
-            bd=2,
-            width=3,
-            height=1,
-            font=self.fonts['button'],
-            activebackground=self.colors['button_active'],
-            activeforeground=self.colors['button_fg']
-        )
-        browse_btn.pack(side='right')
-
-    def _create_buttons(self, parent: ttk.Frame) -> None:
-        """Create action buttons"""
-        button_frame = ttk.Frame(parent, style='Dark.TFrame')
-        button_frame.pack(fill='x', pady=(5, 10))
-
-        # Copy Files button
-        self.copy_button = tk.Button(
-            button_frame,
-            text="Copy Files",
-            command=self._start_copy,
-            bg=self.colors['button_bg'],
-            fg=self.colors['button_fg'],
-            font=self.fonts['button'],
-            relief='raised',
-            bd=2,
-            padx=20,
-            pady=10
-        )
-        self.copy_button.pack(side='left', padx=(0, 10))
-
-        # Cancel button (initially disabled)
-        self.cancel_button = tk.Button(
-            button_frame,
-            text="Cancel",
-            command=self._cancel_copy,
-            bg='#8B0000',  # Dark red
-            fg=self.colors['button_fg'],
-            font=self.fonts['button'],
-            relief='raised',
-            bd=2,
-            padx=20,
-            pady=10,
-            state='disabled'
-        )
-        self.cancel_button.pack(side='left', padx=(0, 10))
-
-    def _create_progress_section(self, parent: ttk.Frame) -> None:
-        """Create progress bars section"""
-        progress_frame = ttk.Frame(parent, style='Dark.TFrame')
-        progress_frame.pack(fill='x', pady=(5, 10))
-
-        # Overall progress
-        ttk.Label(
-            progress_frame,
-            text="Overall Progress:",
-            style='Dark.TLabel'
-        ).pack(anchor='w')
-
-        self.overall_progress = ttk.Progressbar(
-            progress_frame,
-            orient='horizontal',
-            mode='determinate',
-            length=100,
-            style='Yellow.Horizontal.TProgressbar'
-        )
-        self.overall_progress.pack(fill='x', pady=(5, 10))
-
-        # Current file progress
-        ttk.Label(
-            progress_frame,
-            text="Current File:",
-            style='Dark.TLabel'
-        ).pack(anchor='w')
-
-        self.file_progress = ttk.Progressbar(
-            progress_frame,
-            orient='horizontal',
-            mode='determinate',
-            length=100,
-            style='Yellow.Horizontal.TProgressbar'
-        )
-        self.file_progress.pack(fill='x', pady=(5, 0))
-
-        # Progress label
-        self.progress_label = ttk.Label(
-            progress_frame,
-            text="Ready",
-            style='Dark.TLabel',
-            font=self.fonts['italic']
-        )
-        self.progress_label.pack(anchor='w', pady=(2, 0))
-
-        # Copied / Skipped counters
-        counters_frame = ttk.Frame(progress_frame, style='Dark.TFrame')
-        counters_frame.pack(anchor='w', pady=(4, 0))
-
-        ttk.Label(counters_frame, text="Copied:", style='Dark.TLabel').pack(side='left')
-        self.copied_count_label = ttk.Label(
-            counters_frame, text="0", style='Dark.TLabel', font=self.fonts['bold']
-        )
-        self.copied_count_label.pack(side='left', padx=(4, 20))
-
-        ttk.Label(counters_frame, text="Skipped:", style='Dark.TLabel').pack(side='left')
-        self.skipped_count_label = ttk.Label(
-            counters_frame, text="0", style='Dark.TLabel', font=self.fonts['bold']
-        )
-        self.skipped_count_label.pack(side='left', padx=(4, 0))
-
-    def _create_status_listbox(self, parent: ttk.Frame) -> None:
-        """Create status listbox with scrollbar"""
-        status_frame = ttk.Frame(parent, style='Dark.TFrame')
-        status_frame.pack(fill='both', expand=True)
-
-        ttk.Label(status_frame, text="Status:", style='Dark.TLabel').pack(anchor='w')
-
-        listbox_frame = ttk.Frame(status_frame, style='Dark.TFrame')
-        listbox_frame.pack(fill='both', expand=True, pady=(5, 0))
-
-        self.status_listbox = tk.Listbox(
-            listbox_frame,
-            bg=self.colors['input_bg'],
-            fg=self.colors['input_fg'],
-            selectbackground=self.colors['select_bg'],
-            selectforeground=self.colors['select_fg'],
-            bd=1,
-            relief='solid',
-            height=10
-        )
-        self.status_listbox.pack(side='left', fill='both', expand=True)
-
-        scrollbar = tk.Scrollbar(
-            listbox_frame,
-            bg=self.colors['scrollbar_bg'],
-            troughcolor=self.colors['scrollbar_trough']
-        )
-        scrollbar.pack(side='right', fill='y')
-
-        self.status_listbox.config(yscrollcommand=scrollbar.set)
-        scrollbar.config(command=self.status_listbox.yview)
-
-        # Initial status message
-        self.add_status("Ready to copy files...")
-
-    def _browse_source(self) -> None:
-        """Handle source folder browse button"""
-        initial_dir = self.source_var.get() or self.config.get("default_source_folder", "")
-        folder = filedialog.askdirectory(
-            title="Select Source Folder",
-            initialdir=initial_dir if initial_dir else None
-        )
+    def _browse_source(self):
+        existing = self.source_edit.text().strip()
+        start = existing if existing and os.path.isdir(existing) else ""
+        folder = QFileDialog.getExistingDirectory(self, "Select Source Folder", start)
         if folder:
-            self.source_var.set(folder)
+            self.source_edit.setText(folder)
             self.config.set("default_source_folder", folder)
             self.config.save()
-            self.add_status(f"Source folder selected: {folder}")
+            self._add_status(f"Source folder selected: {folder}")
 
-    def _browse_destination(self) -> None:
-        """Handle destination folder browse button"""
-        initial_dir = self.dest_var.get() or self.config.get("default_destination_folder", "")
-        folder = filedialog.askdirectory(
-            title="Select Destination Folder",
-            initialdir=initial_dir if initial_dir else None
-        )
+    def _browse_destination(self):
+        existing = self.dest_edit.text().strip()
+        start = existing if existing and os.path.isdir(existing) else ""
+        folder = QFileDialog.getExistingDirectory(self, "Select Destination Folder", start)
         if folder:
-            self.dest_var.set(folder)
+            self.dest_edit.setText(folder)
             self.config.set("default_destination_folder", folder)
             self.config.save()
-            self.add_status(f"Destination folder selected: {folder}")
+            self._add_status(f"Destination folder selected: {folder}")
 
-    def _on_preserve_structure_changed(self, *args) -> None:
-        """Handle preserve structure checkbox change"""
-        if self.preserve_structure_var.get():
-            # Hide folder organization options
-            self.folder_org_frame.pack_forget()
-        else:
-            # Show folder organization options
-            self.folder_org_frame.pack(fill='x', pady=(5, 5))
+    def _on_preset_selected(self, text: str):
+        value = self.file_type_presets.get(text, "")
+        if value:
+            self.ext_edit.setText(value)
 
-    def _on_size_filter_changed(self) -> None:
-        """Handle size filter checkbox change"""
-        if self.enable_size_filter_var.get():
-            self.size_inputs_frame.pack(fill='x', padx=(20, 0), pady=(5, 0))
-        else:
-            self.size_inputs_frame.pack_forget()
+    def _on_preserve_changed(self):
+        self.folder_org_widget.setVisible(not self.preserve_check.isChecked())
 
-    def _on_date_filter_changed(self) -> None:
-        """Handle date filter checkbox change"""
-        if self.enable_date_filter_var.get():
-            self.date_inputs_frame.pack(fill='x', padx=(20, 0), pady=(5, 0))
-        else:
-            self.date_inputs_frame.pack_forget()
+    def _on_size_filter_changed(self):
+        self.size_widget.setVisible(self.size_check.isChecked())
 
-    def _update_folder_example(self, *args) -> None:
-        """Update the folder organization example"""
+    def _on_date_filter_changed(self):
+        self.date_widget.setVisible(self.date_check.isChecked())
+
+    def _update_folder_example(self):
         try:
-            structure = FolderStructure(self.folder_structure_var.get())
+            structure = FolderStructure(self.folder_combo.currentText())
             example = FolderOrganizer.get_folder_structure_example(structure)
-            self.folder_example_label.config(text=f"Example: {example}")
+            self.folder_example_label.setText(f"Example: {example}")
         except Exception:
-            self.folder_example_label.config(text="")
+            self.folder_example_label.setText("")
 
-    def _start_copy(self) -> None:
-        """Start the copy operation in a background thread"""
-        # Get values
-        source_folder = self.source_var.get().strip()
-        dest_folder = self.dest_var.get().strip()
-        extension = self.ext_var.get().strip()
+    def _add_status(self, message: str):
+        self.status_list.addItem(message)
+        self.status_list.scrollToBottom()
 
-        # Validate inputs
-        if not source_folder:
-            messagebox.showerror("Error", "Please select a source folder")
+    def _start_copy(self):
+        source = self.source_edit.text().strip()
+        dest = self.dest_edit.text().strip()
+        extension = self.ext_edit.text().strip()
+
+        if not source:
+            QMessageBox.critical(self, "Error", "Please select a source folder")
             return
-
-        if not dest_folder:
-            messagebox.showerror("Error", "Please select a destination folder")
+        if not dest:
+            QMessageBox.critical(self, "Error", "Please select a destination folder")
             return
-
         if not extension:
-            messagebox.showerror("Error", "Please enter a file extension")
+            QMessageBox.critical(self, "Error", "Please enter a file extension")
+            return
+        if source == dest:
+            QMessageBox.critical(self, "Error", "Source and destination folders cannot be the same")
             return
 
-        # Check if source and dest are the same
-        if source_folder == dest_folder:
-            messagebox.showerror("Error", "Source and destination folders cannot be the same")
-            return
+        min_size_bytes = max_size_bytes = max_days_old = None
 
-        # Get filter options (validate before starting thread)
-        min_size_bytes = None
-        max_size_bytes = None
-        max_days_old = None
-
-        if self.enable_size_filter_var.get():
+        if self.size_check.isChecked():
             try:
                 unit_multiplier = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
-                multiplier = unit_multiplier.get(self.size_unit_var.get(), 1024**2)
-
-                min_val = self.min_size_var.get().strip()
+                multiplier = unit_multiplier.get(self.unit_combo.currentText(), 1024**2)
+                min_val = self.min_size_edit.text().strip()
                 if min_val:
                     min_size_bytes = float(min_val) * multiplier
-
-                max_val = self.max_size_var.get().strip()
+                max_val = self.max_size_edit.text().strip()
                 if max_val:
                     max_size_bytes = float(max_val) * multiplier
             except ValueError:
-                messagebox.showerror("Error", "Invalid size filter values")
+                QMessageBox.critical(self, "Error", "Invalid size filter values")
                 return
 
-        if self.enable_date_filter_var.get():
+        if self.date_check.isChecked():
             try:
-                days_val = self.days_old_var.get().strip()
+                days_val = self.days_edit.text().strip()
                 if days_val:
                     max_days_old = int(days_val)
             except ValueError:
-                messagebox.showerror("Error", "Invalid date filter value")
+                QMessageBox.critical(self, "Error", "Invalid date filter value")
                 return
 
-        # Prepare UI for copying
         self._is_copying = True
         self._cancel_requested = False
-        self.copy_button.config(state='disabled')
-        self.cancel_button.config(state='normal')
-        self.overall_progress['value'] = 0
-        self.file_progress['value'] = 0
-        self.progress_label.config(text="Preparing...")
-        self.copied_count_label.config(text="0")
-        self.skipped_count_label.config(text="0")
+        self.copy_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.overall_progress.setValue(0)
+        self.file_progress.setValue(0)
+        self.progress_label.setText("Preparing...")
+        self.copied_label.setText("0")
+        self.skipped_label.setText("0")
 
-        # Gather all options for the thread
         copy_options = {
-            'source_folder': source_folder,
-            'dest_folder': dest_folder,
-            'extension': extension,
-            'preserve_structure': self.preserve_structure_var.get(),
-            'number_duplicates': self.number_duplicates_var.get(),
-            'recursive_search': self.recursive_search_var.get(),
-            'folder_structure': self.folder_structure_var.get(),
-            'min_size_bytes': min_size_bytes,
-            'max_size_bytes': max_size_bytes,
-            'max_days_old': max_days_old
+            'source_folder': source, 'dest_folder': dest, 'extension': extension,
+            'preserve_structure': self.preserve_check.isChecked(),
+            'number_duplicates': self.number_check.isChecked(),
+            'recursive_search': self.recursive_check.isChecked(),
+            'folder_structure': self.folder_combo.currentText(),
+            'min_size_bytes': min_size_bytes, 'max_size_bytes': max_size_bytes,
+            'max_days_old': max_days_old,
         }
 
-        # Start the worker thread
         self._copy_thread = threading.Thread(
-            target=self._copy_files_worker,
-            args=(copy_options,),
-            daemon=True
+            target=self._copy_worker, args=(copy_options,), daemon=True
         )
         self._copy_thread.start()
+        self._poll_timer.start()
 
-        # Start polling the queue for updates
-        self._poll_progress_queue()
-
-    def _copy_files_worker(self, options: dict) -> None:
-        """Worker thread that performs the actual file copying"""
+    def _copy_worker(self, options: dict):
         try:
-            self._queue_message('status', "Starting copy operation...")
-
+            self._queue_msg('status', "Starting copy operation...")
             folder_structure = FolderStructure(options['folder_structure'])
+            _live = [0, 0]
 
-            # Track live counts for the on-form counters
-            _live_copied = [0]
-            _live_skipped = [0]
-
-            def _status_with_counter(msg):
+            def _status_cb(msg):
                 if msg.startswith("Copied:") or msg.startswith("Duplicate found:"):
-                    _live_copied[0] += 1
-                    self._queue_message('counters', {'copied': _live_copied[0], 'skipped': _live_skipped[0]})
+                    _live[0] += 1
+                    self._queue_msg('counters', {'copied': _live[0], 'skipped': _live[1]})
                 elif msg.startswith("Skipped"):
-                    _live_skipped[0] += 1
-                    self._queue_message('counters', {'copied': _live_copied[0], 'skipped': _live_skipped[0]})
-                self._queue_message('status', msg)
+                    _live[1] += 1
+                    self._queue_msg('counters', {'copied': _live[0], 'skipped': _live[1]})
+                self._queue_msg('status', msg)
 
-            # Create file copier with thread-safe callbacks
-            file_copier = FileCopier(
-                status_callback=_status_with_counter,
+            copier = FileCopier(
+                status_callback=_status_cb,
                 folder_structure=folder_structure,
                 number_duplicates=options['number_duplicates'],
-                progress_callback=lambda cur, tot, fname, fprog: self._queue_message(
+                progress_callback=lambda cur, tot, fname, fprog: self._queue_msg(
                     'progress', {'current': cur, 'total': tot, 'filename': fname, 'file_progress': fprog}
                 ),
                 cancel_check=lambda: self._cancel_requested
             )
-
-            # Perform operation
-            results = file_copier.copy_files(
-                options['source_folder'],
-                options['dest_folder'],
-                options['extension'],
-                options['preserve_structure'],
-                options['recursive_search'],
+            results = copier.copy_files(
+                options['source_folder'], options['dest_folder'], options['extension'],
+                options['preserve_structure'], options['recursive_search'],
                 min_size_bytes=options['min_size_bytes'],
                 max_size_bytes=options['max_size_bytes'],
                 max_days_old=options['max_days_old']
             )
 
-            # Check if cancelled
             if self._cancel_requested:
-                self._queue_message('cancelled', None)
+                self._queue_msg('cancelled', None)
                 return
 
-            # Count results and send live counter update
-            copied_count = sum(1 for r in results if r.success and r.destination_file is not None)
-            skipped_count = sum(1 for r in results if r.success and r.destination_file is None)
-            error_count = sum(1 for r in results if not r.success)
-            self._queue_message('counters', {'copied': copied_count, 'skipped': skipped_count})
-
-            # Queue completion with results
-            self._queue_message('complete', {
-                'copied_count': copied_count,
-                'skipped_count': skipped_count,
-                'error_count': error_count,
-                'options': options
-            })
+            copied = sum(1 for r in results if r.success and r.destination_file is not None)
+            skipped = sum(1 for r in results if r.success and r.destination_file is None)
+            errors = sum(1 for r in results if not r.success)
+            self._queue_msg('counters', {'copied': copied, 'skipped': skipped})
+            self._queue_msg('complete', {'copied_count': copied, 'skipped_count': skipped, 'error_count': errors, 'options': options})
 
         except ValueError as e:
-            self._queue_message('error', {'type': 'validation', 'message': str(e)})
+            self._queue_msg('error', {'type': 'validation', 'message': str(e)})
         except OSError as e:
-            import traceback
-            tb = traceback.format_exc()
-            self._logger.error(f"FILE SYSTEM ERROR: {e}\n{tb}")
-            self._queue_message('status', f"FILE SYSTEM ERROR: {e}")
-            self._queue_message('status', f"Traceback: {tb}")
-            self._queue_message('error', {'type': 'filesystem', 'message': str(e)})
+            self._logger.error(f"FILE SYSTEM ERROR: {e}")
+            self._queue_msg('error', {'type': 'filesystem', 'message': str(e)})
         except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            self._logger.error(f"UNEXPECTED ERROR: {e}\n{tb}")
-            self._queue_message('error', {'type': 'unexpected', 'message': str(e)})
+            self._logger.error(f"UNEXPECTED ERROR: {e}")
+            self._queue_msg('error', {'type': 'unexpected', 'message': str(e)})
 
-    def _queue_message(self, msg_type: str, data) -> None:
-        """Add a message to the progress queue (thread-safe)"""
+    def _queue_msg(self, msg_type: str, data):
         self._progress_queue.put((msg_type, data))
 
-    def _poll_progress_queue(self) -> None:
-        """Poll the progress queue and update UI (runs on main thread)"""
+    def _poll_progress_queue(self):
         try:
             while True:
                 try:
                     msg_type, data = self._progress_queue.get_nowait()
-
                     if msg_type == 'status':
-                        self.status_listbox.insert(tk.END, data)
-                        self.status_listbox.see(tk.END)
-
+                        self._add_status(data)
                     elif msg_type == 'progress':
                         total = data['total']
-                        current = data['current']
                         if total > 0:
-                            overall_percent = (current / total) * 100
-                            self.overall_progress['value'] = overall_percent
-                        self.file_progress['value'] = data['file_progress']
-                        self.progress_label.config(
-                            text=f"Processing {current}/{total}: {data['filename']}"
-                        )
-
+                            self.overall_progress.setValue(int((data['current'] / total) * 100))
+                        self.file_progress.setValue(data['file_progress'])
+                        self.progress_label.setText(f"Processing {data['current']}/{total}: {data['filename']}")
                     elif msg_type == 'counters':
-                        self.copied_count_label.config(text=str(data['copied']))
-                        self.skipped_count_label.config(text=str(data['skipped']))
-
+                        self.copied_label.setText(str(data['copied']))
+                        self.skipped_label.setText(str(data['skipped']))
                     elif msg_type == 'complete':
+                        self._poll_timer.stop()
                         self._on_copy_complete(data)
-                        return  # Stop polling
-
+                        return
                     elif msg_type == 'cancelled':
+                        self._poll_timer.stop()
                         self._on_copy_cancelled()
-                        return  # Stop polling
-
+                        return
                     elif msg_type == 'error':
+                        self._poll_timer.stop()
                         self._on_copy_error(data)
-                        return  # Stop polling
-
+                        return
                 except queue.Empty:
                     break
-
         except Exception as e:
-            # Safety catch for any UI update errors
             print(f"Error in progress queue polling: {e}")
 
-        # Continue polling if still copying
-        if self._is_copying:
-            self.root.after(50, self._poll_progress_queue)
-
-    def _on_copy_complete(self, data: dict) -> None:
-        """Handle copy operation completion (runs on main thread)"""
+    def _on_copy_complete(self, data: dict):
         self._is_copying = False
-        self.copy_button.config(state='normal')
-        self.cancel_button.config(state='disabled')
+        self.copy_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        opts = data['options']
+        copied, skipped, errors = data['copied_count'], data['skipped_count'], data['error_count']
 
-        copied_count = data['copied_count']
-        skipped_count = data['skipped_count']
-        error_count = data['error_count']
-        options = data['options']
-
-        # Save configuration
-        self.config.set("last_extension", options['extension'])
-        self.config.set("default_source_folder", options['source_folder'])
-        self.config.set("default_destination_folder", options['dest_folder'])
-        self.config.set("preserve_structure", options['preserve_structure'])
-        self.config.set("folder_structure", options['folder_structure'])
-        self.config.set("number_duplicates", options['number_duplicates'])
-        self.config.set("recursive_search", options['recursive_search'])
-        self.config.set("enable_size_filter", self.enable_size_filter_var.get())
-        self.config.set("min_size", self.min_size_var.get())
-        self.config.set("max_size", self.max_size_var.get())
-        self.config.set("size_unit", self.size_unit_var.get())
-        self.config.set("enable_date_filter", self.enable_date_filter_var.get())
-        self.config.set("days_old", self.days_old_var.get())
+        self.config.set("last_extension", opts['extension'])
+        self.config.set("default_source_folder", opts['source_folder'])
+        self.config.set("default_destination_folder", opts['dest_folder'])
+        self.config.set("preserve_structure", opts['preserve_structure'])
+        self.config.set("folder_structure", opts['folder_structure'])
+        self.config.set("number_duplicates", opts['number_duplicates'])
+        self.config.set("recursive_search", opts['recursive_search'])
+        self.config.set("enable_size_filter", self.size_check.isChecked())
+        self.config.set("min_size", self.min_size_edit.text())
+        self.config.set("max_size", self.max_size_edit.text())
+        self.config.set("size_unit", self.unit_combo.currentText())
+        self.config.set("enable_date_filter", self.date_check.isChecked())
+        self.config.set("days_old", self.days_edit.text())
         self.config.save()
 
-        # Update final counter display
-        self.copied_count_label.config(text=str(copied_count))
-        self.skipped_count_label.config(text=str(skipped_count))
+        self.copied_label.setText(str(copied))
+        self.skipped_label.setText(str(skipped))
+        self.progress_label.setText(f"Complete! Copied: {copied}  Skipped: {skipped}")
 
-        summary = f"Total Copied: {copied_count}\nTotal Skipped: {skipped_count}"
-        self.progress_label.config(text=f"Complete! Copied: {copied_count}  Skipped: {skipped_count}")
+        summary = f"Total Copied: {copied}\nTotal Skipped: {skipped}"
+        if errors == 0 and copied > 0:
+            QMessageBox.information(self, "Complete", summary)
+        elif copied > 0:
+            QMessageBox.warning(self, "Completed with errors", f"{summary}\nErrors: {errors}\n\nCheck status for details.")
+        elif errors == 0:
+            QMessageBox.information(self, "No Files", "No files were found to process")
 
-        if error_count == 0 and copied_count > 0:
-            messagebox.showinfo("Complete", summary)
-        elif copied_count > 0:
-            messagebox.showwarning(
-                "Completed with errors",
-                f"{summary}\nErrors: {error_count}\n\nCheck status for details."
-            )
-        elif error_count == 0:
-            messagebox.showinfo("No Files", "No files were found to process")
-
-    def _on_copy_cancelled(self) -> None:
-        """Handle copy operation cancellation (runs on main thread)"""
+    def _on_copy_cancelled(self):
         self._is_copying = False
-        self.copy_button.config(state='normal')
-        self.cancel_button.config(state='disabled')
-        self.progress_label.config(text="Cancelled")
-        self.status_listbox.insert(tk.END, "Operation cancelled by user")
-        self.status_listbox.see(tk.END)
-        messagebox.showinfo("Cancelled", "Copy operation was cancelled")
+        self.copy_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        self.progress_label.setText("Cancelled")
+        self._add_status("Operation cancelled by user")
+        QMessageBox.information(self, "Cancelled", "Copy operation was cancelled")
 
-    def _on_copy_error(self, data: dict) -> None:
-        """Handle copy operation error (runs on main thread)"""
+    def _on_copy_error(self, data: dict):
         self._is_copying = False
-        self.copy_button.config(state='normal')
-        self.cancel_button.config(state='disabled')
-        self.progress_label.config(text="Error")
-
-        error_type = data['type']
-        message = data['message']
-
-        if error_type == 'validation':
-            messagebox.showerror("Validation Error", message)
-        elif error_type == 'filesystem':
-            messagebox.showerror("File System Error", message)
+        self.copy_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        self.progress_label.setText("Error")
+        msg = data['message']
+        if data['type'] == 'validation':
+            QMessageBox.critical(self, "Validation Error", msg)
+        elif data['type'] == 'filesystem':
+            QMessageBox.critical(self, "File System Error", msg)
         else:
-            messagebox.showerror("Error", f"An unexpected error occurred: {message}")
+            QMessageBox.critical(self, "Error", f"An unexpected error occurred:\n{msg}")
 
-    def _cancel_copy(self) -> None:
-        """Request cancellation of the copy operation"""
+    def _cancel_copy(self):
         if self._is_copying:
             self._cancel_requested = True
-            self.cancel_button.config(state='disabled')
-            self.progress_label.config(text="Cancelling...")
-            self.status_listbox.insert(tk.END, "Cancellation requested, please wait...")
-            self.status_listbox.see(tk.END)
-
-    def add_status(self, message: str) -> None:
-        """Add a status message to the listbox"""
-        self.status_listbox.insert(tk.END, message)
-        self.status_listbox.see(tk.END)
-        self.root.update_idletasks()
-
-    def _update_progress(self, current: int, total: int, current_file: str, file_progress: int = 0) -> None:
-        """Update progress bars and label"""
-        # Update overall progress
-        if total > 0:
-            overall_percent = (current / total) * 100
-            self.overall_progress['value'] = overall_percent
-
-        # Update file progress
-        self.file_progress['value'] = file_progress
-
-        # Update label
-        self.progress_label.config(text=f"Processing {current}/{total}: {current_file}")
-
-        # Force UI update
-        self.root.update_idletasks()
+            self.cancel_btn.setEnabled(False)
+            self.progress_label.setText("Cancelling...")
+            self._add_status("Cancellation requested, please wait...")

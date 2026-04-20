@@ -1,21 +1,26 @@
 """Main window UI for File Hash Dedupe"""
 
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-from pathlib import Path
-from typing import Optional
+import os
+import atexit
 import threading
 import queue
-import atexit
-import os
+from pathlib import Path
+
+from PyQt6.QtWidgets import (
+    QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
+    QCheckBox, QSpinBox, QProgressBar, QListWidget,
+    QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QFileDialog, QMessageBox,
+)
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QIcon
 
 from config import ConfigManager
 from hasher import FileDeduplicator
-from ui.styles import ThemeManager
+from ui.styles import STYLESHEET, COLORS
 
 
 def _cleanup_all_children():
-    """Emergency cleanup - kill all child processes on exit"""
     try:
         import psutil
         current = psutil.Process(os.getpid())
@@ -27,336 +32,170 @@ def _cleanup_all_children():
     except Exception:
         pass
 
-# Register cleanup to run on any exit
 atexit.register(_cleanup_all_children)
 
 
-class MainWindow:
-    """Main application window"""
-
-    def __init__(self, root: tk.Tk, config_manager: ConfigManager, version: str):
-        """
-        Initialize the main window
-
-        Args:
-            root: Tkinter root window
-            config_manager: Configuration manager instance
-            version: Application version string
-        """
-        self.root = root
+class MainWindow(QMainWindow):
+    def __init__(self, config_manager: ConfigManager, version: str):
+        super().__init__()
         self.config = config_manager
         self.version = version
 
-        # State
         self._is_processing = False
         self._cancel_requested = False
         self._message_queue = queue.Queue()
 
-        # Setup window
-        self._setup_window()
+        self.setWindowTitle(f"File Hash Dedupe v{self.version}")
+        self.setMinimumSize(700, 550)
+        self.setStyleSheet(STYLESHEET)
 
-        # Apply theme
-        ThemeManager.apply_theme(root)
+        geom = self.config.window_geometry
+        if geom:
+            try:
+                from PyQt6.QtCore import QByteArray
+                self.restoreGeometry(QByteArray.fromHex(geom.encode()))
+            except Exception:
+                self.resize(750, 600)
+        else:
+            self.resize(750, 600)
 
-        # Create UI
-        self._create_widgets()
-
-        # Load saved values
+        self._build_ui()
         self._load_config()
 
-        # Start message processing
-        self._process_messages()
+        self._poll_timer = QTimer()
+        self._poll_timer.setInterval(50)
+        self._poll_timer.timeout.connect(self._process_messages)
 
-        # Handle window close
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+    def _build_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
 
-    def _setup_window(self) -> None:
-        """Configure the main window"""
-        self.root.title(f"File Hash Dedupe v{self.version}")
-        self.root.minsize(700, 550)
+        # Header
+        header = QLabel("File Hash Dedupe")
+        header.setObjectName("header")
+        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(header)
 
-        # Restore geometry or set default
-        geometry = self.config.window_geometry
-        if geometry:
-            try:
-                self.root.geometry(geometry)
-            except Exception:
-                self.root.geometry("750x600")
-        else:
-            self.root.geometry("750x600")
-
-        # Center window
-        self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth() - self.root.winfo_width()) // 2
-        y = (self.root.winfo_screenheight() - self.root.winfo_height()) // 2
-        self.root.geometry(f"+{x}+{y}")
-
-    def _create_widgets(self) -> None:
-        """Create all UI widgets"""
-        # Main container with padding
-        main_frame = ttk.Frame(self.root, padding="20")
-        main_frame.pack(fill=tk.BOTH, expand=True)
-
-        # Title
-        title_label = ttk.Label(
-            main_frame,
-            text="File Hash Dedupe",
-            style='Header.TLabel',
-            font=('Segoe UI', 18, 'bold')
-        )
-        title_label.pack(pady=(0, 5))
-
-        subtitle_label = ttk.Label(
-            main_frame,
-            text="Find and move duplicate files based on content hash",
-            foreground=ThemeManager.COLORS['fg_secondary']
-        )
-        subtitle_label.pack(pady=(0, 20))
-
-        # Source folder section
-        self._create_folder_section(main_frame)
-
-        # Options section
-        self._create_options_section(main_frame)
-
-        # Action buttons
-        self._create_action_buttons(main_frame)
-
-        # Progress section
-        self._create_progress_section(main_frame)
-
-        # Status section
-        self._create_status_section(main_frame)
-
-    def _create_folder_section(self, parent: ttk.Frame) -> None:
-        """Create the folder selection section"""
-        folder_frame = ttk.LabelFrame(parent, text="Source Folder", padding="10")
-        folder_frame.pack(fill=tk.X, pady=(0, 15))
+        subtitle = QLabel("Find and move duplicate files based on content hash")
+        subtitle.setObjectName("subtitle")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(subtitle)
 
         # Source folder
-        source_frame = ttk.Frame(folder_frame)
-        source_frame.pack(fill=tk.X)
+        src_group = QGroupBox("Source Folder")
+        src_layout = QVBoxLayout(src_group)
+        src_row = QHBoxLayout()
+        self.source_edit = QLineEdit()
+        browse_btn = QPushButton("Browse...")
+        browse_btn.setMinimumWidth(100)
+        browse_btn.clicked.connect(self._browse_source)
+        src_row.addWidget(self.source_edit, stretch=1)
+        src_row.addWidget(browse_btn)
+        src_layout.addLayout(src_row)
+        info = QLabel("Duplicates will be moved to a 'Dupes' subfolder in the source folder")
+        info.setObjectName("subtitle")
+        src_layout.addWidget(info)
+        layout.addWidget(src_group)
 
-        self.source_entry = tk.Entry(source_frame, font=('Segoe UI', 10))
-        self.source_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-        ThemeManager.style_entry(self.source_entry)
+        # Options
+        opt_group = QGroupBox("Options")
+        opt_layout = QVBoxLayout(opt_group)
+        self.recursive_check = QCheckBox("Search subfolders recursively")
+        self.recursive_check.setChecked(True)
+        opt_layout.addWidget(self.recursive_check)
 
-        source_btn = tk.Button(
-            source_frame,
-            text="Browse...",
-            command=self._browse_source,
-            bg=ThemeManager.COLORS['bg_light'],
-            fg=ThemeManager.COLORS['fg_primary'],
-            activebackground=ThemeManager.COLORS['accent'],
-            activeforeground='white',
-            font=('Segoe UI', 10),
-            relief='flat',
-            padx=15,
-            pady=5,
-            cursor='hand2'
-        )
-        source_btn.pack(side=tk.RIGHT)
-
-        # Info label
-        info_label = ttk.Label(
-            folder_frame,
-            text="Duplicates will be moved to a 'Dupes' subfolder in the source folder",
-            foreground=ThemeManager.COLORS['fg_dim'],
-            font=('Segoe UI', 9)
-        )
-        info_label.pack(anchor='w', pady=(10, 0))
-
-    def _create_options_section(self, parent: ttk.Frame) -> None:
-        """Create the options section"""
-        options_frame = ttk.LabelFrame(parent, text="Options", padding="10")
-        options_frame.pack(fill=tk.X, pady=(0, 15))
-
-        # Recursive checkbox
-        self.recursive_var = tk.BooleanVar(value=True)
-        recursive_cb = ttk.Checkbutton(
-            options_frame,
-            text="Search subfolders recursively",
-            variable=self.recursive_var
-        )
-        recursive_cb.pack(anchor='w')
-
-        # Worker count row
-        workers_frame = ttk.Frame(options_frame)
-        workers_frame.pack(anchor='w', pady=(8, 0))
-
-        import os
         cpu_count = os.cpu_count() or 4
+        workers_row = QHBoxLayout()
+        workers_row.addWidget(QLabel("Hashing workers:"))
+        self.workers_spin = QSpinBox()
+        self.workers_spin.setRange(1, cpu_count)
+        self.workers_spin.setValue(max(2, min(16, cpu_count // 2)))
+        self.workers_spin.setFixedWidth(60)
+        workers_row.addWidget(self.workers_spin)
+        cpu_lbl = QLabel(f"(1 – {cpu_count} logical CPUs on this machine)")
+        cpu_lbl.setObjectName("subtitle")
+        workers_row.addWidget(cpu_lbl)
+        workers_row.addStretch()
+        opt_layout.addLayout(workers_row)
+        layout.addWidget(opt_group)
 
-        ttk.Label(
-            workers_frame,
-            text="Hashing workers:",
-            foreground=ThemeManager.COLORS['fg_secondary']
-        ).pack(side=tk.LEFT)
+        # Buttons
+        btn_row = QHBoxLayout()
+        self.dedupe_btn = QPushButton("Find Duplicates")
+        self.dedupe_btn.clicked.connect(self._start_dedupe)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setObjectName("cancel_btn")
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.clicked.connect(self._cancel_dedupe)
+        btn_row.addWidget(self.dedupe_btn)
+        btn_row.addWidget(self.cancel_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
 
-        self.workers_var = tk.IntVar(value=max(2, min(16, cpu_count // 2)))
-        workers_spin = ttk.Spinbox(
-            workers_frame,
-            from_=1,
-            to=cpu_count,
-            textvariable=self.workers_var,
-            width=5,
-            state='readonly'
-        )
-        workers_spin.pack(side=tk.LEFT, padx=(8, 8))
+        # Progress
+        self.progress_label = QLabel("Ready")
+        self.progress_label.setObjectName("subtitle")
+        layout.addWidget(self.progress_label)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        layout.addWidget(self.progress_bar)
 
-        ttk.Label(
-            workers_frame,
-            text=f"(1 – {cpu_count} logical CPUs on this machine)",
-            foreground=ThemeManager.COLORS['fg_dim'],
-            font=('Segoe UI', 9)
-        ).pack(side=tk.LEFT)
+        # Status log
+        status_group = QGroupBox("Status")
+        status_layout = QVBoxLayout(status_group)
+        self.status_list = QListWidget()
+        status_layout.addWidget(self.status_list)
+        layout.addWidget(status_group, stretch=1)
 
-    def _create_action_buttons(self, parent: ttk.Frame) -> None:
-        """Create the action buttons"""
-        button_frame = ttk.Frame(parent)
-        button_frame.pack(fill=tk.X, pady=(0, 15))
-
-        self.dedupe_button = tk.Button(
-            button_frame,
-            text="Find Duplicates",
-            command=self._start_dedupe,
-            bg=ThemeManager.COLORS['accent'],
-            fg='white',
-            activebackground=ThemeManager.COLORS['accent_hover'],
-            activeforeground='white',
-            disabledforeground=ThemeManager.COLORS['fg_dim'],
-            font=('Segoe UI', 11, 'bold'),
-            relief='flat',
-            padx=30,
-            pady=10,
-            cursor='hand2'
-        )
-        self.dedupe_button.pack(side=tk.LEFT, padx=(0, 10))
-
-        self.cancel_button = tk.Button(
-            button_frame,
-            text="Cancel",
-            command=self._cancel_dedupe,
-            state='disabled',
-            bg=ThemeManager.COLORS['accent_dark'],
-            fg=ThemeManager.COLORS['fg_primary'],
-            activebackground=ThemeManager.COLORS['error'],
-            activeforeground='white',
-            disabledforeground=ThemeManager.COLORS['fg_dim'],
-            font=('Segoe UI', 11, 'bold'),
-            relief='flat',
-            padx=30,
-            pady=10,
-            cursor='hand2'
-        )
-        self.cancel_button.pack(side=tk.LEFT)
-
-    def _create_progress_section(self, parent: ttk.Frame) -> None:
-        """Create the progress section"""
-        progress_frame = ttk.Frame(parent)
-        progress_frame.pack(fill=tk.X, pady=(0, 15))
-
-        self.progress_label = ttk.Label(
-            progress_frame,
-            text="Ready",
-            foreground=ThemeManager.COLORS['fg_secondary']
-        )
-        self.progress_label.pack(anchor='w', pady=(0, 5))
-
-        self.progress_bar = ttk.Progressbar(
-            progress_frame,
-            style='green.Horizontal.TProgressbar',
-            orient='horizontal',
-            mode='determinate',
-            maximum=100
-        )
-        self.progress_bar.pack(fill=tk.X)
-
-    def _create_status_section(self, parent: ttk.Frame) -> None:
-        """Create the status log section"""
-        status_frame = ttk.LabelFrame(parent, text="Status", padding="10")
-        status_frame.pack(fill=tk.BOTH, expand=True)
-
-        # Listbox with scrollbar
-        list_frame = ttk.Frame(status_frame)
-        list_frame.pack(fill=tk.BOTH, expand=True)
-
-        scrollbar = tk.Scrollbar(list_frame)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self.status_listbox = tk.Listbox(
-            list_frame,
-            yscrollcommand=scrollbar.set,
-            height=12
-        )
-        self.status_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        scrollbar.config(command=self.status_listbox.yview)
-
-        # Apply theme
-        ThemeManager.style_listbox(self.status_listbox)
-        ThemeManager.style_scrollbar(scrollbar)
-
-    def _browse_source(self) -> None:
-        """Open folder browser for source folder"""
-        initial_dir = self.source_entry.get() or str(Path.home())
-        folder = filedialog.askdirectory(
-            title="Select Source Folder",
-            initialdir=initial_dir
-        )
+    def _browse_source(self):
+        existing = self.source_edit.text().strip()
+        start = existing if existing and os.path.isdir(existing) else str(Path.home())
+        folder = QFileDialog.getExistingDirectory(self, "Select Source Folder", start)
         if folder:
-            self.source_entry.delete(0, tk.END)
-            self.source_entry.insert(0, folder)
+            self.source_edit.setText(folder)
 
-    def _load_config(self) -> None:
-        """Load configuration into UI"""
+    def _load_config(self):
         if self.config.source_folder:
-            self.source_entry.insert(0, self.config.source_folder)
+            self.source_edit.setText(self.config.source_folder)
+        self.recursive_check.setChecked(self.config.recursive)
+        self.workers_spin.setValue(self.config.get('io_workers', self.workers_spin.value()))
 
-        self.recursive_var.set(self.config.recursive)
-        self.workers_var.set(self.config.get('io_workers', self.workers_var.get()))
-
-    def _save_config(self) -> None:
-        """Save UI values to configuration"""
-        self.config.source_folder = self.source_entry.get()
-        self.config.recursive = self.recursive_var.get()
-        self.config.window_geometry = self.root.geometry()
-        self.config.set('io_workers', self.workers_var.get())
+    def _save_config(self):
+        self.config.source_folder = self.source_edit.text()
+        self.config.recursive = self.recursive_check.isChecked()
+        self.config.window_geometry = self.saveGeometry().toHex().data().decode()
+        self.config.set('io_workers', self.workers_spin.value())
         self.config.save()
 
-    def _start_dedupe(self) -> None:
-        """Start the deduplication process"""
-        # Validate
-        source = self.source_entry.get().strip()
+    def _start_dedupe(self):
+        source = self.source_edit.text().strip()
         if not source:
-            messagebox.showerror("Validation Error", "Please select a source folder")
+            QMessageBox.critical(self, "Validation Error", "Please select a source folder")
             return
-
         if not os.path.exists(source):
-            messagebox.showerror("Validation Error", "Source folder does not exist")
+            QMessageBox.critical(self, "Validation Error", "Source folder does not exist")
             return
 
-        # Save config
         self._save_config()
-
-        # Update UI state
         self._is_processing = True
         self._cancel_requested = False
-        self.dedupe_button.config(state='disabled')
-        self.cancel_button.config(state='normal')
-        self.progress_bar['value'] = 0
-        self.status_listbox.delete(0, tk.END)
+        self.dedupe_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.progress_bar.setValue(0)
+        self.status_list.clear()
 
-        # Start worker thread
         thread = threading.Thread(
             target=self._dedupe_worker,
-            args=(source, self.recursive_var.get(), self.workers_var.get()),
+            args=(source, self.recursive_check.isChecked(), self.workers_spin.value()),
             daemon=True
         )
         thread.start()
+        self._poll_timer.start()
 
-    def _dedupe_worker(self, source: str, recursive: bool, io_workers: int = 4) -> None:
-        """Worker thread for deduplication"""
+    def _dedupe_worker(self, source: str, recursive: bool, io_workers: int):
         try:
             deduplicator = FileDeduplicator(
                 status_callback=lambda msg: self._message_queue.put(('status', msg)),
@@ -366,121 +205,88 @@ class MainWindow:
                 cancel_check=lambda: self._cancel_requested,
                 max_workers=io_workers
             )
-
-            results, total, unique, moved = deduplicator.find_and_move_duplicates(
-                source,
-                recursive=recursive
-            )
-
+            results, total, unique, moved = deduplicator.find_and_move_duplicates(source, recursive=recursive)
             if self._cancel_requested:
                 self._message_queue.put(('cancelled', None))
             else:
-                self._message_queue.put(('complete', {
-                    'total': total,
-                    'unique': unique,
-                    'moved': moved
-                }))
-
+                self._message_queue.put(('complete', {'total': total, 'unique': unique, 'moved': moved}))
         except Exception as e:
-            self._message_queue.put(('error', {
-                'type': 'unexpected',
-                'message': str(e)
-            }))
+            self._message_queue.put(('error', {'type': 'unexpected', 'message': str(e)}))
 
-    def _process_messages(self) -> None:
-        """Process messages from worker thread"""
+    def _process_messages(self):
         try:
             while True:
                 msg_type, data = self._message_queue.get_nowait()
 
                 if msg_type == 'status':
-                    self.status_listbox.insert(tk.END, data)
-                    self.status_listbox.see(tk.END)
+                    self.status_list.addItem(data)
+                    self.status_list.scrollToBottom()
 
                 elif msg_type == 'progress':
-                    current = data['current']
-                    self.progress_bar['value'] = current
-                    self.progress_bar.update_idletasks()
-                    self.progress_label.config(
-                        text=f"{current}%: {data['filename']}"
-                    )
+                    self.progress_bar.setValue(data['current'])
+                    self.progress_label.setText(f"{data['current']}%: {data['filename']}")
 
                 elif msg_type == 'complete':
-                    self._on_dedupe_complete(data)
+                    self._poll_timer.stop()
+                    self._on_complete(data)
                     return
 
                 elif msg_type == 'cancelled':
-                    self._on_dedupe_cancelled()
+                    self._poll_timer.stop()
+                    self._on_cancelled()
                     return
 
                 elif msg_type == 'error':
-                    self._on_dedupe_error(data)
+                    self._poll_timer.stop()
+                    self._on_error(data)
                     return
 
         except queue.Empty:
             pass
 
-        # Schedule next check
-        self.root.after(50, self._process_messages)
-
-    def _on_dedupe_complete(self, data: dict) -> None:
-        """Handle deduplication completion"""
+    def _on_complete(self, data: dict):
         self._is_processing = False
-        self.dedupe_button.config(state='normal')
-        self.cancel_button.config(state='disabled')
-        self.progress_bar['value'] = 100
-        self.progress_label.config(text="Complete!")
-
-        total = data['total']
-        unique = data['unique']
-        moved = data['moved']
-
-        messagebox.showinfo(
-            "Success",
+        self.dedupe_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        self.progress_bar.setValue(100)
+        self.progress_label.setText("Complete!")
+        QMessageBox.information(
+            self, "Success",
             f"Deduplication complete!\n\n"
-            f"Total files scanned: {total}\n"
-            f"Unique files: {unique}\n"
-            f"Duplicates moved: {moved}"
+            f"Total files scanned: {data['total']}\n"
+            f"Unique files: {data['unique']}\n"
+            f"Duplicates moved: {data['moved']}"
         )
 
-    def _on_dedupe_cancelled(self) -> None:
-        """Handle deduplication cancellation"""
+    def _on_cancelled(self):
         self._is_processing = False
-        self.dedupe_button.config(state='normal')
-        self.cancel_button.config(state='disabled')
-        self.progress_label.config(text="Cancelled")
+        self.dedupe_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        self.progress_label.setText("Cancelled")
+        self.status_list.addItem("Operation cancelled by user")
+        self.status_list.scrollToBottom()
 
-        self.status_listbox.insert(tk.END, "Operation cancelled by user")
-        self.status_listbox.see(tk.END)
-
-    def _on_dedupe_error(self, data: dict) -> None:
-        """Handle deduplication error"""
+    def _on_error(self, data: dict):
         self._is_processing = False
-        self.dedupe_button.config(state='normal')
-        self.cancel_button.config(state='disabled')
-        self.progress_label.config(text="Error")
-
-        error_type = data['type']
-        message = data['message']
-
-        if error_type == 'validation':
-            messagebox.showerror("Validation Error", message)
+        self.dedupe_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        self.progress_label.setText("Error")
+        msg = data['message']
+        if data['type'] == 'validation':
+            QMessageBox.critical(self, "Validation Error", msg)
         else:
-            messagebox.showerror("Error", f"An unexpected error occurred: {message}")
+            QMessageBox.critical(self, "Error", f"An unexpected error occurred:\n{msg}")
 
-    def _cancel_dedupe(self) -> None:
-        """Request cancellation"""
+    def _cancel_dedupe(self):
         if self._is_processing:
             self._cancel_requested = True
-            self.cancel_button.config(state='disabled')
-            self.progress_label.config(text="Cancelling...")
-            self.status_listbox.insert(tk.END, "Cancellation requested...")
-            self.status_listbox.see(tk.END)
+            self.cancel_btn.setEnabled(False)
+            self.progress_label.setText("Cancelling...")
+            self.status_list.addItem("Cancellation requested...")
+            self.status_list.scrollToBottom()
 
-    def _on_close(self) -> None:
-        """Handle window close"""
+    def closeEvent(self, event):
         if self._is_processing:
             self._cancel_requested = True
-
         self._save_config()
-        self.root.destroy()
+        event.accept()
