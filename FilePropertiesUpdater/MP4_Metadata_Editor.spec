@@ -1,12 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-
 a = Analysis(
     ['mp4_metadata_editor.py'],
     pathex=[],
     binaries=[],
-    datas=[('P:/AI/VideCoding/.venv/Lib/site-packages/tkinterdnd2', 'tkinterdnd2'), ('app_icon.ico', '.')],
-    hiddenimports=[],
+    datas=[('app_icon.ico', '.')],
+    hiddenimports=['PyQt6', 'mutagen', 'mutagen.mp4'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

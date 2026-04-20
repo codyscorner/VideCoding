@@ -2,16 +2,24 @@
 MP4 Metadata Editor
 Drag and drop one or more MP4 files to update their metadata.
 Only fields that are filled in will be written — blank fields are ignored.
+Version: 1.1.0
 """
 
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-import threading
 import os
 import re
 import sys
+import threading
 
-# ── Optional dependencies ─────────────────────────────────────────────────────
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QLabel, QPushButton,
+    QLineEdit, QTextEdit, QListWidget, QListWidgetItem,
+    QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QScrollArea, QSizePolicy, QStatusBar,
+    QFileDialog, QMessageBox, QDialog, QDialogButtonBox,
+)
+from PyQt6.QtCore import Qt, QMimeData, pyqtSignal
+from PyQt6.QtGui import QIcon, QColor, QDragEnterEvent, QDropEvent
+
 try:
     import mutagen.mp4
 except ImportError:
@@ -19,14 +27,10 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "mutagen"])
     import mutagen.mp4
 
-try:
-    import tkinterdnd2
-    DND_AVAILABLE = True
-except ImportError:
-    DND_AVAILABLE = False
+APP_TITLE = "MP4 Metadata Editor"
+VERSION = "1.1.0"
 
-# ── Metadata field definitions ────────────────────────────────────────────────
-# (label, mutagen_key, is_integer, use_textbox)
+# Metadata field definitions: (label, mutagen_key, is_integer, multiline)
 FIELDS = [
     ("Title",            "\xa9nam", False, False),
     ("Artist",           "\xa9ART", False, False),
@@ -49,33 +53,160 @@ FIELDS = [
     ("Lyrics",           "\xa9lyr", False, True),
 ]
 
-# ── Theme ─────────────────────────────────────────────────────────────────────
-DARK_BG   = "#0d1b2a"
-PANEL_BG  = "#112240"
-ACCENT    = "#1e3a5f"
-HIGHLIGHT = "#2e6da4"
-TEXT_FG   = "#cdd9e5"
-ENTRY_BG  = "#1c2e40"
-ENTRY_FG  = "#e6f0fa"
-DROP_BG   = "#0a2540"
-SUCCESS   = "#3fb950"
-ERROR     = "#f85149"
-WARN      = "#e3b341"
+# Dark slate-blue color scheme
+COLORS = {
+    'bg_dark':      '#0d1117',
+    'bg_medium':    '#161b22',
+    'bg_light':     '#21262d',
+    'fg_primary':   '#e6edf3',
+    'fg_secondary': '#8b949e',
+    'fg_dim':       '#484f58',
+    'accent':       '#1f6feb',
+    'accent_hover': '#388bfd',
+    'accent_dark':  '#0d419d',
+    'border':       '#30363d',
+    'success':      '#3fb950',
+    'error':        '#f85149',
+    'warning':      '#e3b341',
+    'drop_bg':      '#0a1628',
+    'drop_border':  '#1f6feb',
+}
 
-F_MAIN    = ("Segoe UI", 10)
-F_LABEL   = ("Segoe UI", 9)
-F_TITLE   = ("Segoe UI", 13, "bold")
-F_SMALL   = ("Segoe UI", 8)
+STYLESHEET = f"""
+QMainWindow, QWidget {{
+    background-color: {COLORS['bg_dark']};
+    color: {COLORS['fg_primary']};
+    font-family: "Segoe UI";
+    font-size: 10pt;
+}}
+QLabel {{
+    background-color: transparent;
+    color: {COLORS['fg_primary']};
+}}
+QLabel#subtitle {{
+    color: {COLORS['fg_secondary']};
+    font-size: 9pt;
+}}
+QLabel#header {{
+    color: {COLORS['accent_hover']};
+    font-size: 18pt;
+    font-weight: bold;
+}}
+QLabel#drop_zone {{
+    background-color: {COLORS['drop_bg']};
+    color: {COLORS['accent_hover']};
+    border: 2px dashed {COLORS['drop_border']};
+    border-radius: 6px;
+    font-size: 10pt;
+    font-style: italic;
+    padding: 16px;
+}}
+QLabel#drop_zone:hover {{
+    background-color: {COLORS['bg_medium']};
+    border-color: {COLORS['accent_hover']};
+}}
+QGroupBox {{
+    border: 1px solid {COLORS['border']};
+    border-radius: 4px;
+    margin-top: 8px;
+    padding: 8px;
+    color: {COLORS['accent_hover']};
+    font-weight: bold;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    left: 8px;
+    padding: 0 4px;
+}}
+QLineEdit {{
+    background-color: {COLORS['bg_light']};
+    color: {COLORS['fg_primary']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 3px;
+    padding: 5px;
+    font-size: 10pt;
+}}
+QLineEdit:focus {{
+    border: 1px solid {COLORS['accent']};
+}}
+QTextEdit {{
+    background-color: {COLORS['bg_light']};
+    color: {COLORS['fg_primary']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 3px;
+    padding: 4px;
+    font-size: 10pt;
+}}
+QTextEdit:focus {{
+    border: 1px solid {COLORS['accent']};
+}}
+QPushButton {{
+    background-color: {COLORS['accent']};
+    color: white;
+    font-weight: bold;
+    border: none;
+    border-radius: 4px;
+    padding: 8px 18px;
+    font-size: 10pt;
+}}
+QPushButton:hover {{
+    background-color: {COLORS['accent_hover']};
+}}
+QPushButton:disabled {{
+    background-color: {COLORS['bg_light']};
+    color: {COLORS['fg_dim']};
+}}
+QPushButton#secondary_btn {{
+    background-color: {COLORS['bg_light']};
+    color: {COLORS['fg_primary']};
+    font-weight: normal;
+    padding: 6px 14px;
+    font-size: 9pt;
+}}
+QPushButton#secondary_btn:hover {{
+    background-color: {COLORS['accent_dark']};
+    color: white;
+}}
+QListWidget {{
+    background-color: {COLORS['bg_medium']};
+    color: {COLORS['fg_primary']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 3px;
+    font-family: Consolas;
+    font-size: 9pt;
+}}
+QListWidget::item:selected {{
+    background-color: {COLORS['accent']};
+    color: white;
+}}
+QScrollBar:vertical {{
+    background-color: {COLORS['bg_dark']};
+    width: 12px;
+    border: none;
+}}
+QScrollBar::handle:vertical {{
+    background-color: {COLORS['border']};
+    border-radius: 6px;
+    min-height: 20px;
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0px;
+}}
+QStatusBar {{
+    background-color: {COLORS['bg_medium']};
+    color: {COLORS['fg_secondary']};
+    border-top: 1px solid {COLORS['border']};
+    font-size: 9pt;
+    padding: 3px 8px;
+}}
+"""
 
 
-# ── Core write logic ──────────────────────────────────────────────────────────
 def write_metadata(filepath: str, fields: dict) -> tuple[bool, str]:
-    """Write only non-blank fields.  Returns (ok, message)."""
     try:
         audio = mutagen.mp4.MP4(filepath)
         if audio.tags is None:
             audio.add_tags()
-
         changed = 0
         for label, key, is_int, _ in FIELDS:
             value = fields.get(key, "").strip()
@@ -89,198 +220,219 @@ def write_metadata(filepath: str, fields: dict) -> tuple[bool, str]:
             else:
                 audio.tags[key] = [value]
             changed += 1
-
         if changed == 0:
             return False, "No fields to write (all blank)."
-
         audio.save()
         return True, f"Updated {changed} field(s)."
     except Exception as exc:
         return False, str(exc)
 
 
-# ── Main window ───────────────────────────────────────────────────────────────
-class App:
-    def __init__(self, root: tk.Tk):
-        self.root = root
-        self.root.title("MP4 Metadata Editor v1.0.0")
-        self.root.geometry("800x860")
-        self.root.minsize(640, 600)
-        self.root.configure(bg=DARK_BG)
+class DropZoneLabel(QLabel):
+    files_dropped = pyqtSignal(list)
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("drop_zone")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setAcceptDrops(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent):
+        paths = [
+            u.toLocalFile()
+            for u in event.mimeData().urls()
+            if u.toLocalFile().lower().endswith(".mp4")
+        ]
+        if paths:
+            self.files_dropped.emit(paths)
+
+
+class ResultDialog(QDialog):
+    def __init__(self, parent, summary: str, results: list):
+        super().__init__(parent)
+        self.setWindowTitle("Results")
+        self.setMinimumSize(560, 340)
+        self.setStyleSheet(parent.styleSheet())
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 12)
+
+        title = QLabel(summary)
+        title.setObjectName("header")
+        layout.addWidget(title)
+
+        txt = QTextEdit()
+        txt.setReadOnly(True)
+        layout.addWidget(txt, stretch=1)
+
+        for success, name, msg in results:
+            icon = "\u2713" if success else "\u2717"
+            color = COLORS['success'] if success else COLORS['error']
+            txt.append(f'<span style="color:{color}">{icon}  {name}<br>&nbsp;&nbsp;&nbsp;&nbsp;{msg}</span><br>')
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+
+class MainWindow(QMainWindow):
+    _results_ready = pyqtSignal(str, list, str)
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(f"{APP_TITLE} v{VERSION}")
+        self.setMinimumSize(820, 860)
+        self.setStyleSheet(STYLESHEET)
+        self.setAcceptDrops(True)
 
         self.queued_files: list[str] = []
-        # Maps mutagen key → (StringVar, optional Text widget)
-        self.field_widgets: dict[str, tuple[tk.StringVar, tk.Text | None]] = {}
+        # mutagen_key → QLineEdit or QTextEdit
+        self.field_widgets: dict[str, QLineEdit | QTextEdit] = {}
 
         self._build_ui()
-        self._setup_dnd()
+        self._results_ready.connect(self._show_results)
 
-    # ── UI ────────────────────────────────────────────────────────────────
     def _build_ui(self):
-        root = self.root
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(16, 16, 16, 8)
+        layout.setSpacing(10)
 
-        # Title bar
-        hdr = tk.Frame(root, bg=ACCENT, pady=10)
-        hdr.pack(fill="x")
-        tk.Label(hdr, text="MP4 Metadata Editor", font=F_TITLE,
-                 bg=ACCENT, fg=ENTRY_FG).pack(side="left", padx=16)
-        tk.Label(hdr, text="Fill in any fields — blank fields are never overwritten",
-                 font=F_SMALL, bg=ACCENT, fg=TEXT_FG).pack(side="right", padx=16)
+        # Header
+        header = QLabel(APP_TITLE)
+        header.setObjectName("header")
+        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(header)
 
-        body = tk.Frame(root, bg=DARK_BG)
-        body.pack(fill="both", expand=True, padx=12, pady=8)
+        subtitle = QLabel("Fill in any fields — blank fields are never overwritten")
+        subtitle.setObjectName("subtitle")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(subtitle)
 
         # Drop zone
-        self.drop_label = tk.Label(
-            body,
-            text="⊕  Drag & drop MP4 files here  —  or click to browse",
-            font=("Segoe UI", 10, "italic"),
-            bg=DROP_BG, fg=HIGHLIGHT, pady=18, cursor="hand2",
-            relief="ridge", bd=2
+        self.drop_label = DropZoneLabel(
+            "\u2295  Drag & drop MP4 files here  \u2014  or click to browse"
         )
-        self.drop_label.pack(fill="x", pady=(0, 6))
-        self.drop_label.bind("<Button-1>", self._browse)
+        self.drop_label.setFixedHeight(62)
+        self.drop_label.files_dropped.connect(self._add_files)
+        self.drop_label.mousePressEvent = lambda _: self._browse()
+        layout.addWidget(self.drop_label)
 
-        # File list
-        lf = tk.LabelFrame(body, text=" Queued files ", font=F_LABEL,
-                           bg=PANEL_BG, fg=TEXT_FG, bd=1)
-        lf.pack(fill="x", pady=(0, 8))
+        # File queue
+        files_group = QGroupBox("Queued Files")
+        files_layout = QVBoxLayout(files_group)
+        self.file_list = QListWidget()
+        self.file_list.setFixedHeight(100)
+        files_layout.addWidget(self.file_list)
 
-        sb = tk.Scrollbar(lf)
-        self.listbox = tk.Listbox(lf, height=5, bg=ENTRY_BG, fg=ENTRY_FG,
-                                  selectbackground=HIGHLIGHT, font=F_LABEL,
-                                  yscrollcommand=sb.set, activestyle="none",
-                                  relief="flat", bd=0)
-        sb.config(command=self.listbox.yview)
-        sb.pack(side="right", fill="y")
-        self.listbox.pack(fill="x", padx=4, pady=(2, 4))
+        file_btn_row = QHBoxLayout()
+        remove_btn = QPushButton("Remove Selected")
+        remove_btn.setObjectName("secondary_btn")
+        remove_btn.clicked.connect(self._remove_selected)
+        file_btn_row.addWidget(remove_btn)
 
-        br = tk.Frame(lf, bg=PANEL_BG)
-        br.pack(fill="x", padx=8, pady=(0, 6))
-        self._btn(br, "Remove Selected", self._remove_selected).pack(side="left", padx=(0, 6))
-        self._btn(br, "Clear All Files", self._clear_files).pack(side="left")
+        clear_files_btn = QPushButton("Clear All Files")
+        clear_files_btn.setObjectName("secondary_btn")
+        clear_files_btn.clicked.connect(self._clear_files)
+        file_btn_row.addWidget(clear_files_btn)
+        file_btn_row.addStretch()
+        files_layout.addLayout(file_btn_row)
+        layout.addWidget(files_group)
 
-        # Metadata fields in a scrollable canvas
-        fields_wrap = tk.Frame(body, bg=DARK_BG)
-        fields_wrap.pack(fill="both", expand=True)
+        # Metadata fields in scrollable area
+        fields_group = QGroupBox("Metadata Fields")
+        fields_outer = QVBoxLayout(fields_group)
 
-        canvas = tk.Canvas(fields_wrap, bg=DARK_BG, highlightthickness=0)
-        vsb = tk.Scrollbar(fields_wrap, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(scroll.Shape.NoFrame)
 
-        self.inner = tk.Frame(canvas, bg=DARK_BG)
-        win_id = canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        fields_widget = QWidget()
+        fields_grid = QGridLayout(fields_widget)
+        fields_grid.setSpacing(6)
 
-        self.inner.bind("<Configure>",
-                        lambda *_: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>",
-                    lambda e: canvas.itemconfig(win_id, width=e.width))
-        canvas.bind_all("<MouseWheel>",
-                        lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
-
-        self._build_fields()
-
-        # Bottom button row
-        bot = tk.Frame(body, bg=DARK_BG)
-        bot.pack(fill="x", pady=8)
-        self._btn(bot, "Clear All Fields", self._clear_fields).pack(side="left")
-        self._btn(bot, "Apply to All Files", self._apply,
-                  bg=HIGHLIGHT, width=22).pack(side="right")
-
-        # Status bar
-        self.status_var = tk.StringVar(
-            value="Ready — add files and fill in the metadata fields you want to update.")
-        self.status_label = tk.Label(root, textvariable=self.status_var, font=F_SMALL,
-                                     bg=ACCENT, fg=TEXT_FG, anchor="w", padx=10, pady=5)
-        self.status_label.pack(fill="x", side="bottom")
-
-    def _build_fields(self):
-        """Two-column grid of entry / text widgets for each metadata field."""
-        col_count = 2
         short_fields = [(l, k, n, t) for l, k, n, t in FIELDS if not t]
         long_fields  = [(l, k, n, t) for l, k, n, t in FIELDS if t]
 
-        # Short single-line fields in two columns
+        col_count = 2
         for i, (label, key, is_int, _) in enumerate(short_fields):
             row, col = divmod(i, col_count)
-            cell = tk.Frame(self.inner, bg=PANEL_BG, bd=1, relief="flat")
-            cell.grid(row=row, column=col, padx=5, pady=4, sticky="nsew")
-            self.inner.columnconfigure(col, weight=1)
-
+            cell = QWidget()
+            cell_layout = QVBoxLayout(cell)
+            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setSpacing(2)
             hint = " (integer)" if is_int else ""
-            tk.Label(cell, text=f"{label}{hint}", font=F_LABEL,
-                     bg=PANEL_BG, fg=TEXT_FG, anchor="w").pack(fill="x", padx=8, pady=(6, 2))
+            lbl = QLabel(f"{label}{hint}")
+            lbl.setObjectName("subtitle")
+            cell_layout.addWidget(lbl)
+            entry = QLineEdit()
+            cell_layout.addWidget(entry)
+            fields_grid.addWidget(cell, row, col)
+            fields_grid.setColumnStretch(col, 1)
+            self.field_widgets[key] = entry
 
-            var = tk.StringVar()
-            entry = tk.Entry(cell, textvariable=var, bg=ENTRY_BG, fg=ENTRY_FG,
-                             insertbackground=ENTRY_FG, font=F_LABEL,
-                             relief="flat", bd=4)
-            entry.pack(fill="x", padx=8, pady=(0, 6))
-            self.field_widgets[key] = (var, None)
-
-        # Long multi-line text fields, each spanning full width
         base_row = (len(short_fields) + col_count - 1) // col_count
         for i, (label, key, _, _) in enumerate(long_fields):
-            cell = tk.Frame(self.inner, bg=PANEL_BG, bd=1, relief="flat")
-            cell.grid(row=base_row + i, column=0, columnspan=col_count,
-                      padx=5, pady=4, sticky="nsew")
+            cell = QWidget()
+            cell_layout = QVBoxLayout(cell)
+            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setSpacing(2)
+            lbl = QLabel(label)
+            lbl.setObjectName("subtitle")
+            cell_layout.addWidget(lbl)
+            txt = QTextEdit()
+            txt.setFixedHeight(80)
+            cell_layout.addWidget(txt)
+            fields_grid.addWidget(cell, base_row + i, 0, 1, col_count)
+            self.field_widgets[key] = txt
 
-            tk.Label(cell, text=label, font=F_LABEL,
-                     bg=PANEL_BG, fg=TEXT_FG, anchor="w").pack(fill="x", padx=8, pady=(6, 2))
+        scroll.setWidget(fields_widget)
+        fields_outer.addWidget(scroll)
+        layout.addWidget(fields_group, stretch=1)
 
-            var = tk.StringVar()
-            txt = tk.Text(cell, height=4, bg=ENTRY_BG, fg=ENTRY_FG,
-                          insertbackground=ENTRY_FG, font=F_LABEL,
-                          relief="flat", bd=4, wrap="word")
-            txt.pack(fill="x", padx=8, pady=(0, 6))
+        # Bottom buttons
+        bottom_row = QHBoxLayout()
+        clear_fields_btn = QPushButton("Clear All Fields")
+        clear_fields_btn.setObjectName("secondary_btn")
+        clear_fields_btn.clicked.connect(self._clear_fields)
+        bottom_row.addWidget(clear_fields_btn)
+        bottom_row.addStretch()
+        apply_btn = QPushButton("Apply to All Files")
+        apply_btn.clicked.connect(self._apply)
+        bottom_row.addWidget(apply_btn)
+        layout.addLayout(bottom_row)
 
-            def _sync(*_, t=txt, v=var):
-                v.set(t.get("1.0", "end-1c"))
+        # Status bar
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage(
+            "Ready — add files and fill in the metadata fields you want to update."
+        )
 
-            txt.bind("<KeyRelease>", _sync)
-            self.field_widgets[key] = (var, txt)
+    # ── Drag-drop on main window ──────────────────────────────────────────────
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
 
-    def _btn(self, parent, text, command=None, bg=ACCENT, width=None):
-        kw = dict(text=text, command=command, bg=bg, fg=ENTRY_FG,
-                  font=F_LABEL, relief="flat", cursor="hand2",
-                  padx=10, pady=5, activebackground=HIGHLIGHT, activeforeground="white")
-        if width:
-            kw["width"] = width
-        b = tk.Button(parent, **kw)
-        b.bind("<Enter>", lambda e, _b=b: _b.configure(bg=HIGHLIGHT))
-        b.bind("<Leave>", lambda e, _b=b, _c=bg: _b.configure(bg=_c))
-        return b
+    def dropEvent(self, event: QDropEvent):
+        paths = [
+            u.toLocalFile()
+            for u in event.mimeData().urls()
+            if u.toLocalFile().lower().endswith(".mp4")
+        ]
+        self._add_files(paths)
 
-    # ── DnD ───────────────────────────────────────────────────────────────
-    def _setup_dnd(self):
-        if not DND_AVAILABLE:
-            self.drop_label.configure(
-                text="Click here to browse for MP4 files"
-                     "  (install tkinterdnd2 to enable drag & drop)"
-            )
-            return
-        # Register drop target on both the label and the root window so
-        # files can be dropped anywhere on the app.
-        for widget in (self.drop_label, self.listbox, self.root):
-            try:
-                widget.drop_target_register(tkinterdnd2.DND_FILES)
-                widget.dnd_bind("<<Drop>>", self._on_drop)
-            except Exception as exc:
-                print(f"DnD register failed on {widget}: {exc}")
-
-    def _on_drop(self, event):
-        # tkinterdnd2 wraps paths containing spaces in {braces}
-        paths = re.findall(r'\{([^}]+)\}|(\S+)', event.data)
-        paths = [a or b for a, b in paths]
-        self._add_files([p for p in paths if p.lower().endswith(".mp4")])
-
-    # ── File list management ──────────────────────────────────────────────
-    def _browse(self, *_):
-        paths = filedialog.askopenfilenames(
-            title="Select MP4 files",
-            filetypes=[("MP4 files", "*.mp4"), ("All files", "*.*")]
+    # ── File management ───────────────────────────────────────────────────────
+    def _browse(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Select MP4 files", "",
+            "MP4 files (*.mp4);;All files (*.*)"
         )
         self._add_files(list(paths))
 
@@ -289,41 +441,49 @@ class App:
         for p in paths:
             if p not in self.queued_files:
                 self.queued_files.append(p)
-                self.listbox.insert("end", os.path.basename(p))
+                self.file_list.addItem(os.path.basename(p))
                 added += 1
         if added:
-            self._status(f"Added {added} file(s).  Total queued: {len(self.queued_files)}.", WARN)
+            self.status_bar.showMessage(
+                f"Added {added} file(s).  Total queued: {len(self.queued_files)}."
+            )
 
     def _remove_selected(self):
-        for idx in reversed(self.listbox.curselection()):
-            self.listbox.delete(idx)
+        for idx in reversed([self.file_list.row(i) for i in self.file_list.selectedItems()]):
+            self.file_list.takeItem(idx)
             del self.queued_files[idx]
-        self._status(f"{len(self.queued_files)} file(s) in queue.", TEXT_FG)
+        self.status_bar.showMessage(f"{len(self.queued_files)} file(s) in queue.")
 
     def _clear_files(self):
         self.queued_files.clear()
-        self.listbox.delete(0, "end")
-        self._status("File list cleared.", TEXT_FG)
+        self.file_list.clear()
+        self.status_bar.showMessage("File list cleared.")
 
     def _clear_fields(self):
-        for var, txt in self.field_widgets.values():
-            var.set("")
-            if txt:
-                txt.delete("1.0", "end")
+        for widget in self.field_widgets.values():
+            if isinstance(widget, QTextEdit):
+                widget.clear()
+            else:
+                widget.clear()
 
-    # ── Apply ─────────────────────────────────────────────────────────────
+    # ── Apply metadata ────────────────────────────────────────────────────────
     def _apply(self):
         if not self.queued_files:
-            messagebox.showwarning("No files", "Add at least one MP4 file first.")
+            QMessageBox.warning(self, "No files", "Add at least one MP4 file first.")
             return
-
-        fields = {key: var.get() for key, (var, _) in self.field_widgets.items()}
+        fields = {}
+        for key, widget in self.field_widgets.items():
+            if isinstance(widget, QTextEdit):
+                fields[key] = widget.toPlainText()
+            else:
+                fields[key] = widget.text()
         if not any(v.strip() for v in fields.values()):
-            messagebox.showwarning("Nothing to write",
-                                   "Fill in at least one metadata field before applying.")
+            QMessageBox.warning(
+                self, "Nothing to write",
+                "Fill in at least one metadata field before applying."
+            )
             return
-
-        self._status("Writing metadata…", WARN)
+        self.status_bar.showMessage("Writing metadata\u2026")
         threading.Thread(
             target=self._apply_thread,
             args=(list(self.queued_files), fields),
@@ -335,84 +495,35 @@ class App:
         ok = fail = 0
         for path in files:
             success, msg = write_metadata(path, fields)
-            name = os.path.basename(path)
-            results.append((success, name, msg))
+            results.append((success, os.path.basename(path), msg))
             if success:
                 ok += 1
             else:
                 fail += 1
-
         summary = f"{ok} file(s) updated"
         if fail:
             summary += f", {fail} failed"
-        color = SUCCESS if fail == 0 else (WARN if ok > 0 else ERROR)
-        self.root.after(0, lambda: self._show_results(summary, results, color))
+        color = COLORS['success'] if fail == 0 else (COLORS['warning'] if ok > 0 else COLORS['error'])
+        self._results_ready.emit(summary, results, color)
 
     def _show_results(self, summary: str, results: list, color: str):
-        self._status(summary, color)
-        ResultWindow(self.root, summary, results)
-
-    def _status(self, text: str, color: str = TEXT_FG):
-        self.status_var.set(text)
-        self.status_label.configure(fg=color)
+        self.status_bar.showMessage(summary)
+        dlg = ResultDialog(self, summary, results)
+        dlg.exec()
 
 
-# ── Results popup ─────────────────────────────────────────────────────────────
-class ResultWindow(tk.Toplevel):
-    def __init__(self, parent, summary: str, results: list):
-        super().__init__(parent)
-        self.title("Results")
-        self.configure(bg=DARK_BG)
-        self.geometry("580x360")
-        self.grab_set()
-        self.resizable(True, True)
-
-        tk.Label(self, text=summary, font=F_TITLE, bg=DARK_BG,
-                 fg=ENTRY_FG, pady=10).pack(fill="x", padx=14)
-
-        frame = tk.Frame(self, bg=DARK_BG)
-        frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
-
-        vsb = tk.Scrollbar(frame)
-        vsb.pack(side="right", fill="y")
-
-        txt = tk.Text(frame, bg=PANEL_BG, fg=ENTRY_FG, font=F_LABEL,
-                      relief="flat", bd=4, yscrollcommand=vsb.set, wrap="word")
-        vsb.config(command=txt.yview)
-        txt.pack(fill="both", expand=True)
-        txt.tag_configure("ok",  foreground=SUCCESS)
-        txt.tag_configure("err", foreground=ERROR)
-
-        for success, name, msg in results:
-            tag = "ok" if success else "err"
-            icon = "✓" if success else "✗"
-            txt.insert("end", f"{icon}  {name}\n    {msg}\n\n", tag)
-        txt.configure(state="disabled")
-
-        tk.Button(self, text="Close", command=self.destroy,
-                  bg=HIGHLIGHT, fg=ENTRY_FG, font=F_LABEL,
-                  relief="flat", padx=24, pady=6,
-                  cursor="hand2").pack(pady=8)
-
-
-# ── Entry point ───────────────────────────────────────────────────────────────
 def main():
-    if DND_AVAILABLE:
-        root = tkinterdnd2.TkinterDnD.Tk()
-    else:
-        root = tk.Tk()
+    app = QApplication(sys.argv)
+    app.setApplicationName(APP_TITLE)
 
-    import os as _os
-    from pathlib import Path as _Path
-    _icon = _Path(__file__).parent / "app_icon.ico"
-    if _icon.exists():
-        try:
-            root.iconbitmap(str(_icon))
-        except Exception:
-            pass
+    from pathlib import Path
+    icon_path = Path(__file__).parent / "app_icon.ico"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
 
-    App(root)
-    root.mainloop()
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
