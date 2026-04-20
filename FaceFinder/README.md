@@ -2,9 +2,9 @@
 
 A tool for searching matching faces in image collections using face recognition.
 
-## Version 1.0.0
+## Version 1.2.0
 
-**Yellow & Black Theme** - Easy on the eyes for extended use!
+**Dark Gold/Amber Theme** — PyQt6 UI with native drag-drop and thumbnail results viewer.
 
 ## Features
 
@@ -125,19 +125,18 @@ Configuration is stored in `main_config.json` and includes:
 ## Requirements
 
 ### For Running from Source
-- Python 3.8+
+- Python 3.10+
+- PyQt6
 - face_recognition
-- dlib
+- dlib-bin
 - numpy
 - Pillow
-- tkinter (usually included with Python)
+- psutil
 
 ### Install Dependencies
 ```bash
-pip install face_recognition numpy Pillow
+pip install PyQt6 dlib-bin face_recognition --no-deps face_recognition_models numpy Pillow platformdirs --upgrade
 ```
-
-Note: `face_recognition` requires `dlib` which may need CMake and a C++ compiler to build.
 
 ## Architecture
 
@@ -179,13 +178,17 @@ Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
 
+### v1.2.0
+- Migrated from tkinter to PyQt6
+- Dark gold/amber theme
+- Native PyQt6 drag-drop (no tkinterdnd2)
+- QPixmap thumbnail grid in results viewer
+- pyqtSignal for thread-safe search completion
+- Clipboard paste support preserved
+
 ### v1.0.0 (January 2026)
 - Initial release with modular architecture
 - Face recognition-based image search
 - Parallel processing with 10 worker processes
 - Adjustable tolerance slider
-- Recursive folder search option
-- Results viewer with thumbnail grid
-- PyInstaller executable support
 - Yellow/black theme
-- Configuration persistence

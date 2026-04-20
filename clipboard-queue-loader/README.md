@@ -27,9 +27,9 @@ Download `ClipboardQueueLoader.exe` from the `dist` folder and run it directly.
 
 ### Option 2: Run with Python
 ```bash
+pip install PyQt6
 python main.py
 ```
-No external dependencies required - uses only Python standard library (Tkinter).
 
 ## Usage
 
@@ -84,7 +84,7 @@ pyinstaller --onefile --windowed --name "ClipboardQueueLoader" main.py
 
 ## Version
 
-1.1.0
+1.2.0 — Migrated from tkinter to PyQt6, dark teal/cyan theme
 
 ## License
 

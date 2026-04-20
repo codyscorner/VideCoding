@@ -1,6 +1,3 @@
-"""UI components for FaceFinder application"""
+"""UI package for FaceFinder"""
 
 from ui.main_window import MainWindow
-from ui.styles import ThemeManager
-
-__all__ = ['MainWindow', 'ThemeManager']

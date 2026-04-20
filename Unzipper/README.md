@@ -1,6 +1,6 @@
-# Unzipper  V-1.0.0
+# Unzipper  V-1.1.0
 
-A lightweight Windows desktop app for batch-extracting ZIP files, built with Python and Tkinter.
+A lightweight Windows desktop app for batch-extracting ZIP files, built with Python and PyQt6.
 
 ---
 
@@ -9,7 +9,7 @@ A lightweight Windows desktop app for batch-extracting ZIP files, built with Pyt
 - **Flat Unzip** — extracts every file from all ZIPs in a folder into a single destination folder, renaming files sequentially (`Filename_000001.mp4`, `_000002.mp4`, …)
 - **Structured Unzip** — extracts each ZIP into its own subfolder (named after the ZIP), preserving the internal folder structure. Duplicate folder names are automatically suffixed (`FolderName_000001`, etc.)
 - **Color-coded status log** — green for success, red for errors, blue for progress info
-- **Dark blue UI** — clean modern theme, no installation required
+- **Dark forest green UI** — clean modern PyQt6 theme
 
 ---
 
@@ -50,8 +50,12 @@ pyinstaller --onefile --windowed --name "Unzipper" unzipper.py
 
 ## Requirements (source)
 
-- Python 3.8+
-- `tkinter` (included with standard Python on Windows)
+- Python 3.10+
+- `PyQt6`
+
+```bash
+pip install PyQt6
+```
 
 ---
 

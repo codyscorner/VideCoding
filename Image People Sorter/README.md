@@ -41,8 +41,9 @@ Destination Folder/
 ## Requirements
 
 - Python 3.10+
+- PyQt6
 - face_recognition
-- dlib
+- dlib-bin
 - Pillow
 - numpy
 - psutil
@@ -50,7 +51,7 @@ Destination Folder/
 ## Installation
 
 ```bash
-pip install face_recognition pillow numpy psutil
+pip install PyQt6 dlib-bin face_recognition --no-deps face_recognition_models pillow numpy psutil platformdirs --upgrade
 ```
 
 ## Building Executable
@@ -68,4 +69,4 @@ Optimized for multi-core processors. Default configuration uses 14 parallel work
 
 ## Version
 
-1.0.0
+1.1.0 — Migrated from tkinter to PyQt6, dark orange/amber theme

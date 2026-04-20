@@ -1,168 +1,189 @@
-"""Theme and styling management for FaceFinder application"""
+"""Dark gold/amber theme for FaceFinder"""
 
-from tkinter import ttk
-from typing import Dict
+COLORS = {
+    'bg_dark':      '#1a1600',
+    'bg_medium':    '#2e2500',
+    'bg_light':     '#3d3100',
+    'fg_primary':   '#fff8e1',
+    'fg_secondary': '#ffe082',
+    'fg_dim':       '#a08830',
+    'accent':       '#f9a825',
+    'accent_hover': '#fdd835',
+    'accent_dark':  '#c17900',
+    'border':       '#5c4a00',
+    'success':      '#a5d6a7',
+    'error':        '#ef9a9a',
+    'progress_bg':  '#2e2500',
+    'progress_fg':  '#f9a825',
+    'match_bg':     '#3d3100',
+    'thumb_hover':  '#5c4a00',
+}
 
-
-class Theme:
-    """Base theme class"""
-
-    def __init__(self):
-        self.colors = {}
-        self.fonts = {}
-
-    def apply_to_style(self, style: ttk.Style) -> None:
-        """Apply theme to ttk.Style object"""
-        raise NotImplementedError
-
-
-class YellowBlackTheme(Theme):
-    """Yellow and black theme for FaceFinder"""
-
-    def __init__(self):
-        super().__init__()
-        self.colors = {
-            'background': '#1a1a1a',
-            'foreground': '#FFD700',
-            'input_bg': '#2d2d2d',
-            'input_fg': '#FFFF00',
-            'button_bg': '#FFD700',
-            'button_fg': '#000000',
-            'button_active': '#FFA500',
-            'button_hover': '#FFED4E',
-            'accent': '#333333',
-            'insert_cursor': '#FFD700',
-            'select_bg': '#FFD700',
-            'select_fg': '#000000',
-            'scrollbar_bg': '#333333',
-            'scrollbar_trough': '#1a1a1a',
-            'success': '#00FF00',
-            'error': '#FF4444'
-        }
-
-        self.fonts = {
-            'default': ('Arial', 10),
-            'bold': ('Arial', 12, 'bold'),
-            'title': ('Arial', 14, 'bold'),
-            'italic': ('Arial', 9, 'italic'),
-            'button': ('Arial', 12, 'bold')
-        }
-
-    def apply_to_style(self, style: ttk.Style) -> None:
-        """Apply yellow/black theme to ttk.Style"""
-        style.theme_use('clam')
-
-        # Frame
-        style.configure(
-            'Dark.TFrame',
-            background=self.colors['background']
-        )
-
-        # Label
-        style.configure(
-            'Dark.TLabel',
-            background=self.colors['background'],
-            foreground=self.colors['foreground']
-        )
-
-        # Button
-        style.configure(
-            'Dark.TButton',
-            background=self.colors['accent'],
-            foreground=self.colors['foreground'],
-            borderwidth=1
-        )
-        style.map(
-            'Dark.TButton',
-            background=[
-                ('active', self.colors['button_hover']),
-                ('pressed', self.colors['button_active'])
-            ]
-        )
-
-        # Progress bar - Yellow/Gold style
-        style.configure(
-            'Yellow.Horizontal.TProgressbar',
-            troughcolor='#333333',
-            background=self.colors['foreground'],
-            lightcolor=self.colors['button_hover'],
-            darkcolor='#B8860B',
-            bordercolor='#FFD700',
-            thickness=20
-        )
-
-        # Scale (slider)
-        style.configure(
-            'Dark.Horizontal.TScale',
-            background=self.colors['background'],
-            troughcolor='#333333'
-        )
-
-
-class ThemeManager:
-    """Manages application themes"""
-
-    THEMES = {
-        'yellow_black': YellowBlackTheme,
-    }
-
-    def __init__(self, style: ttk.Style, theme_name: str = 'yellow_black'):
-        """
-        Initialize theme manager
-
-        Args:
-            style: ttk.Style object to apply theme to
-            theme_name: Name of theme to use
-        """
-        self.style = style
-        self.current_theme = None
-        self.set_theme(theme_name)
-
-    def set_theme(self, theme_name: str) -> None:
-        """
-        Set the current theme
-
-        Args:
-            theme_name: Name of theme to apply
-
-        Raises:
-            ValueError: If theme doesn't exist
-        """
-        if theme_name not in self.THEMES:
-            raise ValueError(f"Theme '{theme_name}' not found")
-
-        theme_class = self.THEMES[theme_name]
-        self.current_theme = theme_class()
-        self.current_theme.apply_to_style(self.style)
-
-    def get_color(self, color_name: str) -> str:
-        """
-        Get a color value from current theme
-
-        Args:
-            color_name: Name of color
-
-        Returns:
-            Color hex code
-        """
-        return self.current_theme.colors.get(color_name, '#000000')
-
-    def get_font(self, font_name: str) -> tuple:
-        """
-        Get a font tuple from current theme
-
-        Args:
-            font_name: Name of font
-
-        Returns:
-            Font tuple (family, size, style)
-        """
-        return self.current_theme.fonts.get(font_name, ('Arial', 10))
-
-    def get_all_colors(self) -> Dict[str, str]:
-        """Get all colors from current theme"""
-        return self.current_theme.colors.copy()
-
-    def get_all_fonts(self) -> Dict[str, tuple]:
-        """Get all fonts from current theme"""
-        return self.current_theme.fonts.copy()
+STYLESHEET = f"""
+QMainWindow, QWidget {{
+    background-color: {COLORS['bg_dark']};
+    color: {COLORS['fg_primary']};
+    font-family: "Segoe UI";
+    font-size: 10pt;
+}}
+QLabel {{
+    background-color: transparent;
+    color: {COLORS['fg_primary']};
+}}
+QLabel#subtitle {{
+    color: {COLORS['fg_secondary']};
+    font-size: 9pt;
+}}
+QLabel#header {{
+    color: {COLORS['accent_hover']};
+    font-size: 18pt;
+    font-weight: bold;
+}}
+QLabel#drop_zone {{
+    background-color: {COLORS['bg_medium']};
+    color: {COLORS['fg_secondary']};
+    border: 2px dashed {COLORS['accent']};
+    border-radius: 6px;
+    font-style: italic;
+    padding: 14px;
+}}
+QGroupBox {{
+    border: 1px solid {COLORS['border']};
+    border-radius: 4px;
+    margin-top: 8px;
+    padding: 8px;
+    color: {COLORS['accent_hover']};
+    font-weight: bold;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    left: 8px;
+    padding: 0 4px;
+}}
+QLineEdit {{
+    background-color: {COLORS['bg_light']};
+    color: {COLORS['fg_primary']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 3px;
+    padding: 6px;
+}}
+QLineEdit:focus {{
+    border: 1px solid {COLORS['accent']};
+}}
+QCheckBox {{
+    color: {COLORS['fg_primary']};
+    spacing: 6px;
+}}
+QCheckBox::indicator {{
+    width: 14px;
+    height: 14px;
+    border: 1px solid {COLORS['border']};
+    border-radius: 2px;
+    background-color: {COLORS['bg_light']};
+}}
+QCheckBox::indicator:checked {{
+    background-color: {COLORS['accent']};
+    border-color: {COLORS['accent']};
+}}
+QSlider::groove:horizontal {{
+    height: 6px;
+    background: {COLORS['bg_light']};
+    border-radius: 3px;
+}}
+QSlider::handle:horizontal {{
+    background: {COLORS['accent']};
+    width: 16px;
+    height: 16px;
+    margin: -5px 0;
+    border-radius: 8px;
+}}
+QSlider::sub-page:horizontal {{
+    background: {COLORS['accent']};
+    border-radius: 3px;
+}}
+QPushButton {{
+    background-color: {COLORS['accent']};
+    color: #1a1600;
+    font-weight: bold;
+    border: none;
+    border-radius: 4px;
+    padding: 10px 26px;
+    font-size: 11pt;
+}}
+QPushButton:hover {{
+    background-color: {COLORS['accent_hover']};
+}}
+QPushButton:disabled {{
+    background-color: {COLORS['bg_light']};
+    color: {COLORS['fg_dim']};
+}}
+QPushButton#cancel_btn {{
+    background-color: {COLORS['accent_dark']};
+    color: {COLORS['fg_primary']};
+}}
+QPushButton#cancel_btn:hover {{
+    background-color: {COLORS['error']};
+    color: white;
+}}
+QPushButton#secondary_btn {{
+    background-color: {COLORS['bg_light']};
+    color: {COLORS['fg_primary']};
+    font-weight: normal;
+    padding: 7px 14px;
+    font-size: 9pt;
+}}
+QPushButton#secondary_btn:hover {{
+    background-color: {COLORS['accent_dark']};
+    color: white;
+}}
+QProgressBar {{
+    border: 1px solid {COLORS['border']};
+    border-radius: 3px;
+    background-color: {COLORS['progress_bg']};
+    height: 22px;
+    text-align: center;
+    color: {COLORS['fg_primary']};
+}}
+QProgressBar::chunk {{
+    background-color: {COLORS['progress_fg']};
+    border-radius: 2px;
+}}
+QListWidget {{
+    background-color: {COLORS['bg_medium']};
+    color: {COLORS['fg_primary']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 3px;
+    font-family: Consolas;
+    font-size: 9pt;
+}}
+QListWidget::item:selected {{
+    background-color: {COLORS['accent']};
+    color: #1a1600;
+}}
+QScrollBar:vertical {{
+    background-color: {COLORS['bg_dark']};
+    width: 12px;
+    border: none;
+}}
+QScrollBar::handle:vertical {{
+    background-color: {COLORS['border']};
+    border-radius: 6px;
+    min-height: 20px;
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0px;
+}}
+QScrollBar:horizontal {{
+    background-color: {COLORS['bg_dark']};
+    height: 12px;
+    border: none;
+}}
+QScrollBar::handle:horizontal {{
+    background-color: {COLORS['border']};
+    border-radius: 6px;
+    min-width: 20px;
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0px;
+}}
+"""
