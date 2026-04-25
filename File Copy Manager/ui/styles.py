@@ -139,7 +139,7 @@ QProgressBar {{
     background-color: {COLORS['bg_light']};
     height: 20px;
     text-align: center;
-    color: {COLORS['foreground']};
+    color: {COLORS['background']};
 }}
 QProgressBar::chunk {{
     background-color: {COLORS['accent']};
@@ -180,5 +180,13 @@ QScrollBar::handle:horizontal {{
 }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0px;
+}}
+QLabel#clear_label {{
+    color: {COLORS['accent']};
+    text-decoration: underline;
+    font-size: 11px;
+}}
+QLabel#clear_label:hover {{
+    color: {COLORS['accent_hover']};
 }}
 """

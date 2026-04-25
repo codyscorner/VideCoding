@@ -4,6 +4,7 @@ import os
 import logging
 import threading
 import queue
+import time
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -107,6 +108,7 @@ class MainWindow(QMainWindow):
         mask_header.addWidget(QLabel("Presets:"))
         self.file_type_presets = {
             "-- Select Preset --": "",
+            "All Files": "*.*",
             "Images":    "*.jpg, *.jpeg, *.png, *.gif, *.bmp, *.tiff, *.tif, *.webp, *.svg, *.ico, *.raw, *.heic, *.heif",
             "Videos":    "*.mp4, *.avi, *.mkv, *.mov, *.wmv, *.flv, *.webm, *.m4v, *.mpeg, *.mpg, *.3gp, *.ts",
             "Audio":     "*.mp3, *.wav, *.flac, *.aac, *.ogg, *.wma, *.m4a, *.opus, *.aiff, *.alac",
@@ -125,7 +127,7 @@ class MainWindow(QMainWindow):
         self.ext_edit = QLineEdit()
         self.ext_edit.setText(self.config.get("last_extension", ""))
         layout.addWidget(self.ext_edit)
-        hint = QLabel("Example: *.jpg, *.png  or  oct*.*  or  .pdf")
+        hint = QLabel("Example: *.*  or  *.jpg, *.png  or  oct*.*  or  .pdf")
         hint.setObjectName("dim_label")
         layout.addWidget(hint)
 
@@ -223,17 +225,24 @@ class MainWindow(QMainWindow):
         layout.addLayout(btn_row)
 
         # Progress
-        layout.addWidget(QLabel("Overall Progress:"))
+        overall_row = QHBoxLayout()
+        overall_row.addWidget(QLabel("Overall Progress:"))
+        self.overall_count_label = QLabel("")
+        self.overall_count_label.setObjectName("dim_label")
+        overall_row.addWidget(self.overall_count_label, stretch=1)
+        layout.addLayout(overall_row)
         self.overall_progress = QProgressBar()
         self.overall_progress.setRange(0, 100)
         layout.addWidget(self.overall_progress)
-        layout.addWidget(QLabel("Current File:"))
+        file_row = QHBoxLayout()
+        file_row.addWidget(QLabel("Current File:"))
+        self.progress_label = QLabel("Ready")
+        self.progress_label.setObjectName("dim_label")
+        file_row.addWidget(self.progress_label, stretch=1)
+        layout.addLayout(file_row)
         self.file_progress = QProgressBar()
         self.file_progress.setRange(0, 100)
         layout.addWidget(self.file_progress)
-        self.progress_label = QLabel("Ready")
-        self.progress_label.setObjectName("dim_label")
-        layout.addWidget(self.progress_label)
 
         counters_row = QHBoxLayout()
         counters_row.addWidget(QLabel("Copied:"))
@@ -245,14 +254,28 @@ class MainWindow(QMainWindow):
         self.skipped_label = QLabel("0")
         self.skipped_label.setObjectName("section_label")
         counters_row.addWidget(self.skipped_label)
+        counters_row.addSpacing(20)
+        counters_row.addWidget(QLabel("Errors:"))
+        self.errors_label = QLabel("0")
+        self.errors_label.setObjectName("section_label")
+        counters_row.addWidget(self.errors_label)
         counters_row.addStretch()
         layout.addLayout(counters_row)
 
-        # Status log
-        layout.addWidget(QLabel("Status:"))
+        # Status log (errors, warnings, and job timing only)
+        status_header = QHBoxLayout()
+        status_header.addWidget(QLabel("Status (errors & warnings):"))
+        status_header.addStretch()
+        clear_lbl = QLabel("[Clear]")
+        clear_lbl.setObjectName("clear_label")
+        clear_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_lbl.mousePressEvent = lambda e: self.status_list.clear()
+        status_header.addWidget(clear_lbl)
+        layout.addLayout(status_header)
         self.status_list = QListWidget()
-        self.status_list.setMinimumHeight(160)
-        layout.addWidget(self.status_list, stretch=1)
+        self.status_list.setMinimumHeight(80)
+        self.status_list.setMaximumHeight(120)
+        layout.addWidget(self.status_list)
         self._add_status("Ready to copy files...")
 
     def _load_config(self):
@@ -304,6 +327,8 @@ class MainWindow(QMainWindow):
             self.folder_example_label.setText("")
 
     def _add_status(self, message: str):
+        if self.status_list.count() >= 500:
+            self.status_list.takeItem(0)
         self.status_list.addItem(message)
         self.status_list.scrollToBottom()
 
@@ -355,10 +380,12 @@ class MainWindow(QMainWindow):
         self.copy_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.overall_progress.setValue(0)
+        self.overall_count_label.setText("")
         self.file_progress.setValue(0)
-        self.progress_label.setText("Preparing...")
+        self.progress_label.setText("")
         self.copied_label.setText("0")
         self.skipped_label.setText("0")
+        self.errors_label.setText("0")
 
         copy_options = {
             'source_folder': source, 'dest_folder': dest, 'extension': extension,
@@ -378,18 +405,17 @@ class MainWindow(QMainWindow):
 
     def _copy_worker(self, options: dict):
         try:
-            self._queue_msg('status', "Starting copy operation...")
+            start_time = time.time()
+            import datetime as _dt
+            start_str = _dt.datetime.fromtimestamp(start_time).strftime("%H:%M:%S.") + f"{int(start_time % 1 * 100):02d}"
+            self._queue_msg('status', f"Start: {start_str}")
             folder_structure = FolderStructure(options['folder_structure'])
-            _live = [0, 0]
-
             def _status_cb(msg):
-                if msg.startswith("Copied:") or msg.startswith("Duplicate found:"):
-                    _live[0] += 1
-                    self._queue_msg('counters', {'copied': _live[0], 'skipped': _live[1]})
-                elif msg.startswith("Skipped"):
-                    _live[1] += 1
-                    self._queue_msg('counters', {'copied': _live[0], 'skipped': _live[1]})
-                self._queue_msg('status', msg)
+                if msg.startswith("Error"):
+                    self._queue_msg('status', msg)
+                    return
+                elif msg.startswith("Copied (large):") or msg.startswith("Path too long") or msg.startswith("Found ") or msg.startswith("Scanning") or msg.startswith("Reading") or msg.startswith("Gathering") or msg.startswith("Checking") or msg.startswith("Starting") or msg.startswith("Sorting") or msg.startswith("Duplicate found:") or msg.startswith("Operation cancelled") or msg.startswith("Start:"):
+                    self._queue_msg('status', msg)
 
             copier = FileCopier(
                 status_callback=_status_cb,
@@ -398,7 +424,10 @@ class MainWindow(QMainWindow):
                 progress_callback=lambda cur, tot, fname, fprog: self._queue_msg(
                     'progress', {'current': cur, 'total': tot, 'filename': fname, 'file_progress': fprog}
                 ),
-                cancel_check=lambda: self._cancel_requested
+                cancel_check=lambda: self._cancel_requested,
+                counters_callback=lambda c, s, e: self._queue_msg(
+                    'counters', {'copied': c, 'skipped': s, 'errors': e}
+                ),
             )
             results = copier.copy_files(
                 options['source_folder'], options['dest_folder'], options['extension'],
@@ -415,8 +444,12 @@ class MainWindow(QMainWindow):
             copied = sum(1 for r in results if r.success and r.destination_file is not None)
             skipped = sum(1 for r in results if r.success and r.destination_file is None)
             errors = sum(1 for r in results if not r.success)
-            self._queue_msg('counters', {'copied': copied, 'skipped': skipped})
-            self._queue_msg('complete', {'copied_count': copied, 'skipped_count': skipped, 'error_count': errors, 'options': options})
+            end_time = time.time()
+            self._queue_msg('counters', {'copied': copied, 'skipped': skipped, 'errors': errors})
+            self._queue_msg('complete', {
+                'copied_count': copied, 'skipped_count': skipped, 'error_count': errors,
+                'options': options, 'start_time': start_time, 'end_time': end_time,
+            })
 
         except ValueError as e:
             self._queue_msg('error', {'type': 'validation', 'message': str(e)})
@@ -439,13 +472,17 @@ class MainWindow(QMainWindow):
                         self._add_status(data)
                     elif msg_type == 'progress':
                         total = data['total']
+                        current = data['current']
                         if total > 0:
-                            self.overall_progress.setValue(int((data['current'] / total) * 100))
-                        self.file_progress.setValue(data['file_progress'])
-                        self.progress_label.setText(f"Processing {data['current']}/{total}: {data['filename']}")
+                            self.overall_progress.setValue(int((current / total) * 100))
+                        self.overall_count_label.setText(f"{current} of {total}")
+                        if data['file_progress'] >= 0:
+                            self.file_progress.setValue(data['file_progress'])
+                        self.progress_label.setText(data['filename'])
                     elif msg_type == 'counters':
                         self.copied_label.setText(str(data['copied']))
                         self.skipped_label.setText(str(data['skipped']))
+                        self.errors_label.setText(str(data['errors']))
                     elif msg_type == 'complete':
                         self._poll_timer.stop()
                         self._on_copy_complete(data)
@@ -463,12 +500,23 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Error in progress queue polling: {e}")
 
+    @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        ms = int((seconds % 1) * 100)
+        total_s = int(seconds)
+        hh = total_s // 3600
+        mm = (total_s % 3600) // 60
+        ss = total_s % 60
+        return f"{hh:02d}:{mm:02d}:{ss:02d}.{ms:02d}"
+
     def _on_copy_complete(self, data: dict):
         self._is_copying = False
         self.copy_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         opts = data['options']
         copied, skipped, errors = data['copied_count'], data['skipped_count'], data['error_count']
+        start_t, end_t = data['start_time'], data['end_time']
+        elapsed = end_t - start_t
 
         self.config.set("last_extension", opts['extension'])
         self.config.set("default_source_folder", opts['source_folder'])
@@ -489,7 +537,13 @@ class MainWindow(QMainWindow):
         self.skipped_label.setText(str(skipped))
         self.progress_label.setText(f"Complete! Copied: {copied}  Skipped: {skipped}")
 
-        summary = f"Total Copied: {copied}\nTotal Skipped: {skipped}"
+        import datetime as _dt
+        start_str = _dt.datetime.fromtimestamp(start_t).strftime("%H:%M:%S.") + f"{int(start_t % 1 * 100):02d}"
+        end_str   = _dt.datetime.fromtimestamp(end_t).strftime("%H:%M:%S.") + f"{int(end_t % 1 * 100):02d}"
+        elapsed_str = self._format_elapsed(elapsed)
+        self._add_status(f"End: {end_str}  |  Elapsed: {elapsed_str}")
+
+        summary = f"Total Copied: {copied}\nTotal Skipped: {skipped}\nElapsed: {elapsed_str}"
         if errors == 0 and copied > 0:
             QMessageBox.information(self, "Complete", summary)
         elif copied > 0:

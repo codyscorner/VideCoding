@@ -2,21 +2,21 @@
 
 A powerful tool for batch copying files with automatic duplicate numbering and flexible folder organization.
 
-## Version 2.0.1
+## Version 3.0.0
 
 **Yellow & Black Theme** - Easy to distinguish from the red File Rename Mover!
 
-### What's New in v2.0.0
-- **Background Threading**: Copy operations now run in a background thread - UI stays responsive even during large file operations
-- **Cancel Button**: New Cancel button allows stopping copy operations mid-process
-- **File Type Presets**: Quick dropdown to select common file types (Images, Videos, Audio, Documents, Archives, Code, Data)
-- **Improved Responsiveness**: No more "Not Responding" when switching between windows during copy operations
-- **Resizable Window**: Window can now be resized down to 75% of starting dimensions (minimum 900x675)
-
-### What's New in v1.2.0
-- **File Pattern Filtering**: Support for wildcard patterns (*.jpg, *.png) and multiple patterns
-- **Backward Compatible**: Old extension format (.jpg) automatically converts to patterns (*.jpg)
-- **Enhanced Pattern Matching**: Uses fnmatch for flexible file matching
+### What's New in v3.0.0
+- **All Files preset**: New `*.*` preset to copy an entire drive or folder without filtering
+- **Smallest-first copy order**: Files are scanned, filtered, and sorted by size in one pass — smallest copied first
+- **Live counters**: Copied, Skipped, and Errors labels update after every single file
+- **Errors counter**: New dedicated Errors tally alongside Copied and Skipped
+- **Per-file progress threshold**: File progress bar only engages for files ≥ 50 MB
+- **Quiet status log**: Only errors, warnings, large file copies, and job timing logged — no per-file spam
+- **Status box capped**: Maximum 500 items; oldest entries drop off automatically
+- **Start/End timing**: Status log shows start time at job begin, end time + elapsed (HH:MM:SS.mm) on completion
+- **Clear Status**: Clickable label to wipe the status log between runs
+- **Informative pre-copy messages**: Status box shows "Reading directories...", "Gathering file list...", etc. before copying begins
 
 ## Features
 
@@ -223,8 +223,8 @@ The application follows SOLID principles:
 
 ### For Running from Source
 - Python 3.7+
-- tkinter (usually included with Python)
-- No external dependencies required
+- PyQt6 (`pip install PyQt6`)
+- No other external dependencies required
 
 ## Benefits
 
@@ -247,6 +247,24 @@ MIT License - See LICENSE file for details.
 Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
+
+### v3.0.0 (April 24, 2026)
+- **All Files preset**: New `*.*` preset for copying an entire drive or folder without filtering
+- **Errors counter**: Live Errors tally alongside Copied and Skipped counters
+- **Quiet status log**: Only errors, warnings, path truncations, and periodic summaries (every 100 files) are logged — eliminates UI slowdown on large jobs
+- **Status box capped**: Maximum 500 items; oldest entries drop off automatically
+- **Per-file progress threshold**: File progress bar only engages for files ≥ 50 MB to avoid meaningless flashes
+- Status box shrunk to a compact fixed height to give more space to counters
+
+### v2.1.0 (April 19, 2026)
+- **PyQt6 Migration**: Ported UI from tkinter to PyQt6 with dark yellow/gold theme
+- Improved layout consistency and widget styling throughout
+
+### v2.0.3 (April 3, 2026)
+- **Live Counters**: Real-time Copied / Skipped tallies update as each file finishes
+- **Path Truncation**: Long filenames are automatically shortened to avoid Windows MAX_PATH errors
+- **File Logging**: DEBUG-level logging written to `FileCopyManager.log` next to config; unhandled exceptions captured with full traceback
+- Fixed scrollable content area stretching correctly on window resize
 
 ### v2.0.1 (March 29, 2026)
 - **Accurate File Progress**: Current File progress bar now works correctly for large files

@@ -98,36 +98,58 @@ class FileScanner:
         return False
 
     @staticmethod
-    def get_files_with_patterns(folder_path: str, patterns: List[str], recursive: bool = False) -> List[tuple[str, str]]:
+    def get_files_with_patterns(
+        folder_path: str,
+        patterns: List[str],
+        recursive: bool = False,
+        min_size_bytes: Optional[float] = None,
+        max_size_bytes: Optional[float] = None,
+        max_days_old: Optional[int] = None,
+    ) -> List[tuple[str, str, int]]:
         """
-        Get all files in a folder matching the given patterns
+        Scan folder for matching files, apply filters, and return sorted smallest-first.
 
-        Args:
-            folder_path: Path to scan
-            patterns: List of glob patterns to match (e.g., ["*.jpg", "*.png", "oct*.*"])
-            recursive: If True, scan subdirectories
-
-        Returns:
-            List of (full_path, relative_path) tuples
-
-        Raises:
-            OSError: If folder cannot be read
+        Returns list of (full_path, relative_path, size_bytes) tuples.
         """
+        from datetime import datetime, timedelta
+
         files = []
+        now = datetime.now()
+        cutoff = (now - timedelta(days=max_days_old)).timestamp() if max_days_old is not None else None
+
+        def _accept(full_path: str, filename: str):
+            if not FileScanner._matches_any_pattern(filename, patterns):
+                return False, 0
+            try:
+                st = os.stat(full_path)
+            except OSError:
+                return False, 0
+            size = st.st_size
+            if min_size_bytes is not None and size < min_size_bytes:
+                return False, 0
+            if max_size_bytes is not None and size > max_size_bytes:
+                return False, 0
+            if cutoff is not None and st.st_mtime < cutoff:
+                return False, 0
+            return True, size
 
         if recursive:
             for root, dirs, filenames in os.walk(folder_path):
                 for filename in filenames:
-                    if FileScanner._matches_any_pattern(filename, patterns):
-                        full_path = os.path.join(root, filename)
+                    full_path = os.path.join(root, filename)
+                    ok, size = _accept(full_path, filename)
+                    if ok:
                         rel_path = os.path.relpath(full_path, folder_path)
-                        files.append((full_path, rel_path))
+                        files.append((full_path, rel_path, size))
         else:
             for filename in os.listdir(folder_path):
                 full_path = os.path.join(folder_path, filename)
-                if os.path.isfile(full_path) and FileScanner._matches_any_pattern(filename, patterns):
-                    files.append((full_path, filename))
+                if os.path.isfile(full_path):
+                    ok, size = _accept(full_path, filename)
+                    if ok:
+                        files.append((full_path, filename, size))
 
+        files.sort(key=lambda x: x[2])
         return files
 
 
@@ -140,7 +162,8 @@ class FileCopier:
         folder_structure: FolderStructure = FolderStructure.FLAT,
         number_duplicates: bool = True,
         progress_callback: Optional[Callable[[int, int, str, int], None]] = None,
-        cancel_check: Optional[Callable[[], bool]] = None
+        cancel_check: Optional[Callable[[], bool]] = None,
+        counters_callback: Optional[Callable[[int, int, int], None]] = None,
     ):
         """
         Initialize the file copier
@@ -155,6 +178,7 @@ class FileCopier:
         self.status_callback = status_callback
         self.progress_callback = progress_callback
         self.cancel_check = cancel_check
+        self.counters_callback = counters_callback
         self.validator = FileValidator()
         self.scanner = FileScanner()
         self.folder_structure = folder_structure
@@ -202,60 +226,6 @@ class FileCopier:
             size_bytes /= 1024.0
         return f"{size_bytes:.2f} PB"
 
-    def _apply_filters(
-        self,
-        files: List[tuple[str, str]],
-        min_size_bytes: Optional[float],
-        max_size_bytes: Optional[float],
-        max_days_old: Optional[int]
-    ) -> List[tuple[str, str]]:
-        """
-        Apply file filters to the file list
-
-        Args:
-            files: List of (full_path, rel_path) tuples
-            min_size_bytes: Minimum file size
-            max_size_bytes: Maximum file size
-            max_days_old: Maximum file age in days
-
-        Returns:
-            Filtered list of files
-        """
-        if not any([min_size_bytes, max_size_bytes, max_days_old]):
-            return files
-
-        from datetime import datetime, timedelta
-
-        filtered = []
-        now = datetime.now()
-
-        for full_path, rel_path in files:
-            # Size filter
-            if min_size_bytes is not None or max_size_bytes is not None:
-                try:
-                    file_size = os.path.getsize(full_path)
-                    if min_size_bytes is not None and file_size < min_size_bytes:
-                        continue
-                    if max_size_bytes is not None and file_size > max_size_bytes:
-                        continue
-                except OSError:
-                    continue
-
-            # Date filter
-            if max_days_old is not None:
-                try:
-                    mtime = os.path.getmtime(full_path)
-                    file_date = datetime.fromtimestamp(mtime)
-                    age_days = (now - file_date).days
-                    if age_days > max_days_old:
-                        continue
-                except OSError:
-                    continue
-
-            filtered.append((full_path, rel_path))
-
-        return filtered
-
     def copy_files(
         self,
         source_folder: str,
@@ -292,54 +262,47 @@ class FileCopier:
         patterns = self.validator.validate_file_mask(file_mask)
 
         # Create destination folder if it doesn't exist
+        self._log_status(f"Checking destination folder...")
         os.makedirs(dest_folder, exist_ok=True)
 
         # Determine if we should use preserve mode
         structure = FolderStructure.PRESERVE if preserve_structure else self.folder_structure
 
-        # Get files to process
-        search_mode = "recursively" if recursive else "in root folder only"
+        # Scan, filter, and sort in one pass (smallest first)
+        search_mode = "recursively through all subfolders" if recursive else "in root folder only"
         patterns_str = ", ".join(patterns)
-        self._log_status(f"Scanning source folder {search_mode} for files matching: {patterns_str}")
-        source_files = self.scanner.get_files_with_patterns(source_folder, patterns, recursive)
-
-        if not source_files:
-            self._log_status(f"No files found matching '{patterns_str}' in source folder")
-            return []
-
-        self._log_status(f"Found {len(source_files)} files to process")
-
-        # Apply filters
-        filtered_files = self._apply_filters(
-            source_files,
-            min_size_bytes,
-            max_size_bytes,
-            max_days_old
+        self._log_status(f"Reading directories {search_mode}...")
+        self._log_status(f"Gathering file list — matching: {patterns_str}")
+        filtered_files = self.scanner.get_files_with_patterns(
+            source_folder, patterns, recursive,
+            min_size_bytes=min_size_bytes,
+            max_size_bytes=max_size_bytes,
+            max_days_old=max_days_old,
         )
 
-        if len(filtered_files) < len(source_files):
-            skipped = len(source_files) - len(filtered_files)
-            self._log_status(f"Filtered out {skipped} files based on filter criteria")
-
         if not filtered_files:
-            self._log_status("No files match the filter criteria")
+            self._log_status(f"No files found matching '{patterns_str}'")
             return []
 
-        self._log_status(f"Processing {len(filtered_files)} files after filtering")
+        self._log_status(f"Found {len(filtered_files)} files — sorting smallest to largest...")
+        self._log_status(f"Starting copy operations...")
 
-        # Process each file
+        # Process each file (already sorted smallest-first)
         total = len(filtered_files)
         results = []
-        for idx, (full_path, rel_path) in enumerate(filtered_files, 1):
+        SUMMARY_INTERVAL = 100
+        for idx, (full_path, rel_path, file_size) in enumerate(filtered_files, 1):
             # Check for cancellation
             if self.cancel_check and self.cancel_check():
                 self._log_status("Operation cancelled by user")
                 break
 
+            filename = os.path.basename(full_path)
+            show_file_progress = file_size >= 50 * 1024 * 1024
+
             # Update progress
             if self.progress_callback:
-                filename = os.path.basename(full_path)
-                self.progress_callback(idx, total, filename, 0)
+                self.progress_callback(idx, total, filename, 0 if show_file_progress else -1)
 
             result = self._process_single_file(
                 full_path,
@@ -354,7 +317,15 @@ class FileCopier:
 
             # Update progress to 100% for this file
             if self.progress_callback:
-                self.progress_callback(idx, total, filename, 100)
+                self.progress_callback(idx, total, filename, 100 if show_file_progress else -1)
+
+            # Live counter update after every file
+            if self.counters_callback:
+                copied_n  = sum(1 for r in results if r.success and r.destination_file is not None)
+                skipped_n = sum(1 for r in results if r.success and r.destination_file is None)
+                errors_n  = sum(1 for r in results if not r.success)
+                self.counters_callback(copied_n, skipped_n, errors_n)
+
 
         # Summary
         if self.cancel_check and self.cancel_check():
@@ -414,7 +385,8 @@ class FileCopier:
             else:
                 final_dest_folder = dest_folder
 
-        LARGE_FILE_THRESHOLD = 120 * 1024 * 1024  # 120 MB
+        LARGE_FILE_THRESHOLD = 120 * 1024 * 1024  # 120 MB — use chunked I/O above this
+        MIN_FILE_PROGRESS_SIZE = 50 * 1024 * 1024  # 50 MB — skip per-file bar below this
         CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB
 
         try:
@@ -468,16 +440,10 @@ class FileCopier:
             size_str = self._format_file_size(file_size)
             time_str = f"{copy_time:.2f}s"
 
-            # Log the operation
-            if structure == FolderStructure.PRESERVE:
-                rel_dest = os.path.relpath(dest_path, dest_folder)
-                self._log_status(f"Copied: {rel_path} → {rel_dest} ({size_str}, {time_str})")
-            else:
-                subfolder_name = os.path.relpath(final_dest_folder, dest_folder)
-                if subfolder_name == ".":
-                    self._log_status(f"Copied: {filename} ({size_str}, {time_str})")
-                else:
-                    self._log_status(f"Copied: {filename} → {subfolder_name}{os.sep}{final_filename} ({size_str}, {time_str})")
+            # Only log large files individually; small files are counted silently
+            if file_size >= LARGE_FILE_THRESHOLD:
+                size_str = self._format_file_size(file_size)
+                self._log_status(f"Copied (large): {filename} ({size_str}, {time_str})")
 
             return FileOperationResult(
                 success=True,
