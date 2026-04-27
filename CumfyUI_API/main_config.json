@@ -1,6 +1,6 @@
 {
     "comfyui_url": "http://127.0.0.1:8000",
-    "input_dir": "C:/AI/CumfyUI/input",
+    "input_dir": "C:/Users/cody/OneDrive/Pictures/AI Pic to Vid/Pictures/1-Create/1-Ready for AI Kissing/Done",
     "output_base_dir": "C:/AI/CumfyUI/output/video/Merge",
     "workflow_dir": "C:/AI/CumfyUI/Workflow_API",
     "workflows": [
@@ -51,5 +51,6 @@
     "runpod_url": "https://dd9wq04wzccli8-8188.proxy.runpod.net",
     "ffmpeg_path": "C:/AI/CumfyUI/.venv/Lib/site-packages/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe",
     "final_video_dir": "C:/AI/CumfyUI/output/video/Final",
-    "zip_output_dir": "C:/AI/CumfyUI/output/video/Completed"
+    "zip_output_dir": "C:/AI/CumfyUI/output/video/Completed",
+    "_base_dir": "P:\\AI\\VideCoding\\CumfyUI_API"
 }

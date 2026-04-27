@@ -207,7 +207,7 @@ class MainWindow(QMainWindow):
         root.addWidget(mode_group)
 
         # ── Output folder settings (top) ──────────────────────────────────
-        paths_group = QGroupBox("Output Folders")
+        paths_group = QGroupBox("Folders")
         paths_layout = QVBoxLayout(paths_group)
         paths_layout.setSpacing(8)
 
@@ -227,6 +227,12 @@ class MainWindow(QMainWindow):
             row.addWidget(btn)
             paths_layout.addLayout(row)
             return edit, btn
+
+        self.input_dir_edit, input_browse = folder_row(
+            "Input Images:", "Folder containing starting images...",
+            self.config.get("input_dir", "")
+        )
+        input_browse.clicked.connect(self._browse_input_dir)
 
         self.final_dir_edit, final_browse = folder_row(
             "Final Video:", "Folder for stitched video...",
@@ -343,13 +349,22 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _populate_images(self):
-        input_dir = Path(self.config.get("input_dir", ""))
+        input_dir = Path(self.input_dir_edit.text().strip() or self.config.get("input_dir", ""))
         self.image_grid.load_images(input_dir)
         count = self.image_grid.count()
         if count == 0:
             self.selected_label.setText("No images found in input folder")
         else:
             self.selected_label.setText("Click an image to select it as the starting frame")
+
+    def _browse_input_dir(self):
+        current = self.input_dir_edit.text().strip()
+        folder = QFileDialog.getExistingDirectory(self, "Select Input Images Folder", current or str(Path.home()))
+        if folder:
+            self.input_dir_edit.setText(folder)
+            self.config.set("input_dir", folder)
+            self.config.save()
+            self._populate_images()
 
     def _on_mode_changed(self):
         mode = "local" if self._local_radio.isChecked() else "runpod"
@@ -389,6 +404,7 @@ class MainWindow(QMainWindow):
 
         self.config.set("mode", "local" if self._local_radio.isChecked() else "runpod")
         self.config.set("runpod_url", self._runpod_url_edit.text().strip())
+        self.config.set("input_dir", self.input_dir_edit.text().strip())
         self.config.set("final_video_dir", self.final_dir_edit.text().strip())
         self.config.set("zip_output_dir", self.zip_edit.text().strip())
         self.config.save()

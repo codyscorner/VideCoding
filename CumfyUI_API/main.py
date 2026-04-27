@@ -32,6 +32,7 @@ def main():
 
     config_file = script_dir / "main_config.json"
     config_manager = ConfigManager(config_file)
+    config_manager.set("_base_dir", str(script_dir))
 
     window = MainWindow(config_manager, VERSION)
     window.show()

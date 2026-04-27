@@ -9,13 +9,15 @@ from pathlib import Path
 import requests
 from PyQt6.QtCore import QThread, pyqtSignal
 
-LOG_FILE = Path(__file__).parent / "run_log.txt"
-
 logger = logging.getLogger("chain")
 logger.setLevel(logging.DEBUG)
-_fh = logging.FileHandler(str(LOG_FILE), mode='w', encoding='utf-8')
-_fh.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s', datefmt='%H:%M:%S'))
-logger.addHandler(_fh)
+
+
+def _init_log(base_dir: Path):
+    fh = logging.FileHandler(str(base_dir / "run_log.txt"), mode='w', encoding='utf-8')
+    fh.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s', datefmt='%H:%M:%S'))
+    logger.handlers.clear()
+    logger.addHandler(fh)
 
 
 class ChainWorker(QThread):
@@ -39,7 +41,9 @@ class ChainWorker(QThread):
             if self._runpod
             else config.get("comfyui_url", "http://127.0.0.1:8000").rstrip("/")
         )
-        self._temp_dir = Path(__file__).parent / "temp"
+        base_dir = Path(config.get("_base_dir", str(Path(__file__).parent)))
+        self._temp_dir = base_dir / "temp"
+        _init_log(base_dir)
 
     def cancel(self):
         self._cancelled = True
