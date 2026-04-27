@@ -1,0 +1,55 @@
+{
+    "comfyui_url": "http://127.0.0.1:8000",
+    "input_dir": "C:/AI/CumfyUI/input",
+    "output_base_dir": "C:/AI/CumfyUI/output/video/Merge",
+    "workflow_dir": "C:/AI/CumfyUI/Workflow_API",
+    "workflows": [
+        {
+            "segment": 1,
+            "json_file": "workflow_segment_01.json",
+            "input_node_id": "97",
+            "input_type": "image"
+        },
+        {
+            "segment": 2,
+            "json_file": "workflow_segment_02.json",
+            "input_node_id": "126",
+            "input_type": "video"
+        },
+        {
+            "segment": 3,
+            "json_file": "workflow_segment_03.json",
+            "input_node_id": "133",
+            "input_type": "video"
+        },
+        {
+            "segment": 4,
+            "json_file": "workflow_segment_04.json",
+            "input_node_id": "133",
+            "input_type": "video"
+        },
+        {
+            "segment": 5,
+            "json_file": "workflow_segment_05.json",
+            "input_node_id": "139",
+            "input_type": "video"
+        },
+        {
+            "segment": 6,
+            "json_file": "workflow_segment_06.json",
+            "input_node_id": "139",
+            "input_type": "video"
+        },
+        {
+            "segment": 7,
+            "json_file": "workflow_segment_07.json",
+            "input_node_id": "139",
+            "input_type": "video"
+        }
+    ],
+    "mode": "runpod",
+    "runpod_url": "https://dd9wq04wzccli8-8188.proxy.runpod.net",
+    "ffmpeg_path": "C:/AI/CumfyUI/.venv/Lib/site-packages/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe",
+    "final_video_dir": "C:/AI/CumfyUI/output/video/Final",
+    "zip_output_dir": "C:/AI/CumfyUI/output/video/Completed"
+}
