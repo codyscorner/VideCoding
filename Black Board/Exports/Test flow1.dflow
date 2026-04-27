@@ -1,0 +1,35 @@
+{
+  "nodes": [
+    {
+      "type": "TableNode",
+      "title": "Table",
+      "x": -87.0,
+      "y": -136.0,
+      "rows": [
+        "id  INT  PK",
+        "name  VARCHAR(255)",
+        "created_at  DATETIME"
+      ],
+      "color": "#2d2d3a"
+    },
+    {
+      "type": "TableNode",
+      "title": "Table",
+      "x": -464.0,
+      "y": -131.0,
+      "rows": [
+        "id  INT  PK",
+        "name  VARCHAR(255)",
+        "created_at  DATETIME"
+      ],
+      "color": "#2d2d3a"
+    }
+  ],
+  "connections": [],
+  "view": {
+    "m11": 1.0,
+    "m22": 1.0,
+    "dx": 0.0,
+    "dy": 0.0
+  }
+}
