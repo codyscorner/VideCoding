@@ -38,6 +38,14 @@ Thumbs.db
 
 # Logs
 *.log
+run_log.txt
+
+# Local user configs (runtime state)
+**/main_config.json
+**/*_config.json
+
+# Temp folders
+**/temp/
 
 # Sample / test media files
 *.mp4
