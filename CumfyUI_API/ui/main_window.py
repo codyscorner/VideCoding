@@ -3,8 +3,9 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup,
     QProgressBar, QListWidget, QListWidgetItem, QGroupBox,
-    QVBoxLayout, QHBoxLayout, QDialog, QMessageBox, QAbstractItemView, QFileDialog,
+    QVBoxLayout, QHBoxLayout, QDialog, QMessageBox, QAbstractItemView,
 )
+
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QPixmap, QIcon
 
@@ -12,6 +13,7 @@ from config import ConfigManager
 from worker import ChainWorker
 from ui.styles import STYLESHEET, COLORS
 from ui.video_player import VideoPlayerDialog
+from ui.settings_dialog import SettingsDialog
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
@@ -64,6 +66,8 @@ class CompletionDialog(QDialog):
         self.accept()
         player = VideoPlayerDialog(self._final_path, parent=self.parent())
         player.exec()
+
+
 THUMB_SIZE = 120
 
 
@@ -166,11 +170,31 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(20, 16, 20, 16)
         root.setSpacing(10)
 
-        # Header
+        # Header row with gear button
+        header_row = QHBoxLayout()
         header = QLabel("ComfyUI Workflow Chain Automator")
         header.setObjectName("header")
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        root.addWidget(header)
+        settings_btn = QPushButton("⚙")
+        settings_btn.setFixedSize(36, 36)
+        settings_btn.setToolTip("Settings")
+        settings_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_light']};
+                color: {COLORS['fg_secondary']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 4px;
+                font-size: 16pt;
+                padding: 0px;
+            }}
+            QPushButton:hover {{ background-color: {COLORS['accent']}; color: white; }}
+        """)
+        settings_btn.clicked.connect(self._open_settings)
+        header_row.addStretch()
+        header_row.addWidget(header)
+        header_row.addStretch()
+        header_row.addWidget(settings_btn)
+        root.addLayout(header_row)
 
         subtitle = QLabel("Chains 7 ComfyUI segments automatically, then stitches the final video")
         subtitle.setObjectName("subtitle")
@@ -206,53 +230,11 @@ class MainWindow(QMainWindow):
         mode_layout.addWidget(self._runpod_url_edit, stretch=1)
         root.addWidget(mode_group)
 
-        # ── Output folder settings (top) ──────────────────────────────────
-        paths_group = QGroupBox("Folders")
-        paths_layout = QVBoxLayout(paths_group)
-        paths_layout.setSpacing(8)
-
-        def folder_row(label_text, placeholder, value) -> tuple:
-            row = QHBoxLayout()
-            lbl = QLabel(label_text)
-            lbl.setFixedWidth(120)
-            edit = QLineEdit()
-            edit.setText(value)
-            edit.setPlaceholderText(placeholder)
-            btn = QPushButton("...")
-            btn.setObjectName("browse_btn")
-            btn.setFixedWidth(60)
-            btn.setFixedHeight(32)
-            row.addWidget(lbl)
-            row.addWidget(edit, stretch=1)
-            row.addWidget(btn)
-            paths_layout.addLayout(row)
-            return edit, btn
-
-        self.input_dir_edit, input_browse = folder_row(
-            "Input Images:", "Folder containing starting images...",
-            self.config.get("input_dir", "")
-        )
-        input_browse.clicked.connect(self._browse_input_dir)
-
-        self.final_dir_edit, final_browse = folder_row(
-            "Final Video:", "Folder for stitched video...",
-            self.config.get("final_video_dir", "")
-        )
-        final_browse.clicked.connect(self._browse_final_dir)
-
-        self.zip_edit, zip_browse = folder_row(
-            "Archive (.zip):", "Folder for completed zip archives...",
-            self.config.get("zip_output_dir", "")
-        )
-        zip_browse.clicked.connect(self._browse_zip)
-
-        root.addWidget(paths_group)
-
         # ── Starting image grid ───────────────────────────────────────────
         img_group = QGroupBox("Starting Image  (Segment 1) — click to select")
         img_layout = QVBoxLayout(img_group)
         self.image_grid = ImageGrid()
-        self.image_grid.setFixedHeight(210)
+        self.image_grid.setFixedHeight(450)
         img_layout.addWidget(self.image_grid)
         self.image_grid.itemSelectionChanged.connect(self._on_image_selected)
         root.addWidget(img_group)
@@ -349,7 +331,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _populate_images(self):
-        input_dir = Path(self.input_dir_edit.text().strip() or self.config.get("input_dir", ""))
+        input_dir = Path(self.config.get("input_dir", ""))
         self.image_grid.load_images(input_dir)
         count = self.image_grid.count()
         if count == 0:
@@ -357,35 +339,15 @@ class MainWindow(QMainWindow):
         else:
             self.selected_label.setText("Click an image to select it as the starting frame")
 
-    def _browse_input_dir(self):
-        current = self.input_dir_edit.text().strip()
-        folder = QFileDialog.getExistingDirectory(self, "Select Input Images Folder", current or str(Path.home()))
-        if folder:
-            self.input_dir_edit.setText(folder)
-            self.config.set("input_dir", folder)
-            self.config.save()
-            self._populate_images()
-
     def _on_mode_changed(self):
         mode = "local" if self._local_radio.isChecked() else "runpod"
         self.config.set("mode", mode)
         self.config.save()
 
-    def _browse_final_dir(self):
-        current = self.final_dir_edit.text().strip()
-        folder = QFileDialog.getExistingDirectory(self, "Select Final Video Folder", current or str(Path.home()))
-        if folder:
-            self.final_dir_edit.setText(folder)
-            self.config.set("final_video_dir", folder)
-            self.config.save()
-
-    def _browse_zip(self):
-        current = self.zip_edit.text().strip()
-        folder = QFileDialog.getExistingDirectory(self, "Select Archive Folder", current or str(Path.home()))
-        if folder:
-            self.zip_edit.setText(folder)
-            self.config.set("zip_output_dir", folder)
-            self.config.save()
+    def _open_settings(self):
+        dlg = SettingsDialog(self.config, parent=self)
+        if dlg.exec():
+            self._populate_images()
 
     def _on_image_selected(self):
         name = self.image_grid.selected_image()
@@ -404,9 +366,6 @@ class MainWindow(QMainWindow):
 
         self.config.set("mode", "local" if self._local_radio.isChecked() else "runpod")
         self.config.set("runpod_url", self._runpod_url_edit.text().strip())
-        self.config.set("input_dir", self.input_dir_edit.text().strip())
-        self.config.set("final_video_dir", self.final_dir_edit.text().strip())
-        self.config.set("zip_output_dir", self.zip_edit.text().strip())
         self.config.save()
 
         self._reset_ui()

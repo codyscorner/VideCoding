@@ -12,7 +12,7 @@ from PyQt6.QtGui import QIcon
 from config import ConfigManager
 from ui.main_window import MainWindow
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 def get_script_dir() -> Path:
