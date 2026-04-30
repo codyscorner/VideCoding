@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
 )
 
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QPixmap, QIcon
+from PyQt6.QtGui import QPixmap, QIcon, QPainter
 
 from config import ConfigManager
 from worker import ChainWorker
@@ -16,10 +16,12 @@ from ui.video_player import VideoPlayerDialog
 from ui.settings_dialog import SettingsDialog
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+THUMB_SIZE = 200
+MAX_SEGMENTS = 10
 
 
 class CompletionDialog(QDialog):
-    def __init__(self, final_path: str, parent=None):
+    def __init__(self, final_path: str, seg_count: int, parent=None):
         super().__init__(parent)
         self._final_path = final_path
         self.setWindowTitle("Chain Complete!")
@@ -35,7 +37,7 @@ class CompletionDialog(QDialog):
         icon.setStyleSheet("font-size: 36pt;")
         layout.addWidget(icon)
 
-        title = QLabel("All 7 segments complete!")
+        title = QLabel(f"All {seg_count} segments complete!")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("font-size: 13pt; font-weight: bold; color: #4caf8a;")
         layout.addWidget(title)
@@ -68,9 +70,6 @@ class CompletionDialog(QDialog):
         player.exec()
 
 
-THUMB_SIZE = 120
-
-
 class ImageGrid(QListWidget):
     """Scrollable thumbnail grid for picking the starting image."""
 
@@ -78,17 +77,20 @@ class ImageGrid(QListWidget):
         super().__init__(parent)
         self.setViewMode(QListWidget.ViewMode.IconMode)
         self.setIconSize(QSize(THUMB_SIZE, THUMB_SIZE))
-        self.setGridSize(QSize(THUMB_SIZE + 24, THUMB_SIZE + 36))
-        self.setSpacing(6)
+        self.setGridSize(QSize(THUMB_SIZE + 12, THUMB_SIZE + 12))
+        self.setSpacing(4)
         self.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.setWrapping(True)
-        self.setWordWrap(True)
+        self.setWordWrap(False)
         self.setUniformItemSizes(True)
         self.setStyleSheet(
             f"QListWidget {{ background-color: {COLORS['bg_medium']};"
-            f" border: 1px solid {COLORS['border']}; border-radius: 3px; }}"
-            f"QListWidget::item:selected {{ background-color: {COLORS['accent']}; border-radius: 4px; }}"
+            f" border: 1px solid {COLORS['border']}; border-radius: 3px;"
+            f" padding-right: 16px; }}"
+            f"QListWidget::item {{ border: 2px solid transparent; border-radius: 4px; }}"
+            f"QListWidget::item:selected {{ background-color: transparent;"
+            f" border: 2px solid {COLORS['accent']}; border-radius: 4px; }}"
         )
 
     def load_images(self, input_dir: Path):
@@ -103,10 +105,17 @@ class ImageGrid(QListWidget):
             pix = QPixmap(str(img_path))
             if pix.isNull():
                 continue
-            icon = QIcon(pix.scaled(THUMB_SIZE, THUMB_SIZE,
-                                    Qt.AspectRatioMode.KeepAspectRatio,
-                                    Qt.TransformationMode.SmoothTransformation))
-            # Store relative path — needed for subdirectory images
+            scaled = pix.scaled(THUMB_SIZE, THUMB_SIZE,
+                                Qt.AspectRatioMode.KeepAspectRatio,
+                                Qt.TransformationMode.SmoothTransformation)
+            canvas = QPixmap(THUMB_SIZE, THUMB_SIZE)
+            canvas.fill(Qt.GlobalColor.black)
+            painter = QPainter(canvas)
+            x = (THUMB_SIZE - scaled.width()) // 2
+            y = (THUMB_SIZE - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
+            painter.end()
+            icon = QIcon(canvas)
             rel = img_path.relative_to(input_dir)
             label = str(rel) if rel.parent != Path(".") else img_path.name
             item = QListWidgetItem(icon, label)
@@ -153,14 +162,20 @@ class MainWindow(QMainWindow):
         self.version = version
         self._worker: ChainWorker | None = None
         self._seg_dots: list[SegmentDot] = []
+        self._seg_time_labels: list[QLabel] = []
 
         self.setWindowTitle(f"ComfyUI Chain Automator  v{version}")
-        self.setMinimumSize(900, 820)
-        self.resize(1050, 900)
+        self.setMinimumSize(1200, 720)
+        self.resize(1600, 760)
         self.setStyleSheet(STYLESHEET)
 
         self._build_ui()
         self._populate_images()
+
+    @property
+    def _seg_count(self) -> int:
+        workflows = self.config.get("workflows", [])
+        return min(max(len(workflows), 1), MAX_SEGMENTS)
 
     # ------------------------------------------------------------------ #
     # UI construction
@@ -170,10 +185,10 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(20, 16, 20, 16)
-        root.setSpacing(10)
+        root.setContentsMargins(16, 12, 16, 12)
+        root.setSpacing(8)
 
-        # Header row with gear button
+        # ── Header ────────────────────────────────────────────────────────
         header_row = QHBoxLayout()
         header = QLabel("ComfyUI Workflow Chain Automator")
         header.setObjectName("header")
@@ -199,12 +214,15 @@ class MainWindow(QMainWindow):
         header_row.addWidget(settings_btn)
         root.addLayout(header_row)
 
-        subtitle = QLabel("Chains 7 ComfyUI segments automatically, then stitches the final video")
-        subtitle.setObjectName("subtitle")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        root.addWidget(subtitle)
+        # ── Split: left = image picker, right = controls ──────────────────
+        split = QHBoxLayout()
+        split.setSpacing(12)
+        root.addLayout(split, stretch=1)
 
-        # ── Image folder picker ───────────────────────────────────────────
+        # Left panel — image folder + grid
+        left = QVBoxLayout()
+        left.setSpacing(6)
+
         folder_row = QHBoxLayout()
         folder_lbl = QLabel("Image Folder:")
         folder_lbl.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
@@ -218,89 +236,48 @@ class MainWindow(QMainWindow):
         folder_row.addWidget(folder_lbl)
         folder_row.addWidget(self._input_dir_edit, stretch=1)
         folder_row.addWidget(folder_browse_btn)
-        root.addLayout(folder_row)
+        left.addLayout(folder_row)
 
-        # ── Starting image grid ───────────────────────────────────────────
         img_group = QGroupBox("Starting Image  (Segment 1) — click to select")
         img_layout = QVBoxLayout(img_group)
+        img_layout.setContentsMargins(6, 6, 6, 6)
         self.image_grid = ImageGrid()
-        self.image_grid.setFixedHeight(450)
         img_layout.addWidget(self.image_grid)
         self.image_grid.itemSelectionChanged.connect(self._on_image_selected)
-        root.addWidget(img_group)
+        left.addWidget(img_group, stretch=1)
 
         self.selected_label = QLabel("Click an image to select it as the starting frame")
         self.selected_label.setObjectName("subtitle")
         self.selected_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        root.addWidget(self.selected_label)
+        left.addWidget(self.selected_label)
 
-        # ── Segment progress ──────────────────────────────────────────────
-        seg_group = QGroupBox("Segment Progress")
-        seg_layout = QVBoxLayout(seg_group)
+        split.addLayout(left, stretch=3)
 
-        dots_row = QHBoxLayout()
-        dots_row.setSpacing(12)
-        dots_row.addStretch()
-        for i in range(1, 8):
-            dot = SegmentDot(i)
-            self._seg_dots.append(dot)
-            dots_row.addWidget(dot)
-            if i < 7:
-                sep = QLabel("——")
-                sep.setStyleSheet(f"color:{COLORS['fg_dim']};")
-                dots_row.addWidget(sep)
-        dots_row.addStretch()
-        seg_layout.addLayout(dots_row)
+        # Right panel — progress + log + buttons
+        right = QVBoxLayout()
+        right.setSpacing(8)
 
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 7)
-        self.progress_bar.setValue(0)
-        seg_layout.addWidget(self.progress_bar)
+        # Segment progress group — dots/timers built dynamically
+        self._seg_group = QGroupBox("Segment Progress")
+        self._seg_layout = QVBoxLayout(self._seg_group)
+        self._rebuild_seg_panel()
+        right.addWidget(self._seg_group)
 
-        self.progress_label = QLabel("Ready")
-        self.progress_label.setObjectName("subtitle")
-        self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        seg_layout.addWidget(self.progress_label)
-
-        # Segment timing row — mirrors dots row exactly
-        self._seg_time_labels: list[QLabel] = []
-        times_row = QHBoxLayout()
-        times_row.setSpacing(8)
-        times_row.addStretch()
-        for i in range(1, 8):
-            time_lbl = QLabel("—")
-            time_lbl.setFixedWidth(70)
-            time_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            time_lbl.setStyleSheet(
-                f"color:{COLORS['fg_secondary']}; font-size:8pt; font-family:Consolas;"
-            )
-            self._seg_time_labels.append(time_lbl)
-            times_row.addWidget(time_lbl)
-            if i < 7:
-                gap = QLabel()
-                gap.setFixedWidth(10)
-                times_row.addWidget(gap)
-        times_row.addStretch()
-        seg_layout.addLayout(times_row)
-
-        root.addWidget(seg_group)
-
-        # ── Log ───────────────────────────────────────────────────────────
+        # Log
         log_group = QGroupBox("Log")
         log_layout = QVBoxLayout(log_group)
         self.log_list = QListWidget()
-        self.log_list.setMinimumHeight(80)
         self.log_list.setSpacing(0)
         self.log_list.setUniformItemSizes(True)
         log_layout.addWidget(self.log_list)
-        root.addWidget(log_group, stretch=1)
+        right.addWidget(log_group, stretch=1)
 
-        # ── Status + buttons ──────────────────────────────────────────────
+        # Status + buttons
         self.final_label = QLabel("")
         self.final_label.setObjectName("final_label")
         self.final_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.final_label.setWordWrap(True)
-        root.addWidget(self.final_label)
+        right.addWidget(self.final_label)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
@@ -314,7 +291,71 @@ class MainWindow(QMainWindow):
         btn_row.addSpacing(12)
         btn_row.addWidget(self.cancel_btn)
         btn_row.addStretch()
-        root.addLayout(btn_row)
+        right.addLayout(btn_row)
+
+        split.addLayout(right, stretch=2)
+
+    def _rebuild_seg_panel(self):
+        """Clear and rebuild dots/progress/timers based on current workflow count."""
+        # Remove all existing widgets from seg_layout
+        while self._seg_layout.count():
+            item = self._seg_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                # clear child layout items
+                child = item.layout()
+                while child.count():
+                    c = child.takeAt(0)
+                    if c.widget():
+                        c.widget().deleteLater()
+
+        self._seg_dots = []
+        self._seg_time_labels = []
+        n = self._seg_count
+
+        dots_row = QHBoxLayout()
+        dots_row.setSpacing(6)
+        dots_row.addStretch()
+        for i in range(1, n + 1):
+            dot = SegmentDot(i)
+            self._seg_dots.append(dot)
+            dots_row.addWidget(dot)
+            if i < n:
+                sep = QLabel("—")
+                sep.setStyleSheet(f"color:{COLORS['fg_dim']};")
+                dots_row.addWidget(sep)
+        dots_row.addStretch()
+        self._seg_layout.addLayout(dots_row)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, n)
+        self.progress_bar.setValue(0)
+        self._seg_layout.addWidget(self.progress_bar)
+
+        self.progress_label = QLabel("Ready")
+        self.progress_label.setObjectName("subtitle")
+        self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._seg_layout.addWidget(self.progress_label)
+
+        times_row = QHBoxLayout()
+        times_row.setSpacing(4)
+        times_row.addStretch()
+        for i in range(1, n + 1):
+            time_lbl = QLabel("—")
+            time_lbl.setFixedWidth(50)
+            time_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            time_lbl.setStyleSheet(
+                f"color:{COLORS['fg_secondary']}; font-size:8pt; font-family:Consolas;"
+            )
+            self._seg_time_labels.append(time_lbl)
+            times_row.addWidget(time_lbl)
+            if i < n:
+                gap = QLabel()
+                gap.setFixedWidth(4)
+                times_row.addWidget(gap)
+        times_row.addStretch()
+        self._seg_layout.addLayout(times_row)
 
     # ------------------------------------------------------------------ #
     # Image picker
@@ -341,6 +382,7 @@ class MainWindow(QMainWindow):
     def _open_settings(self):
         dlg = SettingsDialog(self.config, parent=self)
         if dlg.exec():
+            self._rebuild_seg_panel()
             self._populate_images()
 
     def _on_image_selected(self):
@@ -376,7 +418,7 @@ class MainWindow(QMainWindow):
         self._worker.start()
 
         self._seg_dots[0].set_active()
-        self.progress_label.setText("Segment 1/7 — running...")
+        self.progress_label.setText(f"Segment 1/{self._seg_count} — running...")
 
     def _cancel(self):
         if self._worker:
@@ -393,25 +435,29 @@ class MainWindow(QMainWindow):
         self.log_list.scrollToBottom()
 
     def _on_segment_time(self, seg: int, elapsed: str):
-        self._seg_time_labels[seg - 1].setText(elapsed)
-        self._seg_time_labels[seg - 1].setStyleSheet(
-            f"color:{COLORS['success']}; font-size:9pt; font-family:Consolas; font-weight:bold;"
-        )
+        if seg - 1 < len(self._seg_time_labels):
+            self._seg_time_labels[seg - 1].setText(elapsed)
+            self._seg_time_labels[seg - 1].setStyleSheet(
+                f"color:{COLORS['success']}; font-size:9pt; font-family:Consolas; font-weight:bold;"
+            )
 
     def _on_segment_done(self, seg: int):
-        self._seg_dots[seg - 1].set_done()
+        n = self._seg_count
+        if seg - 1 < len(self._seg_dots):
+            self._seg_dots[seg - 1].set_done()
         self.progress_bar.setValue(seg)
-        if seg < 7:
-            self._seg_dots[seg].set_active()
-            self.progress_label.setText(f"Segment {seg + 1}/7 — running...")
+        if seg < n:
+            if seg < len(self._seg_dots):
+                self._seg_dots[seg].set_active()
+            self.progress_label.setText(f"Segment {seg + 1}/{n} — running...")
         else:
             self.progress_label.setText("Stitching final video...")
 
     def _on_stitch_done(self, final_path: str):
         self.final_label.setText(f"Final video saved: {final_path}")
         self.progress_label.setText("Complete!")
-        self.progress_bar.setValue(7)
-        dlg = CompletionDialog(final_path, parent=self)
+        self.progress_bar.setValue(self._seg_count)
+        dlg = CompletionDialog(final_path, self._seg_count, parent=self)
         dlg.exec()
 
     def _on_error(self, message: str):

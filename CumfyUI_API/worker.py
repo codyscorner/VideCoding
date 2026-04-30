@@ -32,6 +32,7 @@ class ChainWorker(QThread):
         self._config = config
         self._starting_image = starting_image
         self._cancelled = False
+        self._total_segs = len(config.get("workflows", []))
         self._client_id = str(uuid.uuid4())
         self._run_id = str(int(time.time()))
         self._runpod_override_filename = None
@@ -63,6 +64,7 @@ class ChainWorker(QThread):
             self._clean_merge_dir()
             output_videos = []
             workflows = self._config["workflows"]
+            self._total_segs = len(workflows)
             chain_start = time.time()
 
             if self._runpod:
@@ -77,7 +79,7 @@ class ChainWorker(QThread):
 
                 seg = wf["segment"]
                 seg_start = time.time()
-                self._log(f"[Segment {seg}/7] Starting...")
+                self._log(f"[Segment {seg}/{self._total_segs}] Starting...")
 
                 workflow_json = self._load_workflow(wf)
 
@@ -92,7 +94,7 @@ class ChainWorker(QThread):
                     # ComfyUI needs just the filename, not a relative subdir path
                     image_filename = Path(self._starting_image).name
                     workflow_json[wf["input_node_id"]]["inputs"]["image"] = image_filename
-                    self._log(f"[Segment {seg}/7] Using starting image: {image_filename}")
+                    self._log(f"[Segment {seg}/{self._total_segs}] Using starting image: {image_filename}")
                 else:
                     prev_video = output_videos[-1]
                     # Rename with _GLF suffix when uploading to RunPod to avoid filename collision
@@ -103,13 +105,13 @@ class ChainWorker(QThread):
                         upload_path = glf_path
                     else:
                         upload_path = prev_video
-                    self._log(f"[Segment {seg}/7] Uploading video: {upload_path.name}")
+                    self._log(f"[Segment {seg}/{self._total_segs}] Uploading video: {upload_path.name}")
                     uploaded_name = self._upload_video(upload_path)
                     workflow_json[wf["input_node_id"]]["inputs"]["video"] = uploaded_name
-                    self._log(f"[Segment {seg}/7] Uploaded as: {uploaded_name}")
+                    self._log(f"[Segment {seg}/{self._total_segs}] Uploaded as: {uploaded_name}")
 
                 prompt_id = self._queue_prompt(workflow_json)
-                self._log(f"[Segment {seg}/7] Queued (id: {prompt_id[:8]}...), polling...")
+                self._log(f"[Segment {seg}/{self._total_segs}] Queued (id: {prompt_id[:8]}...), polling...")
 
                 self._poll_until_done(prompt_id, seg)
 
@@ -118,7 +120,7 @@ class ChainWorker(QThread):
                 output_video = self._get_output_video(seg, prompt_id)
                 seg_elapsed = time.time() - seg_start
                 elapsed_str = self._fmt(seg_elapsed)
-                self._log(f"[Segment {seg}/7] Done in {elapsed_str} → {output_video.name}")
+                self._log(f"[Segment {seg}/{self._total_segs}] Done in {elapsed_str} → {output_video.name}")
                 output_videos.append(output_video)
                 self.segment_done.emit(seg)
                 self.segment_time.emit(seg, elapsed_str)
@@ -185,13 +187,13 @@ class ChainWorker(QThread):
             parts = override.rsplit('/', 1)
             ov_subfolder = parts[0] if len(parts) == 2 else ""
             ov_filename = parts[-1]
-            self._log(f"[Segment {seg}/7] Downloading (existing): {override}")
+            self._log(f"[Segment {seg}/{self._total_segs}] Downloading (existing): {override}")
             params = {"filename": ov_filename, "subfolder": ov_subfolder, "type": "output"}
             for attempt in range(6):
                 dl_resp = requests.get(f"{self._url}/view", params=params, timeout=300, stream=True)
                 if dl_resp.status_code == 200:
                     break
-                self._log(f"[Segment {seg}/7] File not ready, retrying in 5s... ({attempt+1}/6)")
+                self._log(f"[Segment {seg}/{self._total_segs}] File not ready, retrying in 5s... ({attempt+1}/6)")
                 time.sleep(5)
             dl_resp.raise_for_status()
             local_path = self._temp_dir / Path(dl_filename).name
@@ -227,13 +229,13 @@ class ChainWorker(QThread):
             raise RuntimeError(f"Could not find output video in history for segment {seg}")
 
         dl_filename = filename
-        self._log(f"[Segment {seg}/7] Downloading: {subfolder}/{filename}")
+        self._log(f"[Segment {seg}/{self._total_segs}] Downloading: {subfolder}/{filename}")
         params = {"filename": filename, "subfolder": subfolder, "type": "output"}
         for attempt in range(6):
             dl_resp = requests.get(f"{self._url}/view", params=params, timeout=300, stream=True)
             if dl_resp.status_code == 200:
                 break
-            self._log(f"[Segment {seg}/7] File not ready, retrying in 5s... ({attempt+1}/6)")
+            self._log(f"[Segment {seg}/{self._total_segs}] File not ready, retrying in 5s... ({attempt+1}/6)")
             time.sleep(5)
         dl_resp.raise_for_status()
 
@@ -307,11 +309,11 @@ class ChainWorker(QThread):
                 pending_ids = [item[1] for item in q_data.get("queue_pending", [])]
                 if prompt_id in running_ids:
                     if elapsed % 15 == 0:
-                        self._log(f"[Segment {seg}/7] Running... ({elapsed}s)")
+                        self._log(f"[Segment {seg}/{self._total_segs}] Running... ({elapsed}s)")
                     continue
                 if prompt_id in pending_ids:
                     if elapsed % 15 == 0:
-                        self._log(f"[Segment {seg}/7] Queued, waiting... ({elapsed}s)")
+                        self._log(f"[Segment {seg}/{self._total_segs}] Queued, waiting... ({elapsed}s)")
                     continue
 
                 h_resp = requests.get(history_url, timeout=10)
@@ -327,18 +329,18 @@ class ChainWorker(QThread):
                     if last_msg == "execution_error":
                         ex_msg = msgs[-1][1].get("exception_message", "")
                         if "already exists" in ex_msg:
-                            self._log(f"[Segment {seg}/7] File exists on pod, downloading...")
+                            self._log(f"[Segment {seg}/{self._total_segs}] File exists on pod, downloading...")
                             # Extract actual filename from error path
                             import re
                             match = re.search(r"output/(.+?)'\s+already exists", ex_msg)
                             if match:
                                 self._runpod_override_filename = match.group(1)
                             return
-                    self._log(f"[Segment {seg}/7] Status: {msgs[-1] if msgs else 'unknown'}")
+                    self._log(f"[Segment {seg}/{self._total_segs}] Status: {msgs[-1] if msgs else 'unknown'}")
             except requests.RequestException as e:
-                self._log(f"[Segment {seg}/7] Poll error: {e}")
+                self._log(f"[Segment {seg}/{self._total_segs}] Poll error: {e}")
             if elapsed % 15 == 0:
-                self._log(f"[Segment {seg}/7] Waiting... ({elapsed}s)")
+                self._log(f"[Segment {seg}/{self._total_segs}] Waiting... ({elapsed}s)")
 
     # ------------------------------------------------------------------ #
     # Stitch / zip / misc
