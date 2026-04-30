@@ -81,6 +81,9 @@ class ChainWorker(QThread):
 
                 workflow_json = self._load_workflow(wf)
 
+                # Always randomize seeds to bust ComfyUI prompt cache
+                self._bust_cache(workflow_json)
+
                 # RunPod: strip Windows path from filename_prefix — use simple Segment_N
                 if self._runpod:
                     self._patch_output_prefix(workflow_json, seg)
@@ -147,19 +150,21 @@ class ChainWorker(QThread):
             return self._download_output_video(seg, prompt_id)
         return self._find_local_output_video(seg)
 
-    def _patch_output_prefix(self, workflow: dict, seg: int):
-        seg_id = str(uuid.uuid4())[:8]
+    def _bust_cache(self, workflow: dict):
         new_seed = int(uuid.uuid4().int % (2**32))
         for node in workflow.values():
-            ct = node.get("class_type", "")
             inp = node.get("inputs", {})
-            if ct == "VHS_VideoCombine":
-                inp["filename_prefix"] = f"Merge/Segment_{seg}_{seg_id}"
-            # Randomize seed on any sampler or noise node to bust cache
             if "noise_seed" in inp:
                 inp["noise_seed"] = new_seed
             if "seed" in inp and isinstance(inp["seed"], int):
                 inp["seed"] = new_seed
+
+    def _patch_output_prefix(self, workflow: dict, seg: int):
+        seg_id = str(uuid.uuid4())[:8]
+        for node in workflow.values():
+            if node.get("class_type") == "VHS_VideoCombine":
+                node["inputs"]["filename_prefix"] = f"Merge/Segment_{seg}_{seg_id}"
+                break
 
     def _find_local_output_video(self, seg: int) -> Path:
         base_dir = Path(self._config["output_base_dir"])
