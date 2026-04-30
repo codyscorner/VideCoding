@@ -67,7 +67,7 @@ class ChainWorker(QThread):
 
             if self._runpod:
                 input_path = Path(self._config["input_dir"]) / self._starting_image
-                self._log(f"[RunPod] Uploading starting image: {self._starting_image}")
+                self._log(f"[RunPod] Uploading starting image: {input_path.name}")
                 self._upload_image(input_path)
 
             for wf in workflows:
@@ -86,8 +86,10 @@ class ChainWorker(QThread):
                     self._patch_output_prefix(workflow_json, seg)
 
                 if wf["input_type"] == "image":
-                    workflow_json[wf["input_node_id"]]["inputs"]["image"] = self._starting_image
-                    self._log(f"[Segment {seg}/7] Using starting image: {self._starting_image}")
+                    # ComfyUI needs just the filename, not a relative subdir path
+                    image_filename = Path(self._starting_image).name
+                    workflow_json[wf["input_node_id"]]["inputs"]["image"] = image_filename
+                    self._log(f"[Segment {seg}/7] Using starting image: {image_filename}")
                 else:
                     prev_video = output_videos[-1]
                     # Rename with _GLF suffix when uploading to RunPod to avoid filename collision

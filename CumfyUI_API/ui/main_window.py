@@ -1,9 +1,9 @@
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup,
+    QMainWindow, QWidget, QLabel, QPushButton, QLineEdit,
     QProgressBar, QListWidget, QListWidgetItem, QGroupBox,
-    QVBoxLayout, QHBoxLayout, QDialog, QMessageBox, QAbstractItemView,
+    QVBoxLayout, QHBoxLayout, QDialog, QMessageBox, QAbstractItemView, QFileDialog,
 )
 
 from PyQt6.QtCore import Qt, QSize
@@ -96,7 +96,7 @@ class ImageGrid(QListWidget):
         if not input_dir.exists():
             return
         images = sorted(
-            p for p in input_dir.iterdir()
+            p for p in input_dir.rglob("*")
             if p.suffix.lower() in IMAGE_EXTS
         )
         for img_path in images:
@@ -106,8 +106,11 @@ class ImageGrid(QListWidget):
             icon = QIcon(pix.scaled(THUMB_SIZE, THUMB_SIZE,
                                     Qt.AspectRatioMode.KeepAspectRatio,
                                     Qt.TransformationMode.SmoothTransformation))
-            item = QListWidgetItem(icon, img_path.name)
-            item.setData(Qt.ItemDataRole.UserRole, img_path.name)
+            # Store relative path — needed for subdirectory images
+            rel = img_path.relative_to(input_dir)
+            label = str(rel) if rel.parent != Path(".") else img_path.name
+            item = QListWidgetItem(icon, label)
+            item.setData(Qt.ItemDataRole.UserRole, str(rel))
             item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
             self.addItem(item)
 
@@ -201,34 +204,21 @@ class MainWindow(QMainWindow):
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.addWidget(subtitle)
 
-        # ── Mode selector ─────────────────────────────────────────────────
-        mode_group = QGroupBox("ComfyUI Server")
-        mode_layout = QHBoxLayout(mode_group)
-
-        self._local_radio = QRadioButton("Local")
-        self._runpod_radio = QRadioButton("RunPod")
-        self._mode_group = QButtonGroup()
-        self._mode_group.addButton(self._local_radio)
-        self._mode_group.addButton(self._runpod_radio)
-
-        runpod_lbl = QLabel("RunPod URL:")
-        self._runpod_url_edit = QLineEdit()
-        self._runpod_url_edit.setText(self.config.get("runpod_url", ""))
-        self._runpod_url_edit.setPlaceholderText("https://xxxxxx-8188.proxy.runpod.net")
-
-        if self.config.get("mode", "local") == "runpod":
-            self._runpod_radio.setChecked(True)
-        else:
-            self._local_radio.setChecked(True)
-
-        self._local_radio.toggled.connect(self._on_mode_changed)
-
-        mode_layout.addWidget(self._local_radio)
-        mode_layout.addWidget(self._runpod_radio)
-        mode_layout.addSpacing(20)
-        mode_layout.addWidget(runpod_lbl)
-        mode_layout.addWidget(self._runpod_url_edit, stretch=1)
-        root.addWidget(mode_group)
+        # ── Image folder picker ───────────────────────────────────────────
+        folder_row = QHBoxLayout()
+        folder_lbl = QLabel("Image Folder:")
+        folder_lbl.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
+        self._input_dir_edit = QLineEdit(self.config.get("input_dir", ""))
+        self._input_dir_edit.setPlaceholderText("Folder containing starting images...")
+        self._input_dir_edit.setReadOnly(True)
+        folder_browse_btn = QPushButton("...")
+        folder_browse_btn.setFixedWidth(40)
+        folder_browse_btn.setFixedHeight(30)
+        folder_browse_btn.clicked.connect(self._browse_input_dir)
+        folder_row.addWidget(folder_lbl)
+        folder_row.addWidget(self._input_dir_edit, stretch=1)
+        folder_row.addWidget(folder_browse_btn)
+        root.addLayout(folder_row)
 
         # ── Starting image grid ───────────────────────────────────────────
         img_group = QGroupBox("Starting Image  (Segment 1) — click to select")
@@ -331,7 +321,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _populate_images(self):
-        input_dir = Path(self.config.get("input_dir", ""))
+        input_dir = Path(self._input_dir_edit.text().strip() or self.config.get("input_dir", ""))
         self.image_grid.load_images(input_dir)
         count = self.image_grid.count()
         if count == 0:
@@ -339,10 +329,14 @@ class MainWindow(QMainWindow):
         else:
             self.selected_label.setText("Click an image to select it as the starting frame")
 
-    def _on_mode_changed(self):
-        mode = "local" if self._local_radio.isChecked() else "runpod"
-        self.config.set("mode", mode)
-        self.config.save()
+    def _browse_input_dir(self):
+        current = self._input_dir_edit.text().strip()
+        folder = QFileDialog.getExistingDirectory(self, "Select Image Folder", current or str(Path.home()))
+        if folder:
+            self._input_dir_edit.setText(folder)
+            self.config.set("input_dir", folder)
+            self.config.save()
+            self._populate_images()
 
     def _open_settings(self):
         dlg = SettingsDialog(self.config, parent=self)
@@ -364,8 +358,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", "Please click an image to select it as the starting image.")
             return
 
-        self.config.set("mode", "local" if self._local_radio.isChecked() else "runpod")
-        self.config.set("runpod_url", self._runpod_url_edit.text().strip())
         self.config.save()
 
         self._reset_ui()

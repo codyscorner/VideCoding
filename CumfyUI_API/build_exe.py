@@ -16,6 +16,8 @@ cmd = [
     "--hidden-import", "PyQt6.QtMultimedia",
     "--hidden-import", "PyQt6.QtMultimediaWidgets",
     "--hidden-import", "requests",
+    "--hidden-import", "ui.settings_dialog",
+    "--hidden-import", "ui.video_player",
     str(ROOT / "main.py"),
 ]
 
