@@ -1,10 +1,12 @@
 from datetime import datetime
 from pathlib import Path
+import subprocess
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QPushButton, QLineEdit,
     QProgressBar, QListWidget, QListWidgetItem, QGroupBox,
-    QVBoxLayout, QHBoxLayout, QDialog, QMessageBox, QAbstractItemView, QFileDialog,
+    QVBoxLayout, QHBoxLayout, QStackedWidget,
+    QDialog, QMessageBox, QAbstractItemView, QFileDialog,
 )
 
 from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
@@ -17,15 +19,19 @@ from ui.video_player import VideoPlayerDialog
 from ui.settings_dialog import SettingsDialog
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv"}
 THUMB_SIZE = 200
 MAX_SEGMENTS = 10
 
 
+# ------------------------------------------------------------------ #
+# Background loaders
+# ------------------------------------------------------------------ #
+
 class ImageLoaderThread(QThread):
-    """Loads and scales images in the background; emits one item at a time."""
-    image_ready = pyqtSignal(QImage, str, str)  # image, rel_path, label
-    progress = pyqtSignal(int, int)             # current, total
-    finished_loading = pyqtSignal(int)          # total loaded
+    image_ready = pyqtSignal(QImage, str, str)
+    progress = pyqtSignal(int, int)
+    finished_loading = pyqtSignal(int)
 
     def __init__(self, input_dir: Path):
         super().__init__()
@@ -48,7 +54,6 @@ class ImageLoaderThread(QThread):
             img = QImage(str(img_path))
             if img.isNull():
                 continue
-            # Scale keeping aspect ratio into THUMB_SIZE box
             img = img.scaled(THUMB_SIZE, THUMB_SIZE,
                              Qt.AspectRatioMode.KeepAspectRatio,
                              Qt.TransformationMode.SmoothTransformation)
@@ -59,6 +64,110 @@ class ImageLoaderThread(QThread):
             self.progress.emit(loaded, total)
         self.finished_loading.emit(loaded)
 
+
+class VideoLoaderThread(QThread):
+    """Loads video thumbnails from cache; generates missing ones via FFmpeg."""
+    video_ready = pyqtSignal(QImage, str, str)  # image, full_path, label
+    progress = pyqtSignal(int, int)
+    finished_loading = pyqtSignal(int)
+
+    def __init__(self, video_dir: Path, ffmpeg: str):
+        super().__init__()
+        self._video_dir = video_dir
+        self._ffmpeg = ffmpeg
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        thumb_dir = self._video_dir / "thumbnails"
+        thumb_dir.mkdir(exist_ok=True)
+
+        videos = sorted(
+            p for p in self._video_dir.iterdir()
+            if p.suffix.lower() in VIDEO_EXTS
+        )
+        total = len(videos)
+        loaded = 0
+        for vid_path in videos:
+            if self._cancelled:
+                return
+            thumb_path = thumb_dir / (vid_path.stem + ".jpg")
+            if not thumb_path.exists():
+                self._extract_frame(vid_path, thumb_path)
+            img = QImage(str(thumb_path))
+            if img.isNull():
+                continue
+            img = img.scaled(THUMB_SIZE, THUMB_SIZE,
+                             Qt.AspectRatioMode.KeepAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation)
+            self.video_ready.emit(img, str(vid_path), vid_path.name)
+            loaded += 1
+            self.progress.emit(loaded, total)
+        self.finished_loading.emit(loaded)
+
+    def _extract_frame(self, vid_path: Path, thumb_path: Path):
+        try:
+            subprocess.run(
+                [self._ffmpeg, "-y", "-i", str(vid_path),
+                 "-vframes", "1", "-q:v", "3", str(thumb_path)],
+                capture_output=True, timeout=15
+            )
+        except Exception:
+            pass
+
+
+# ------------------------------------------------------------------ #
+# Shared thumbnail grid
+# ------------------------------------------------------------------ #
+
+class ThumbnailGrid(QListWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setViewMode(QListWidget.ViewMode.IconMode)
+        self.setIconSize(QSize(THUMB_SIZE, THUMB_SIZE))
+        self.setGridSize(QSize(THUMB_SIZE + 12, THUMB_SIZE + 12))
+        self.setSpacing(4)
+        self.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setWrapping(True)
+        self.setWordWrap(False)
+        self.setUniformItemSizes(True)
+        self.setStyleSheet(
+            f"QListWidget {{ background-color: {COLORS['bg_medium']};"
+            f" border: 1px solid {COLORS['border']}; border-radius: 3px;"
+            f" padding-right: 16px; }}"
+            f"QListWidget::item {{ border: 2px solid transparent; border-radius: 4px; }}"
+            f"QListWidget::item:selected {{ background-color: transparent;"
+            f" border: 2px solid {COLORS['accent']}; border-radius: 4px; }}"
+        )
+
+    def clear_grid(self):
+        self.clear()
+
+    def add_item(self, img: QImage, key: str, label: str):
+        pix = QPixmap.fromImage(img)
+        canvas = QPixmap(THUMB_SIZE, THUMB_SIZE)
+        canvas.fill(Qt.GlobalColor.black)
+        painter = QPainter(canvas)
+        x = (THUMB_SIZE - pix.width()) // 2
+        y = (THUMB_SIZE - pix.height()) // 2
+        painter.drawPixmap(x, y, pix)
+        painter.end()
+        item = QListWidgetItem(QIcon(canvas), label)
+        item.setData(Qt.ItemDataRole.UserRole, key)
+        item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
+        self.addItem(item)
+
+    def selected_key(self) -> str | None:
+        items = self.selectedItems()
+        return items[0].data(Qt.ItemDataRole.UserRole) if items else None
+
+
+# ------------------------------------------------------------------ #
+# Completion dialog
+# ------------------------------------------------------------------ #
 
 class CompletionDialog(QDialog):
     def __init__(self, final_path: str, seg_count: int, parent=None):
@@ -110,56 +219,11 @@ class CompletionDialog(QDialog):
         player.exec()
 
 
-class ImageGrid(QListWidget):
-    """Scrollable thumbnail grid for picking the starting image."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setViewMode(QListWidget.ViewMode.IconMode)
-        self.setIconSize(QSize(THUMB_SIZE, THUMB_SIZE))
-        self.setGridSize(QSize(THUMB_SIZE + 12, THUMB_SIZE + 12))
-        self.setSpacing(4)
-        self.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.setWrapping(True)
-        self.setWordWrap(False)
-        self.setUniformItemSizes(True)
-        self.setStyleSheet(
-            f"QListWidget {{ background-color: {COLORS['bg_medium']};"
-            f" border: 1px solid {COLORS['border']}; border-radius: 3px;"
-            f" padding-right: 16px; }}"
-            f"QListWidget::item {{ border: 2px solid transparent; border-radius: 4px; }}"
-            f"QListWidget::item:selected {{ background-color: transparent;"
-            f" border: 2px solid {COLORS['accent']}; border-radius: 4px; }}"
-        )
-
-    def clear_grid(self):
-        self.clear()
-
-    def add_image(self, img: QImage, rel_path: str, label: str):
-        pix = QPixmap.fromImage(img)
-        canvas = QPixmap(THUMB_SIZE, THUMB_SIZE)
-        canvas.fill(Qt.GlobalColor.black)
-        painter = QPainter(canvas)
-        x = (THUMB_SIZE - pix.width()) // 2
-        y = (THUMB_SIZE - pix.height()) // 2
-        painter.drawPixmap(x, y, pix)
-        painter.end()
-        item = QListWidgetItem(QIcon(canvas), label)
-        item.setData(Qt.ItemDataRole.UserRole, rel_path)
-        item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
-        self.addItem(item)
-
-    def selected_image(self) -> str | None:
-        items = self.selectedItems()
-        if not items:
-            return None
-        return items[0].data(Qt.ItemDataRole.UserRole)
-
+# ------------------------------------------------------------------ #
+# Segment dot
+# ------------------------------------------------------------------ #
 
 class SegmentDot(QLabel):
-    """Small coloured circle showing segment state: pending / active / done."""
-
     def __init__(self, number: int):
         super().__init__(f" {number} ")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -172,15 +236,14 @@ class SegmentDot(QLabel):
             f" font-weight:bold; font-size:10pt;"
         )
 
-    def set_pending(self):
-        self._apply(COLORS['seg_pending'], COLORS['fg_dim'])
+    def set_pending(self): self._apply(COLORS['seg_pending'], COLORS['fg_dim'])
+    def set_active(self):  self._apply(COLORS['seg_active'], '#000000')
+    def set_done(self):    self._apply(COLORS['seg_done'], '#000000')
 
-    def set_active(self):
-        self._apply(COLORS['seg_active'], '#000000')
 
-    def set_done(self):
-        self._apply(COLORS['seg_done'], '#000000')
-
+# ------------------------------------------------------------------ #
+# Main window
+# ------------------------------------------------------------------ #
 
 class MainWindow(QMainWindow):
     def __init__(self, config_manager: ConfigManager, version: str):
@@ -188,7 +251,9 @@ class MainWindow(QMainWindow):
         self.config = config_manager
         self.version = version
         self._worker: ChainWorker | None = None
-        self._loader: ImageLoaderThread | None = None
+        self._img_loader: ImageLoaderThread | None = None
+        self._vid_loader: VideoLoaderThread | None = None
+        self._last_vid_dir: str = ""
         self._seg_dots: list[SegmentDot] = []
         self._seg_time_labels: list[QLabel] = []
 
@@ -202,8 +267,10 @@ class MainWindow(QMainWindow):
 
     @property
     def _seg_count(self) -> int:
-        workflows = self.config.get("workflows", [])
-        return min(max(len(workflows), 1), MAX_SEGMENTS)
+        return min(max(len(self.config.get("workflows", [])), 1), MAX_SEGMENTS)
+
+    def _ffmpeg_path(self) -> str:
+        return self.config.get("ffmpeg_path", "ffmpeg") or "ffmpeg"
 
     # ------------------------------------------------------------------ #
     # UI construction
@@ -218,9 +285,44 @@ class MainWindow(QMainWindow):
 
         # ── Header ────────────────────────────────────────────────────────
         header_row = QHBoxLayout()
+
+        # Mode toggle buttons
+        mode_btn_style = f"""
+            QPushButton {{
+                background-color: {COLORS['bg_light']};
+                color: {COLORS['fg_secondary']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 4px;
+                font-size: 10pt;
+                font-weight: bold;
+                padding: 4px 16px;
+                min-width: 90px;
+            }}
+            QPushButton:checked {{
+                background-color: {COLORS['accent']};
+                color: white;
+                border: 1px solid {COLORS['accent']};
+            }}
+            QPushButton:hover:!checked {{ background-color: {COLORS['bg_medium']}; }}
+        """
+        self._chain_btn = QPushButton("⛓  Chain")
+        self._chain_btn.setCheckable(True)
+        self._chain_btn.setChecked(True)
+        self._chain_btn.setFixedHeight(32)
+        self._chain_btn.setStyleSheet(mode_btn_style)
+        self._chain_btn.clicked.connect(lambda: self._switch_view(0))
+
+        self._library_btn = QPushButton("🎬  Library")
+        self._library_btn.setCheckable(True)
+        self._library_btn.setChecked(False)
+        self._library_btn.setFixedHeight(32)
+        self._library_btn.setStyleSheet(mode_btn_style)
+        self._library_btn.clicked.connect(lambda: self._switch_view(1))
+
         header = QLabel("ComfyUI Workflow Chain Automator")
         header.setObjectName("header")
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         settings_btn = QPushButton("⚙")
         settings_btn.setFixedSize(36, 36)
         settings_btn.setToolTip("Settings")
@@ -236,18 +338,30 @@ class MainWindow(QMainWindow):
             QPushButton:hover {{ background-color: {COLORS['accent']}; color: white; }}
         """)
         settings_btn.clicked.connect(self._open_settings)
+
+        header_row.addWidget(self._chain_btn)
+        header_row.addSpacing(4)
+        header_row.addWidget(self._library_btn)
         header_row.addStretch()
         header_row.addWidget(header)
         header_row.addStretch()
         header_row.addWidget(settings_btn)
         root.addLayout(header_row)
 
-        # ── Split: left = image picker, right = controls ──────────────────
-        split = QHBoxLayout()
-        split.setSpacing(12)
-        root.addLayout(split, stretch=1)
+        # ── Stacked pages ─────────────────────────────────────────────────
+        self._stack = QStackedWidget()
+        root.addWidget(self._stack, stretch=1)
 
-        # Left panel — image folder + grid
+        self._stack.addWidget(self._build_chain_page())
+        self._stack.addWidget(self._build_library_page())
+
+    def _build_chain_page(self) -> QWidget:
+        page = QWidget()
+        split = QHBoxLayout(page)
+        split.setContentsMargins(0, 0, 0, 0)
+        split.setSpacing(12)
+
+        # Left — image picker
         left = QVBoxLayout()
         left.setSpacing(6)
 
@@ -269,7 +383,7 @@ class MainWindow(QMainWindow):
         img_group = QGroupBox("Starting Image  (Segment 1) — click to select")
         img_layout = QVBoxLayout(img_group)
         img_layout.setContentsMargins(6, 6, 6, 6)
-        self.image_grid = ImageGrid()
+        self.image_grid = ThumbnailGrid()
         img_layout.addWidget(self.image_grid)
         self.image_grid.itemSelectionChanged.connect(self._on_image_selected)
         left.addWidget(img_group, stretch=1)
@@ -281,17 +395,15 @@ class MainWindow(QMainWindow):
 
         split.addLayout(left, stretch=3)
 
-        # Right panel — progress + log + buttons
+        # Right — progress + log + buttons
         right = QVBoxLayout()
         right.setSpacing(8)
 
-        # Segment progress group — dots/timers built dynamically
         self._seg_group = QGroupBox("Segment Progress")
         self._seg_layout = QVBoxLayout(self._seg_group)
         self._rebuild_seg_panel()
         right.addWidget(self._seg_group)
 
-        # Log
         log_group = QGroupBox("Log")
         log_layout = QVBoxLayout(log_group)
         self.log_list = QListWidget()
@@ -300,7 +412,6 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(self.log_list)
         right.addWidget(log_group, stretch=1)
 
-        # Status + buttons
         self.final_label = QLabel("")
         self.final_label.setObjectName("final_label")
         self.final_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -322,16 +433,77 @@ class MainWindow(QMainWindow):
         right.addLayout(btn_row)
 
         split.addLayout(right, stretch=2)
+        return page
+
+    def _build_library_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        # Toolbar row
+        toolbar = QHBoxLayout()
+        vid_folder_lbl = QLabel("Video Folder:")
+        vid_folder_lbl.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
+        self._vid_dir_edit = QLineEdit(self.config.get("final_video_dir", ""))
+        self._vid_dir_edit.setPlaceholderText("Folder containing video files...")
+        self._vid_dir_edit.setReadOnly(True)
+        vid_browse_btn = QPushButton("...")
+        vid_browse_btn.setFixedWidth(40)
+        vid_browse_btn.setFixedHeight(40)
+        vid_browse_btn.clicked.connect(self._browse_video_dir)
+        refresh_btn = QPushButton("↻  Refresh")
+        refresh_btn.setFixedHeight(40)
+        refresh_btn.clicked.connect(lambda: self._populate_videos(force=True))
+        toolbar.addWidget(vid_folder_lbl)
+        toolbar.addWidget(self._vid_dir_edit, stretch=1)
+        toolbar.addWidget(vid_browse_btn)
+        toolbar.addSpacing(8)
+        toolbar.addWidget(refresh_btn)
+        layout.addLayout(toolbar)
+
+        # Video grid
+        vid_group = QGroupBox("Videos — double-click to play")
+        vid_layout = QVBoxLayout(vid_group)
+        vid_layout.setContentsMargins(6, 6, 6, 6)
+        self.video_grid = ThumbnailGrid()
+        self.video_grid.itemDoubleClicked.connect(self._on_video_double_clicked)
+        vid_layout.addWidget(self.video_grid)
+        layout.addWidget(vid_group, stretch=1)
+
+        # Status bar
+        lib_bottom = QHBoxLayout()
+        self._vid_status_label = QLabel("Select a video folder to browse")
+        self._vid_status_label.setObjectName("subtitle")
+        self._vid_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._vid_progress = QProgressBar()
+        self._vid_progress.setRange(0, 1)
+        self._vid_progress.setValue(0)
+        self._vid_progress.setFixedHeight(16)
+        self._vid_progress.setVisible(False)
+        lib_bottom.addWidget(self._vid_status_label, stretch=1)
+        lib_bottom.addWidget(self._vid_progress)
+        layout.addLayout(lib_bottom)
+
+        return page
+
+    def _switch_view(self, index: int):
+        self._chain_btn.setChecked(index == 0)
+        self._library_btn.setChecked(index == 1)
+        self._stack.setCurrentIndex(index)
+        if index == 1:
+            self._populate_videos()
+
+    # ------------------------------------------------------------------ #
+    # Segment panel
+    # ------------------------------------------------------------------ #
 
     def _rebuild_seg_panel(self):
-        """Clear and rebuild dots/progress/timers based on current workflow count."""
-        # Remove all existing widgets from seg_layout
         while self._seg_layout.count():
             item = self._seg_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
             elif item.layout():
-                # clear child layout items
                 child = item.layout()
                 while child.count():
                     c = child.takeAt(0)
@@ -386,21 +558,19 @@ class MainWindow(QMainWindow):
         self._seg_layout.addLayout(times_row)
 
     # ------------------------------------------------------------------ #
-    # Image picker
+    # Image picker (Chain view)
     # ------------------------------------------------------------------ #
 
     def _populate_images(self):
         input_dir = Path(self._input_dir_edit.text().strip() or self.config.get("input_dir", ""))
 
-        # Cancel any existing loader
-        if self._loader and self._loader.isRunning():
-            self._loader.cancel()
-            self._loader.wait()
+        if self._img_loader and self._img_loader.isRunning():
+            self._img_loader.cancel()
+            self._img_loader.wait()
 
         self.image_grid.clear_grid()
         self.selected_label.setText("Loading images...")
-        self.progress_bar.setValue(0)
-        self.progress_bar.setRange(0, 0)  # indeterminate spinner until total is known
+        self.progress_bar.setRange(0, 0)
         self.progress_label.setText("Loading images...")
         self.start_btn.setEnabled(False)
 
@@ -411,18 +581,18 @@ class MainWindow(QMainWindow):
             self.start_btn.setEnabled(True)
             return
 
-        self._loader = ImageLoaderThread(input_dir)
-        self._loader.image_ready.connect(self.image_grid.add_image)
-        self._loader.progress.connect(self._on_load_progress)
-        self._loader.finished_loading.connect(self._on_load_finished)
-        self._loader.start()
+        self._img_loader = ImageLoaderThread(input_dir)
+        self._img_loader.image_ready.connect(self.image_grid.add_item)
+        self._img_loader.progress.connect(self._on_img_load_progress)
+        self._img_loader.finished_loading.connect(self._on_img_load_finished)
+        self._img_loader.start()
 
-    def _on_load_progress(self, current: int, total: int):
+    def _on_img_load_progress(self, current: int, total: int):
         self.progress_bar.setRange(0, total)
         self.progress_bar.setValue(current)
         self.progress_label.setText(f"Loading images... {current}/{total}")
 
-    def _on_load_finished(self, total: int):
+    def _on_img_load_finished(self, total: int):
         self.progress_bar.setRange(0, self._seg_count)
         self.progress_bar.setValue(0)
         self.progress_label.setText("Ready")
@@ -441,29 +611,92 @@ class MainWindow(QMainWindow):
             self.config.save()
             self._populate_images()
 
+    def _on_image_selected(self):
+        name = self.image_grid.selected_key()
+        if name:
+            self.selected_label.setText(f"Selected: {name}")
+
+    # ------------------------------------------------------------------ #
+    # Video library (Library view)
+    # ------------------------------------------------------------------ #
+
+    def _populate_videos(self, force: bool = False):
+        vid_dir = Path(self._vid_dir_edit.text().strip() or self.config.get("final_video_dir", ""))
+
+        # Skip reload if same folder already loaded
+        if not force and str(vid_dir) == self._last_vid_dir and self.video_grid.count() > 0:
+            return
+
+        if self._vid_loader and self._vid_loader.isRunning():
+            self._vid_loader.cancel()
+            self._vid_loader.wait()
+
+        self._last_vid_dir = str(vid_dir)
+        self.video_grid.clear_grid()
+        self._vid_progress.setVisible(True)
+        self._vid_progress.setRange(0, 0)
+        self._vid_status_label.setText("Loading videos...")
+
+        if not vid_dir.exists():
+            self._vid_status_label.setText("Video folder not found — check Settings")
+            self._vid_progress.setVisible(False)
+            return
+
+        self._vid_loader = VideoLoaderThread(vid_dir, self._ffmpeg_path())
+        self._vid_loader.video_ready.connect(self.video_grid.add_item)
+        self._vid_loader.progress.connect(self._on_vid_load_progress)
+        self._vid_loader.finished_loading.connect(self._on_vid_load_finished)
+        self._vid_loader.start()
+
+    def _on_vid_load_progress(self, current: int, total: int):
+        self._vid_progress.setRange(0, total)
+        self._vid_progress.setValue(current)
+        self._vid_status_label.setText(f"Loading thumbnails... {current}/{total}")
+
+    def _on_vid_load_finished(self, total: int):
+        self._vid_progress.setVisible(False)
+        if total == 0:
+            self._vid_status_label.setText("No video files found in folder")
+        else:
+            self._vid_status_label.setText(f"{total} video{'s' if total != 1 else ''} — double-click to play")
+
+    def _browse_video_dir(self):
+        current = self._vid_dir_edit.text().strip()
+        folder = QFileDialog.getExistingDirectory(self, "Select Video Folder", current or str(Path.home()))
+        if folder:
+            self._vid_dir_edit.setText(folder)
+            self.config.set("final_video_dir", folder)
+            self.config.save()
+            self._populate_videos()
+
+    def _on_video_double_clicked(self, item: QListWidgetItem):
+        path = item.data(Qt.ItemDataRole.UserRole)
+        if path and Path(path).exists():
+            player = VideoPlayerDialog(path, parent=self)
+            player.exec()
+
+    # ------------------------------------------------------------------ #
+    # Settings
+    # ------------------------------------------------------------------ #
+
     def _open_settings(self):
         dlg = SettingsDialog(self.config, parent=self)
         if dlg.exec():
             self._rebuild_seg_panel()
             self._populate_images()
-
-    def _on_image_selected(self):
-        name = self.image_grid.selected_image()
-        if name:
-            self.selected_label.setText(f"Selected: {name}")
+            self._vid_dir_edit.setText(self.config.get("final_video_dir", ""))
 
     # ------------------------------------------------------------------ #
     # Chain start / cancel
     # ------------------------------------------------------------------ #
 
     def _start(self):
-        image_name = self.image_grid.selected_image()
+        image_name = self.image_grid.selected_key()
         if not image_name:
             QMessageBox.critical(self, "Error", "Please click an image to select it as the starting image.")
             return
 
         self.config.save()
-
         self._reset_ui()
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
@@ -544,9 +777,10 @@ class MainWindow(QMainWindow):
         self.log_list.clear()
 
     def closeEvent(self, event):
-        if self._loader and self._loader.isRunning():
-            self._loader.cancel()
-            self._loader.wait(3000)
+        for loader in (self._img_loader, self._vid_loader):
+            if loader and loader.isRunning():
+                loader.cancel()
+                loader.wait(3000)
         if self._worker and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(3000)
