@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -492,7 +493,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _on_log(self, message: str):
-        self.log_list.addItem(message)
+        self.log_list.addItem(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
         self.log_list.scrollToBottom()
 
     def _on_segment_time(self, seg: int, elapsed: str):
