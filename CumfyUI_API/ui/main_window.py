@@ -17,6 +17,7 @@ from worker import ChainWorker
 from ui.styles import STYLESHEET, COLORS
 from ui.video_player import VideoPlayerDialog
 from ui.settings_dialog import SettingsDialog
+from ui.segment_editor import SegmentEditorDialog
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv"}
@@ -224,16 +225,23 @@ class CompletionDialog(QDialog):
 # ------------------------------------------------------------------ #
 
 class SegmentDot(QLabel):
+    double_clicked = pyqtSignal(int)
+
     def __init__(self, number: int):
         super().__init__(f" {number} ")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setFixedSize(34, 34)
+        self.setToolTip("Double-click to edit workflow")
+        self._number = number
         self.set_pending()
+
+    def mouseDoubleClickEvent(self, event):
+        self.double_clicked.emit(self._number)
 
     def _apply(self, bg: str, fg: str):
         self.setStyleSheet(
             f"background-color:{bg}; color:{fg}; border-radius:17px;"
-            f" font-weight:bold; font-size:10pt;"
+            f" font-weight:bold; font-size:10pt; cursor:pointer;"
         )
 
     def set_pending(self): self._apply(COLORS['seg_pending'], COLORS['fg_dim'])
@@ -519,6 +527,7 @@ class MainWindow(QMainWindow):
         dots_row.addStretch()
         for i in range(1, n + 1):
             dot = SegmentDot(i)
+            dot.double_clicked.connect(self._on_seg_dot_double_clicked)
             self._seg_dots.append(dot)
             dots_row.addWidget(dot)
             if i < n:
@@ -678,6 +687,16 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
     # Settings
     # ------------------------------------------------------------------ #
+
+    def _on_seg_dot_double_clicked(self, segment: int):
+        workflows = self.config.get("workflows", [])
+        wf = next((w for w in workflows if w["segment"] == segment), None)
+        if not wf:
+            return
+        workflow_dir = Path(self.config.get("workflow_dir", ""))
+        json_path = workflow_dir / wf["json_file"]
+        dlg = SegmentEditorDialog(segment, json_path, parent=self)
+        dlg.exec()
 
     def _open_settings(self):
         dlg = SettingsDialog(self.config, parent=self)

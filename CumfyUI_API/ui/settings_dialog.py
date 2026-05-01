@@ -43,6 +43,11 @@ class SettingsDialog(QDialog):
         mode_row.addStretch()
         server_layout.addLayout(mode_row)
 
+        self._local_url_edit, _ = self._text_row(
+            server_layout, "Local URL:",
+            config.get("comfyui_url", "http://127.0.0.1:8000"),
+            "http://127.0.0.1:8000"
+        )
         self._runpod_edit, _ = self._text_row(
             server_layout, "RunPod URL:",
             config.get("runpod_url", ""),
@@ -50,11 +55,16 @@ class SettingsDialog(QDialog):
         )
         layout.addWidget(server_group)
 
-        # ── Output Folders ────────────────────────────────────────────────
-        folders_group = QGroupBox("Output Folders")
+        # ── Folders ───────────────────────────────────────────────────────
+        folders_group = QGroupBox("Folders")
         folders_layout = QVBoxLayout(folders_group)
         folders_layout.setSpacing(10)
 
+        self._workflow_edit, _ = self._folder_row(
+            folders_layout, "Workflows:",
+            config.get("workflow_dir", ""),
+            "Folder containing workflow_segment_XX.json files..."
+        )
         self._final_edit, _ = self._folder_row(
             folders_layout, "Final Video:",
             config.get("final_video_dir", ""),
@@ -152,7 +162,9 @@ class SettingsDialog(QDialog):
 
     def _save(self):
         self._config.set("mode", "local" if self._local_radio.isChecked() else "runpod")
+        self._config.set("comfyui_url", self._local_url_edit.text().strip())
         self._config.set("runpod_url", self._runpod_edit.text().strip())
+        self._config.set("workflow_dir", self._workflow_edit.text().strip())
         self._config.set("final_video_dir", self._final_edit.text().strip())
         self._config.set("zip_output_dir", self._zip_edit.text().strip())
         self._config.set("ffmpeg_path", self._ffmpeg_edit.text().strip())
