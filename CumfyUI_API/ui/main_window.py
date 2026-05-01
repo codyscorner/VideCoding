@@ -6,8 +6,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QDialog, QMessageBox, QAbstractItemView, QFileDialog,
 )
 
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QPixmap, QIcon, QPainter
+from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
+from PyQt6.QtGui import QPixmap, QIcon, QPainter, QImage
 
 from config import ConfigManager
 from worker import ChainWorker
@@ -20,6 +20,45 @@ THUMB_SIZE = 200
 MAX_SEGMENTS = 10
 
 
+class ImageLoaderThread(QThread):
+    """Loads and scales images in the background; emits one item at a time."""
+    image_ready = pyqtSignal(QImage, str, str)  # image, rel_path, label
+    progress = pyqtSignal(int, int)             # current, total
+    finished_loading = pyqtSignal(int)          # total loaded
+
+    def __init__(self, input_dir: Path):
+        super().__init__()
+        self._input_dir = input_dir
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        images = sorted(
+            p for p in self._input_dir.rglob("*")
+            if p.suffix.lower() in IMAGE_EXTS
+        )
+        total = len(images)
+        loaded = 0
+        for img_path in images:
+            if self._cancelled:
+                return
+            img = QImage(str(img_path))
+            if img.isNull():
+                continue
+            # Scale keeping aspect ratio into THUMB_SIZE box
+            img = img.scaled(THUMB_SIZE, THUMB_SIZE,
+                             Qt.AspectRatioMode.KeepAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation)
+            rel = img_path.relative_to(self._input_dir)
+            label = str(rel) if rel.parent != Path(".") else img_path.name
+            self.image_ready.emit(img, str(rel), label)
+            loaded += 1
+            self.progress.emit(loaded, total)
+        self.finished_loading.emit(loaded)
+
+
 class CompletionDialog(QDialog):
     def __init__(self, final_path: str, seg_count: int, parent=None):
         super().__init__(parent)
@@ -29,8 +68,8 @@ class CompletionDialog(QDialog):
         self.setStyleSheet(parent.styleSheet() if parent else "")
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(30)
+        layout.setContentsMargins(30, 30, 30, 30)
 
         icon = QLabel("✅")
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -45,7 +84,7 @@ class CompletionDialog(QDialog):
         path_label = QLabel(final_path)
         path_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         path_label.setWordWrap(True)
-        path_label.setStyleSheet("font-size: 9pt; color: #9090cc;")
+        path_label.setStyleSheet("font-size: 12pt; color: #9090cc;")
         layout.addWidget(path_label)
 
         btn_row = QHBoxLayout()
@@ -93,35 +132,22 @@ class ImageGrid(QListWidget):
             f" border: 2px solid {COLORS['accent']}; border-radius: 4px; }}"
         )
 
-    def load_images(self, input_dir: Path):
+    def clear_grid(self):
         self.clear()
-        if not input_dir.exists():
-            return
-        images = sorted(
-            p for p in input_dir.rglob("*")
-            if p.suffix.lower() in IMAGE_EXTS
-        )
-        for img_path in images:
-            pix = QPixmap(str(img_path))
-            if pix.isNull():
-                continue
-            scaled = pix.scaled(THUMB_SIZE, THUMB_SIZE,
-                                Qt.AspectRatioMode.KeepAspectRatio,
-                                Qt.TransformationMode.SmoothTransformation)
-            canvas = QPixmap(THUMB_SIZE, THUMB_SIZE)
-            canvas.fill(Qt.GlobalColor.black)
-            painter = QPainter(canvas)
-            x = (THUMB_SIZE - scaled.width()) // 2
-            y = (THUMB_SIZE - scaled.height()) // 2
-            painter.drawPixmap(x, y, scaled)
-            painter.end()
-            icon = QIcon(canvas)
-            rel = img_path.relative_to(input_dir)
-            label = str(rel) if rel.parent != Path(".") else img_path.name
-            item = QListWidgetItem(icon, label)
-            item.setData(Qt.ItemDataRole.UserRole, str(rel))
-            item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
-            self.addItem(item)
+
+    def add_image(self, img: QImage, rel_path: str, label: str):
+        pix = QPixmap.fromImage(img)
+        canvas = QPixmap(THUMB_SIZE, THUMB_SIZE)
+        canvas.fill(Qt.GlobalColor.black)
+        painter = QPainter(canvas)
+        x = (THUMB_SIZE - pix.width()) // 2
+        y = (THUMB_SIZE - pix.height()) // 2
+        painter.drawPixmap(x, y, pix)
+        painter.end()
+        item = QListWidgetItem(QIcon(canvas), label)
+        item.setData(Qt.ItemDataRole.UserRole, rel_path)
+        item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
+        self.addItem(item)
 
     def selected_image(self) -> str | None:
         items = self.selectedItems()
@@ -161,6 +187,7 @@ class MainWindow(QMainWindow):
         self.config = config_manager
         self.version = version
         self._worker: ChainWorker | None = None
+        self._loader: ImageLoaderThread | None = None
         self._seg_dots: list[SegmentDot] = []
         self._seg_time_labels: list[QLabel] = []
 
@@ -267,7 +294,7 @@ class MainWindow(QMainWindow):
         log_group = QGroupBox("Log")
         log_layout = QVBoxLayout(log_group)
         self.log_list = QListWidget()
-        self.log_list.setSpacing(0)
+        self.log_list.setSpacing(-1)
         self.log_list.setUniformItemSizes(True)
         log_layout.addWidget(self.log_list)
         right.addWidget(log_group, stretch=1)
@@ -342,8 +369,8 @@ class MainWindow(QMainWindow):
         times_row.setSpacing(4)
         times_row.addStretch()
         for i in range(1, n + 1):
-            time_lbl = QLabel("—")
-            time_lbl.setFixedWidth(50)
+            time_lbl = QLabel("[m:s]")
+            time_lbl.setFixedWidth(55)
             time_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             time_lbl.setStyleSheet(
                 f"color:{COLORS['fg_secondary']}; font-size:8pt; font-family:Consolas;"
@@ -352,7 +379,7 @@ class MainWindow(QMainWindow):
             times_row.addWidget(time_lbl)
             if i < n:
                 gap = QLabel()
-                gap.setFixedWidth(4)
+                gap.setFixedWidth(3)
                 times_row.addWidget(gap)
         times_row.addStretch()
         self._seg_layout.addLayout(times_row)
@@ -363,9 +390,43 @@ class MainWindow(QMainWindow):
 
     def _populate_images(self):
         input_dir = Path(self._input_dir_edit.text().strip() or self.config.get("input_dir", ""))
-        self.image_grid.load_images(input_dir)
-        count = self.image_grid.count()
-        if count == 0:
+
+        # Cancel any existing loader
+        if self._loader and self._loader.isRunning():
+            self._loader.cancel()
+            self._loader.wait()
+
+        self.image_grid.clear_grid()
+        self.selected_label.setText("Loading images...")
+        self.progress_bar.setValue(0)
+        self.progress_bar.setRange(0, 0)  # indeterminate spinner until total is known
+        self.progress_label.setText("Loading images...")
+        self.start_btn.setEnabled(False)
+
+        if not input_dir.exists():
+            self.selected_label.setText("No images found in input folder")
+            self.progress_bar.setRange(0, self._seg_count)
+            self.progress_label.setText("Ready")
+            self.start_btn.setEnabled(True)
+            return
+
+        self._loader = ImageLoaderThread(input_dir)
+        self._loader.image_ready.connect(self.image_grid.add_image)
+        self._loader.progress.connect(self._on_load_progress)
+        self._loader.finished_loading.connect(self._on_load_finished)
+        self._loader.start()
+
+    def _on_load_progress(self, current: int, total: int):
+        self.progress_bar.setRange(0, total)
+        self.progress_bar.setValue(current)
+        self.progress_label.setText(f"Loading images... {current}/{total}")
+
+    def _on_load_finished(self, total: int):
+        self.progress_bar.setRange(0, self._seg_count)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Ready")
+        self.start_btn.setEnabled(True)
+        if total == 0:
             self.selected_label.setText("No images found in input folder")
         else:
             self.selected_label.setText("Click an image to select it as the starting frame")
@@ -438,7 +499,7 @@ class MainWindow(QMainWindow):
         if seg - 1 < len(self._seg_time_labels):
             self._seg_time_labels[seg - 1].setText(elapsed)
             self._seg_time_labels[seg - 1].setStyleSheet(
-                f"color:{COLORS['success']}; font-size:9pt; font-family:Consolas; font-weight:bold;"
+                f"color:{COLORS['success']}; font-size:10pt; font-family:Consolas; font-weight:bold;"
             )
 
     def _on_segment_done(self, seg: int):
@@ -477,11 +538,14 @@ class MainWindow(QMainWindow):
             dot.set_pending()
         for lbl in self._seg_time_labels:
             lbl.setText("—")
-            lbl.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:9pt; font-family:Consolas;")
+            lbl.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:8pt; font-family:Arial;")
         self.progress_bar.setValue(0)
         self.log_list.clear()
 
     def closeEvent(self, event):
+        if self._loader and self._loader.isRunning():
+            self._loader.cancel()
+            self._loader.wait(3000)
         if self._worker and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(3000)
