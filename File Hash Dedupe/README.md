@@ -1,43 +1,52 @@
 # File Hash Dedupe
 
-A desktop application that finds and moves duplicate files based on content hash (MD5).
+A desktop application that finds and removes duplicate files based on content hash (MD5).
 
 ## Features
 
-- **Fast Parallel Hashing**: Uses 16 parallel workers for high-speed file hashing
+- **Fast Parallel Hashing**: Configurable parallel workers for high-speed file hashing
 - **Content-Based Detection**: Identifies duplicates by file content, not just filename
-- **Safe Operation**: Moves duplicates to a `Dupes` subfolder (doesn't delete)
+- **Two Dedupe Modes**: Move duplicates to a `Dupes` subfolder, or permanently delete them
 - **Recursive Scanning**: Option to scan subdirectories
 - **Progress Tracking**: Real-time progress bar and status log
-- **Dark Green Theme**: Modern dark-themed interface
+- **Cancellable**: Cancel mid-run at any time
 
 ## Usage
 
 1. **Select Source Folder**: Browse to the folder to scan for duplicates
-2. **Configure Options**: Check "Search subfolders recursively" if needed
+2. **Configure Options**:
+   - Check "Search subfolders recursively" if needed
+   - Check "Permanently delete duplicates" to skip the Dupes folder and delete directly
 3. **Click "Find Duplicates"** to begin processing
 
-### Output
+### Output — Move Mode (default)
 
 - First occurrence of each unique file stays in place (primary)
 - All duplicates are moved to `Source Folder/Dupes/`
 - Review the Dupes folder and delete when satisfied
 
-## Requirements
+### Output — Permanent Delete Mode
 
-- Python 3.10+
-
-## Installation
-
-No additional dependencies required - uses Python standard library only.
+- First occurrence of each unique file stays in place (primary)
+- All duplicates are permanently deleted — **cannot be undone**
+- A confirmation dialog is shown before processing begins
 
 ## Building Executable
 
 ```bash
 pip install pyinstaller
-pyinstaller --onedir --windowed --name FileHashDedupe main.py
+pyinstaller FileHashDedupe.spec --clean --noconfirm
 ```
 
-## Version
+## Version History
 
-1.0.0
+### v1.2.0
+- Added permanent delete mode — skip Dupes folder and delete duplicates directly
+- Fixed UI freeze when processing large duplicate sets (throttled status logging + capped message queue drain per tick)
+
+### v1.1.0
+- Configurable hashing worker count
+- Config persistence across sessions
+
+### v1.0.0
+- Initial release

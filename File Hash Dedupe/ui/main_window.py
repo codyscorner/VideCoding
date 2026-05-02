@@ -95,9 +95,9 @@ class MainWindow(QMainWindow):
         src_row.addWidget(self.source_edit, stretch=1)
         src_row.addWidget(browse_btn)
         src_layout.addLayout(src_row)
-        info = QLabel("Duplicates will be moved to a 'Dupes' subfolder in the source folder")
-        info.setObjectName("subtitle")
-        src_layout.addWidget(info)
+        self.source_info_label = QLabel("Duplicates will be moved to a 'Dupes' subfolder in the source folder")
+        self.source_info_label.setObjectName("subtitle")
+        src_layout.addWidget(self.source_info_label)
         layout.addWidget(src_group)
 
         # Options
@@ -106,6 +106,12 @@ class MainWindow(QMainWindow):
         self.recursive_check = QCheckBox("Search subfolders recursively")
         self.recursive_check.setChecked(True)
         opt_layout.addWidget(self.recursive_check)
+
+        self.permanent_delete_check = QCheckBox("⚠  Permanently delete duplicates (no Dupes folder)")
+        self.permanent_delete_check.setChecked(False)
+        self.permanent_delete_check.setStyleSheet("color: #ff6b6b; font-weight: bold;")
+        self.permanent_delete_check.toggled.connect(self._on_permanent_delete_toggled)
+        opt_layout.addWidget(self.permanent_delete_check)
 
         cpu_count = os.cpu_count() or 4
         workers_row = QHBoxLayout()
@@ -150,6 +156,12 @@ class MainWindow(QMainWindow):
         status_layout.addWidget(self.status_list)
         layout.addWidget(status_group, stretch=1)
 
+    def _on_permanent_delete_toggled(self, checked: bool):
+        if checked:
+            self.source_info_label.setText("⚠  Duplicates will be permanently deleted — cannot be undone")
+        else:
+            self.source_info_label.setText("Duplicates will be moved to a 'Dupes' subfolder in the source folder")
+
     def _browse_source(self):
         existing = self.source_edit.text().strip()
         start = existing if existing and os.path.isdir(existing) else str(Path.home())
@@ -179,6 +191,18 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Validation Error", "Source folder does not exist")
             return
 
+        permanent_delete = self.permanent_delete_check.isChecked()
+
+        if permanent_delete:
+            reply = QMessageBox.warning(
+                self, "Permanent Delete",
+                "Duplicates will be permanently deleted and cannot be recovered.\n\nAre you sure?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
         self._save_config()
         self._is_processing = True
         self._cancel_requested = False
@@ -189,13 +213,13 @@ class MainWindow(QMainWindow):
 
         thread = threading.Thread(
             target=self._dedupe_worker,
-            args=(source, self.recursive_check.isChecked(), self.workers_spin.value()),
+            args=(source, self.recursive_check.isChecked(), self.workers_spin.value(), permanent_delete),
             daemon=True
         )
         thread.start()
         self._poll_timer.start()
 
-    def _dedupe_worker(self, source: str, recursive: bool, io_workers: int):
+    def _dedupe_worker(self, source: str, recursive: bool, io_workers: int, permanent_delete: bool = False):
         try:
             deduplicator = FileDeduplicator(
                 status_callback=lambda msg: self._message_queue.put(('status', msg)),
@@ -205,17 +229,22 @@ class MainWindow(QMainWindow):
                 cancel_check=lambda: self._cancel_requested,
                 max_workers=io_workers
             )
-            results, total, unique, moved = deduplicator.find_and_move_duplicates(source, recursive=recursive)
+            results, total, unique, moved = deduplicator.find_and_move_duplicates(
+                source, recursive=recursive, permanent_delete=permanent_delete
+            )
             if self._cancel_requested:
                 self._message_queue.put(('cancelled', None))
             else:
-                self._message_queue.put(('complete', {'total': total, 'unique': unique, 'moved': moved}))
+                self._message_queue.put(('complete', {
+                    'total': total, 'unique': unique, 'moved': moved,
+                    'permanent_delete': permanent_delete
+                }))
         except Exception as e:
             self._message_queue.put(('error', {'type': 'unexpected', 'message': str(e)}))
 
     def _process_messages(self):
         try:
-            while True:
+            for _ in range(50):  # max messages per tick — keeps UI responsive
                 msg_type, data = self._message_queue.get_nowait()
 
                 if msg_type == 'status':
@@ -250,12 +279,13 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(False)
         self.progress_bar.setValue(100)
         self.progress_label.setText("Complete!")
+        action_word = "deleted" if data.get('permanent_delete') else "moved to Dupes"
         QMessageBox.information(
             self, "Success",
             f"Deduplication complete!\n\n"
             f"Total files scanned: {data['total']}\n"
             f"Unique files: {data['unique']}\n"
-            f"Duplicates moved: {data['moved']}"
+            f"Duplicates {action_word}: {data['moved']}"
         )
 
     def _on_cancelled(self):

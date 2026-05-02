@@ -114,7 +114,8 @@ class FileDeduplicator:
     def find_and_move_duplicates(
         self,
         source_folder: str,
-        recursive: bool = True
+        recursive: bool = True,
+        permanent_delete: bool = False
     ) -> Tuple[List[DedupeResult], int, int, int]:
         """
         Find duplicate files and move them to Dupes subfolder
@@ -136,9 +137,10 @@ class FileDeduplicator:
         if not os.path.exists(source_folder):
             raise ValueError(f"Source folder does not exist: {source_folder}")
 
-        # Create Dupes folder
+        # Create Dupes folder (only needed when not permanently deleting)
         dupes_folder = os.path.join(source_folder, "Dupes")
-        os.makedirs(dupes_folder, exist_ok=True)
+        if not permanent_delete:
+            os.makedirs(dupes_folder, exist_ok=True)
 
         # Get all files
         mode_str = "recursively" if recursive else "in root folder only"
@@ -229,14 +231,15 @@ class FileDeduplicator:
         self._log_status(f"Found {unique_count} unique files, {duplicate_count} duplicates")
 
         # =========================================
-        # PASS 3: Move duplicates to Dupes folder
+        # PASS 3: Move or delete duplicates
         # =========================================
-        self._log_status(f"Pass 3: Moving {duplicate_count} duplicates to Dupes folder...")
+        action = "Deleting" if permanent_delete else "Moving"
+        dest_desc = "permanently" if permanent_delete else "to Dupes folder"
+        self._log_status(f"Pass 3: {action} {duplicate_count} duplicates {dest_desc}...")
 
         results = []
         moved_count = 0
 
-        # First, add all primary files to results
         for file_hash, file_path in primary_files.items():
             results.append(DedupeResult(
                 source_path=file_path,
@@ -247,7 +250,6 @@ class FileDeduplicator:
                 moved=False
             ))
 
-        # Add error files to results
         for file_path, error in hash_errors.items():
             results.append(DedupeResult(
                 source_path=file_path,
@@ -259,7 +261,6 @@ class FileDeduplicator:
                 error_message=error
             ))
 
-        # Move duplicates
         for idx, (file_path, file_hash) in enumerate(duplicate_files, 1):
             if self.cancel_check and self.cancel_check():
                 self._log_status("Operation cancelled by user")
@@ -267,33 +268,42 @@ class FileDeduplicator:
 
             filename = os.path.basename(file_path)
 
-            # Progress: Moving is 30% of work (70-100%)
             if self.progress_callback:
                 progress = 70 + int((idx / max(duplicate_count, 1)) * 30)
-                self.progress_callback(progress, 100, f"Moving: {filename}")
+                self.progress_callback(progress, 100, f"{action}: {filename}")
 
             try:
-                # Get unique destination path
-                dest_path = self._get_unique_dest_path(dupes_folder, filename)
-
-                # Move the file
-                shutil.move(file_path, dest_path)
-                moved_count += 1
-
                 primary_name = os.path.basename(primary_files[file_hash])
-                self._log_status(f"Moved: {filename} (dup of {primary_name})")
 
-                results.append(DedupeResult(
-                    source_path=file_path,
-                    dest_path=dest_path,
-                    file_hash=file_hash,
-                    is_duplicate=True,
-                    is_primary=False,
-                    moved=True
-                ))
+                if permanent_delete:
+                    os.unlink(file_path)
+                    moved_count += 1
+                    if idx % 100 == 0 or idx == duplicate_count:
+                        self._log_status(f"Deleted {moved_count} of {duplicate_count} duplicates...")
+                    results.append(DedupeResult(
+                        source_path=file_path,
+                        dest_path=None,
+                        file_hash=file_hash,
+                        is_duplicate=True,
+                        is_primary=False,
+                        moved=True
+                    ))
+                else:
+                    dest_path = self._get_unique_dest_path(dupes_folder, filename)
+                    shutil.move(file_path, dest_path)
+                    moved_count += 1
+                    self._log_status(f"Moved: {filename} (dup of {primary_name})")
+                    results.append(DedupeResult(
+                        source_path=file_path,
+                        dest_path=dest_path,
+                        file_hash=file_hash,
+                        is_duplicate=True,
+                        is_primary=False,
+                        moved=True
+                    ))
 
             except Exception as e:
-                self._log_status(f"Error moving {filename}: {e}")
+                self._log_status(f"Error {action.lower()} {filename}: {e}")
                 results.append(DedupeResult(
                     source_path=file_path,
                     dest_path=None,
@@ -305,11 +315,12 @@ class FileDeduplicator:
                 ))
 
         # Summary
+        action_past = "deleted" if permanent_delete else "moved"
         if self.cancel_check and self.cancel_check():
-            self._log_status(f"Operation cancelled: {moved_count} duplicates moved")
+            self._log_status(f"Operation cancelled: {moved_count} duplicates {action_past}")
         else:
             error_count = len(hash_errors) + sum(1 for r in results if r.is_duplicate and not r.moved)
-            self._log_status(f"Complete: {unique_count} unique, {moved_count} duplicates moved, {error_count} errors")
+            self._log_status(f"Complete: {unique_count} unique, {moved_count} duplicates {action_past}, {error_count} errors")
 
         return results, total_files, unique_count, moved_count
 
