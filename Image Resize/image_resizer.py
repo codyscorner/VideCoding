@@ -69,6 +69,14 @@ RESOLUTION_PRESETS = [
     ("768x432", 768, 432, "16:9 - Higher-quality landscape"),
     ("960x540", 960, 540, "16:9 - Near-HD landscape"),
     ("1280x720", 1280, 720, "16:9 - HD output (via upscale)"),
+    # ── Desktop wallpapers ────────────────────────────────────────────
+    ("1920x1080", 1920, 1080, "16:9 - Full HD wallpaper"),
+    ("2560x1440", 2560, 1440, "16:9 - 2K / QHD wallpaper"),
+    ("3840x2160", 3840, 2160, "16:9 - 4K UHD wallpaper"),
+    ("2560x1080", 2560, 1080, "21:9 - UltraWide FHD wallpaper"),
+    ("3440x1440", 3440, 1440, "21:9 - UltraWide QHD wallpaper"),
+    ("3840x1600", 3840, 1600, "21:9 - UltraWide 4K wallpaper"),
+    ("5120x1440", 5120, 1440, "32:9 - Super UltraWide wallpaper"),
 ]
 
 STYLESHEET = """
