@@ -63,7 +63,7 @@ class ChainWorker(QThread):
             self._temp_dir.mkdir(exist_ok=True)
             self._clean_merge_dir()
             output_videos = []
-            workflows = self._config["workflows"]
+            workflows = self._build_effective_workflows()
             self._total_segs = len(workflows)
             chain_start = time.time()
 
@@ -361,9 +361,45 @@ class ChainWorker(QThread):
         m, s = divmod(int(seconds), 60)
         return f"{m:02d}m {s:02d}s"
 
+    def _build_effective_workflows(self) -> list[dict]:
+        """Build segment list from the active chain folder + node ID template."""
+        workflow_dir = Path(self._config["workflow_dir"])
+        folder = self._config.get("active_chain_folder", "")
+        template = self._config.get("workflows", [])
+
+        if not folder:
+            return template
+
+        chain_dir = workflow_dir / folder
+        files = sorted(chain_dir.glob("workflow_segment_*.json"))
+        if not files:
+            return template
+
+        # Node ID fallbacks: seg 1 → image, segs 2+ → last video entry in template
+        video_entries = [t for t in template if t.get("input_type") == "video"]
+        fallback_video = video_entries[-1] if video_entries else (template[-1] if template else {})
+
+        segs = []
+        for i, f in enumerate(files, 1):
+            if i - 1 < len(template):
+                tmpl = template[i - 1]
+            else:
+                tmpl = fallback_video
+            segs.append({
+                "segment": i,
+                "json_file": f.name,
+                "input_node_id": tmpl.get("input_node_id", ""),
+                "input_type": tmpl.get("input_type", "video"),
+            })
+        return segs
+
     def _load_workflow(self, wf: dict) -> dict:
         workflow_dir = Path(self._config["workflow_dir"])
-        path = workflow_dir / wf["json_file"]
+        folder = self._config.get("active_chain_folder", "")
+        if folder:
+            path = workflow_dir / folder / wf["json_file"]
+        else:
+            path = workflow_dir / wf["json_file"]
         with open(path, 'r') as f:
             return json.load(f)
 

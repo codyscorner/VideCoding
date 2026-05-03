@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QPushButton, QLineEdit,
     QProgressBar, QListWidget, QListWidgetItem, QGroupBox,
     QVBoxLayout, QHBoxLayout, QStackedWidget,
-    QDialog, QMessageBox, QAbstractItemView, QFileDialog,
+    QDialog, QMessageBox, QAbstractItemView, QFileDialog, QCheckBox, QComboBox,
 )
 
 from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
@@ -18,10 +18,11 @@ from ui.styles import STYLESHEET, COLORS
 from ui.video_player import VideoPlayerDialog
 from ui.settings_dialog import SettingsDialog
 from ui.segment_editor import SegmentEditorDialog
+from ui.generate_tab import GenerateTab
+from ui.widgets import ThumbnailGrid, THUMB_SIZE
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv"}
-THUMB_SIZE = 200
 MAX_SEGMENTS = 10
 
 
@@ -34,19 +35,21 @@ class ImageLoaderThread(QThread):
     progress = pyqtSignal(int, int)
     finished_loading = pyqtSignal(int)
 
-    def __init__(self, input_dir: Path):
+    def __init__(self, input_dir: Path, excluded_stems: set[str] | None = None):
         super().__init__()
         self._input_dir = input_dir
+        self._excluded_stems = excluded_stems or set()
         self._cancelled = False
 
     def cancel(self):
         self._cancelled = True
 
     def run(self):
-        images = sorted(
+        all_images = sorted(
             p for p in self._input_dir.rglob("*")
             if p.suffix.lower() in IMAGE_EXTS
         )
+        images = [p for p in all_images if p.stem not in self._excluded_stems]
         total = len(images)
         loaded = 0
         for img_path in images:
@@ -117,53 +120,6 @@ class VideoLoaderThread(QThread):
             )
         except Exception:
             pass
-
-
-# ------------------------------------------------------------------ #
-# Shared thumbnail grid
-# ------------------------------------------------------------------ #
-
-class ThumbnailGrid(QListWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setViewMode(QListWidget.ViewMode.IconMode)
-        self.setIconSize(QSize(THUMB_SIZE, THUMB_SIZE))
-        self.setGridSize(QSize(THUMB_SIZE + 12, THUMB_SIZE + 12))
-        self.setSpacing(4)
-        self.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.setWrapping(True)
-        self.setWordWrap(False)
-        self.setUniformItemSizes(True)
-        self.setStyleSheet(
-            f"QListWidget {{ background-color: {COLORS['bg_medium']};"
-            f" border: 1px solid {COLORS['border']}; border-radius: 3px;"
-            f" padding-right: 16px; }}"
-            f"QListWidget::item {{ border: 2px solid transparent; border-radius: 4px; }}"
-            f"QListWidget::item:selected {{ background-color: transparent;"
-            f" border: 2px solid {COLORS['accent']}; border-radius: 4px; }}"
-        )
-
-    def clear_grid(self):
-        self.clear()
-
-    def add_item(self, img: QImage, key: str, label: str):
-        pix = QPixmap.fromImage(img)
-        canvas = QPixmap(THUMB_SIZE, THUMB_SIZE)
-        canvas.fill(Qt.GlobalColor.black)
-        painter = QPainter(canvas)
-        x = (THUMB_SIZE - pix.width()) // 2
-        y = (THUMB_SIZE - pix.height()) // 2
-        painter.drawPixmap(x, y, pix)
-        painter.end()
-        item = QListWidgetItem(QIcon(canvas), label)
-        item.setData(Qt.ItemDataRole.UserRole, key)
-        item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
-        self.addItem(item)
-
-    def selected_key(self) -> str | None:
-        items = self.selectedItems()
-        return items[0].data(Qt.ItemDataRole.UserRole) if items else None
 
 
 # ------------------------------------------------------------------ #
@@ -266,15 +222,22 @@ class MainWindow(QMainWindow):
         self._seg_time_labels: list[QLabel] = []
 
         self.setWindowTitle(f"ComfyUI Chain Automator  v{version}")
-        self.setMinimumSize(1200, 720)
-        self.resize(1600, 760)
+        self.setMinimumSize(1200, 780)
+        self.resize(1600, 860)
         self.setStyleSheet(STYLESHEET)
 
         self._build_ui()
+        self._refresh_chain_folders()
         self._populate_images()
 
     @property
     def _seg_count(self) -> int:
+        folder = self.config.get("active_chain_folder", "")
+        wf_dir = Path(self.config.get("workflow_dir", ""))
+        if folder and (wf_dir / folder).exists():
+            count = len(list((wf_dir / folder).glob("workflow_segment_*.json")))
+            if count > 0:
+                return min(count, MAX_SEGMENTS)
         return min(max(len(self.config.get("workflows", [])), 1), MAX_SEGMENTS)
 
     def _ffmpeg_path(self) -> str:
@@ -327,6 +290,13 @@ class MainWindow(QMainWindow):
         self._library_btn.setStyleSheet(mode_btn_style)
         self._library_btn.clicked.connect(lambda: self._switch_view(1))
 
+        self._generate_btn = QPushButton("✨  Generate")
+        self._generate_btn.setCheckable(True)
+        self._generate_btn.setChecked(False)
+        self._generate_btn.setFixedHeight(32)
+        self._generate_btn.setStyleSheet(mode_btn_style)
+        self._generate_btn.clicked.connect(lambda: self._switch_view(2))
+
         header = QLabel("ComfyUI Workflow Chain Automator")
         header.setObjectName("header")
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -350,6 +320,8 @@ class MainWindow(QMainWindow):
         header_row.addWidget(self._chain_btn)
         header_row.addSpacing(4)
         header_row.addWidget(self._library_btn)
+        header_row.addSpacing(4)
+        header_row.addWidget(self._generate_btn)
         header_row.addStretch()
         header_row.addWidget(header)
         header_row.addStretch()
@@ -362,6 +334,10 @@ class MainWindow(QMainWindow):
 
         self._stack.addWidget(self._build_chain_page())
         self._stack.addWidget(self._build_library_page())
+        self._generate_tab = GenerateTab(self.config, parent=self)
+        self._generate_tab.send_to_chain.connect(self._on_send_to_chain)
+        self._generate_tab.start_one_shot.connect(self._on_start_one_shot)
+        self._stack.addWidget(self._generate_tab)
 
     def _build_chain_page(self) -> QWidget:
         page = QWidget()
@@ -383,9 +359,16 @@ class MainWindow(QMainWindow):
         folder_browse_btn.setFixedWidth(40)
         folder_browse_btn.setFixedHeight(30)
         folder_browse_btn.clicked.connect(self._browse_input_dir)
+        self._show_all_chk = QCheckBox("Show all")
+        self._show_all_chk.setToolTip("Include images that already have a video in the library")
+        self._show_all_chk.setChecked(False)
+        self._show_all_chk.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
+        self._show_all_chk.stateChanged.connect(lambda _: self._populate_images())
         folder_row.addWidget(folder_lbl)
         folder_row.addWidget(self._input_dir_edit, stretch=1)
         folder_row.addWidget(folder_browse_btn)
+        folder_row.addSpacing(8)
+        folder_row.addWidget(self._show_all_chk)
         left.addLayout(folder_row)
 
         img_group = QGroupBox("Starting Image  (Segment 1) — click to select")
@@ -406,6 +389,24 @@ class MainWindow(QMainWindow):
         # Right — progress + log + buttons
         right = QVBoxLayout()
         right.setSpacing(8)
+
+        # ── Chain selector ────────────────────────────────────────────────
+        chain_sel_row = QHBoxLayout()
+        chain_sel_lbl = QLabel("Chain:")
+        chain_sel_lbl.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
+        chain_sel_lbl.setFixedWidth(48)
+        self._chain_folder_combo = QComboBox()
+        self._chain_folder_combo.setMinimumHeight(30)
+        self._chain_folder_combo.setToolTip("Select a video chain workflow folder")
+        self._chain_folder_combo.currentIndexChanged.connect(self._on_chain_folder_changed)
+        refresh_chain_btn = QPushButton("↻")
+        refresh_chain_btn.setFixedSize(30, 30)
+        refresh_chain_btn.setToolTip("Refresh chain folder list")
+        refresh_chain_btn.clicked.connect(self._refresh_chain_folders)
+        chain_sel_row.addWidget(chain_sel_lbl)
+        chain_sel_row.addWidget(self._chain_folder_combo, stretch=1)
+        chain_sel_row.addWidget(refresh_chain_btn)
+        right.addLayout(chain_sel_row)
 
         self._seg_group = QGroupBox("Segment Progress")
         self._seg_layout = QVBoxLayout(self._seg_group)
@@ -463,11 +464,18 @@ class MainWindow(QMainWindow):
         refresh_btn = QPushButton("↻  Refresh")
         refresh_btn.setFixedHeight(40)
         refresh_btn.clicked.connect(lambda: self._populate_videos(force=True))
+        self._vid_delete_btn = QPushButton("🗑  Delete")
+        self._vid_delete_btn.setFixedHeight(40)
+        self._vid_delete_btn.setObjectName("cancel_btn")
+        self._vid_delete_btn.setEnabled(False)
+        self._vid_delete_btn.clicked.connect(self._delete_selected_video)
         toolbar.addWidget(vid_folder_lbl)
         toolbar.addWidget(self._vid_dir_edit, stretch=1)
         toolbar.addWidget(vid_browse_btn)
         toolbar.addSpacing(8)
         toolbar.addWidget(refresh_btn)
+        toolbar.addSpacing(4)
+        toolbar.addWidget(self._vid_delete_btn)
         layout.addLayout(toolbar)
 
         # Video grid
@@ -476,6 +484,9 @@ class MainWindow(QMainWindow):
         vid_layout.setContentsMargins(6, 6, 6, 6)
         self.video_grid = ThumbnailGrid()
         self.video_grid.itemDoubleClicked.connect(self._on_video_double_clicked)
+        self.video_grid.itemSelectionChanged.connect(
+            lambda: self._vid_delete_btn.setEnabled(self.video_grid.selected_key() is not None)
+        )
         vid_layout.addWidget(self.video_grid)
         layout.addWidget(vid_group, stretch=1)
 
@@ -498,9 +509,12 @@ class MainWindow(QMainWindow):
     def _switch_view(self, index: int):
         self._chain_btn.setChecked(index == 0)
         self._library_btn.setChecked(index == 1)
+        self._generate_btn.setChecked(index == 2)
         self._stack.setCurrentIndex(index)
         if index == 1:
             self._populate_videos()
+        elif index == 2:
+            self._generate_tab.refresh_mode()
 
     # ------------------------------------------------------------------ #
     # Segment panel
@@ -570,6 +584,12 @@ class MainWindow(QMainWindow):
     # Image picker (Chain view)
     # ------------------------------------------------------------------ #
 
+    def _existing_video_stems(self) -> set[str]:
+        vid_dir = Path(self.config.get("final_video_dir", ""))
+        if not vid_dir.exists():
+            return set()
+        return {p.stem for p in vid_dir.iterdir() if p.suffix.lower() in VIDEO_EXTS}
+
     def _populate_images(self):
         input_dir = Path(self._input_dir_edit.text().strip() or self.config.get("input_dir", ""))
 
@@ -590,7 +610,8 @@ class MainWindow(QMainWindow):
             self.start_btn.setEnabled(True)
             return
 
-        self._img_loader = ImageLoaderThread(input_dir)
+        excluded = set() if self._show_all_chk.isChecked() else self._existing_video_stems()
+        self._img_loader = ImageLoaderThread(input_dir, excluded)
         self._img_loader.image_ready.connect(self.image_grid.add_item)
         self._img_loader.progress.connect(self._on_img_load_progress)
         self._img_loader.finished_loading.connect(self._on_img_load_finished)
@@ -684,26 +705,134 @@ class MainWindow(QMainWindow):
             player = VideoPlayerDialog(path, parent=self)
             player.exec()
 
+    def _delete_selected_video(self):
+        key = self.video_grid.selected_key()
+        if not key:
+            return
+        path = Path(key)
+        reply = QMessageBox.question(
+            self, "Delete Video",
+            f"Permanently delete:\n{path.name}?\n\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            path.unlink()
+            thumb = path.parent / "thumbnails" / (path.stem + ".jpg")
+            thumb.unlink(missing_ok=True)
+        except OSError as e:
+            QMessageBox.critical(self, "Error", f"Could not delete: {e}")
+            return
+        items = self.video_grid.selectedItems()
+        if items:
+            self.video_grid.takeItem(self.video_grid.row(items[0]))
+        self._vid_delete_btn.setEnabled(False)
+        count = self.video_grid.count()
+        self._vid_status_label.setText(
+            f"{count} video{'s' if count != 1 else ''} — double-click to play"
+            if count > 0 else "No video files found in folder"
+        )
+
     # ------------------------------------------------------------------ #
     # Settings
     # ------------------------------------------------------------------ #
 
+    def _refresh_chain_folders(self):
+        wf_dir = Path(self.config.get("workflow_dir", ""))
+        self._chain_folder_combo.blockSignals(True)
+        self._chain_folder_combo.clear()
+        if wf_dir.exists():
+            folders = sorted(
+                p.name for p in wf_dir.iterdir()
+                if p.is_dir() and p.name.startswith("Video_")
+            )
+            for f in folders:
+                self._chain_folder_combo.addItem(f)
+        last = self.config.get("active_chain_folder", "")
+        if last:
+            idx = self._chain_folder_combo.findText(last)
+            if idx >= 0:
+                self._chain_folder_combo.setCurrentIndex(idx)
+        self._chain_folder_combo.blockSignals(False)
+        # Always persist whatever folder is currently shown so the worker sees it
+        current = self._chain_folder_combo.currentText()
+        if current:
+            self.config.set("active_chain_folder", current)
+            self.config.save()
+        # Rebuild segment panel to reflect the now-selected folder
+        self._rebuild_seg_panel()
+
+    def _on_chain_folder_changed(self, _idx: int):
+        folder = self._chain_folder_combo.currentText()
+        self.config.set("active_chain_folder", folder)
+        self.config.save()
+        self._rebuild_seg_panel()
+
     def _on_seg_dot_double_clicked(self, segment: int):
-        workflows = self.config.get("workflows", [])
-        wf = next((w for w in workflows if w["segment"] == segment), None)
-        if not wf:
-            return
         workflow_dir = Path(self.config.get("workflow_dir", ""))
-        json_path = workflow_dir / wf["json_file"]
+        folder = self.config.get("active_chain_folder", "")
+        if folder:
+            seg_file = f"workflow_segment_{segment:02d}.json"
+            json_path = workflow_dir / folder / seg_file
+        else:
+            workflows = self.config.get("workflows", [])
+            wf = next((w for w in workflows if w["segment"] == segment), None)
+            if not wf:
+                return
+            json_path = workflow_dir / wf["json_file"]
         dlg = SegmentEditorDialog(segment, json_path, parent=self)
         dlg.exec()
 
     def _open_settings(self):
         dlg = SettingsDialog(self.config, parent=self)
         if dlg.exec():
-            self._rebuild_seg_panel()
+            self._refresh_chain_folders()
             self._populate_images()
             self._vid_dir_edit.setText(self.config.get("final_video_dir", ""))
+            self._generate_tab.refresh_mode()
+            self._generate_tab.refresh_workflows()
+
+    # ------------------------------------------------------------------ #
+    # Generate tab signal handlers
+    # ------------------------------------------------------------------ #
+
+    def _inject_generated_image(self, path: str):
+        """Add a generated image into the chain grid and select it."""
+        input_dir = Path(self._input_dir_edit.text().strip() or self.config.get("input_dir", ""))
+        img_path = Path(path)
+        try:
+            key = str(img_path.relative_to(input_dir))
+        except ValueError:
+            key = img_path.name
+
+        # If already in grid, just select it
+        self.image_grid.select_key(key)
+        if self.image_grid.selected_key() == key:
+            self.selected_label.setText(f"Selected: {key}")
+            return
+
+        # Load thumbnail and add to grid
+        img = QImage(path)
+        if img.isNull():
+            return
+        img = img.scaled(
+            THUMB_SIZE, THUMB_SIZE,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.image_grid.add_item(img, key, img_path.name)
+        self.image_grid.select_key(key)
+        self.selected_label.setText(f"Selected: {key}")
+
+    def _on_send_to_chain(self, path: str):
+        self._inject_generated_image(path)
+        self._switch_view(0)
+
+    def _on_start_one_shot(self, path: str):
+        self._inject_generated_image(path)
+        self._switch_view(0)
+        self._start()
 
     # ------------------------------------------------------------------ #
     # Chain start / cancel
@@ -773,6 +902,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(self._seg_count)
         dlg = CompletionDialog(final_path, self._seg_count, parent=self)
         dlg.exec()
+        # Remove the just-completed image from the grid unless "Show all" is checked
+        if not self._show_all_chk.isChecked():
+            self._populate_images()
 
     def _on_error(self, message: str):
         self.progress_label.setText("Error")

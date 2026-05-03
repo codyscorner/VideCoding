@@ -79,6 +79,20 @@ Output: `dist\ComfyUI_Chain_Automator.exe`
 
 ## Changelog
 
+### v2.5.1
+- Fix: chain folder not persisted on startup when `active_chain_folder` was absent from config, causing worker to load workflows from root instead of selected subfolder
+- Fix: segment dot double-click editor built wrong path when a chain folder was active
+
+### v2.5.0
+- Generate tab: IMG_* workflow picker, positive/negative prompts, seed control, two drag-and-drop reference image slots, gallery with Send to Chain / Delete / Clear buttons, Generate and Generate+Run Chain one-shot modes
+- Chain tab: filtered image grid hides images that already have a video (Show all toggle), Chain folder dropdown lists Video_* subfolders, segment count auto-detected from folder contents
+- Library tab: Delete button with confirmation to remove bad videos without leaving the app
+- Worker: loads workflow JSON from the selected chain folder; node ID template falls back for extra segments
+
+### v2.4.0
+- Chain folder dropdown: select Video_* workflow folders; segment count auto-detected from workflow_segment_*.json files inside the folder
+- Filtered image grid: hides images whose stem matches an existing library video
+
 ### v2.1.0
 - Background image loading — window appears instantly, grid fills progressively
 - Progress bar shows image loading status with count
