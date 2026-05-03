@@ -1,0 +1,8 @@
+dist/
+build/
+*.spec
+__pycache__/
+*.pyc
+imdb_downloader_settings.json
+# Downloaded image folders (everything that isn't source)
+*/

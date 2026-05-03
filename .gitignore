@@ -44,8 +44,18 @@ run_log.txt
 **/main_config.json
 **/*_config.json
 
+# API keys — never commit
+api_keys.json
+**/api_keys.json
+
 # Temp folders
 **/temp/
+**/upload_temp/
+**/dropped_images/archive/
+
+# Auto-generated app state
+**/error_log.txt
+**/settings.json
 
 # Sample / test media files
 *.mp4
