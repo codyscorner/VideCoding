@@ -40,7 +40,9 @@ class BatchChainWorker(QThread):
         base_dir = Path(config.get("_base_dir", str(Path(__file__).parent)))
         self._temp_dir = base_dir / "temp"
 
-        fh = logging.FileHandler(str(base_dir / "batch_run_log.txt"), mode='w', encoding='utf-8')
+        log_path = base_dir / "batch_run_log.txt"
+        self._trim_log(log_path, keep=50)
+        fh = logging.FileHandler(str(log_path), mode='a', encoding='utf-8')
         fh.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s', datefmt='%H:%M:%S'))
         logger.handlers.clear()
         logger.addHandler(fh)
@@ -59,6 +61,7 @@ class BatchChainWorker(QThread):
     def run(self):
         try:
             logger.info("=== New batch run started ===")
+            batch_start = time.time()
             self._temp_dir.mkdir(exist_ok=True)
             self._batch_dir_local.mkdir(parents=True, exist_ok=True)
             n = len(self._images)
@@ -91,7 +94,8 @@ class BatchChainWorker(QThread):
                 workflow_json = self._load_workflow(wf)
                 self._bust_cache(workflow_json)
 
-                upload_subfolder = f"Batch_Processing/seg_{seg}"
+                # Use run-ID subfolder so each run gets an isolated, clean directory
+                upload_subfolder = f"Batch_Processing/{self._run_id}/seg_{seg}"
 
                 if seg == 1:
                     input_dir = Path(self._config["input_dir"])
@@ -128,7 +132,7 @@ class BatchChainWorker(QThread):
 
                 # Set directory for LoadImageListFromDir
                 if self._runpod:
-                    dir_path = f"{self._runpod_input_dir}/Batch_Processing/seg_{seg}"
+                    dir_path = f"{self._runpod_input_dir}/Batch_Processing/{self._run_id}/seg_{seg}"
                 else:
                     dir_path = str(seg_subdirs[seg])
                 self._patch_batch_input(workflow_json, dir_path)
@@ -159,6 +163,7 @@ class BatchChainWorker(QThread):
                 final_paths.append(str(final))
                 self._log(f"  [{i+1}/{n}] {final.name}")
 
+            self._log(f"Total batch time: {self._fmt(time.time() - batch_start)}")
             self.all_done.emit(final_paths)
 
         except Exception as e:
@@ -206,10 +211,10 @@ class BatchChainWorker(QThread):
 
     def _collect_outputs(self, seg: int, prompt_id: str, n: int) -> list[Path]:
         if self._runpod:
-            return self._download_batch_outputs(seg, prompt_id)
+            return self._download_batch_outputs(seg, prompt_id, n)
         return self._find_local_batch_outputs(seg)
 
-    def _download_batch_outputs(self, seg: int, prompt_id: str) -> list[Path]:
+    def _download_batch_outputs(self, seg: int, prompt_id: str, n: int) -> list[Path]:
         history_url = f"{self._url}/history/{prompt_id}"
         resp = requests.get(history_url, timeout=15)
         resp.raise_for_status()
@@ -224,6 +229,10 @@ class BatchChainWorker(QThread):
 
         if not all_files:
             raise RuntimeError(f"No output videos in history for batch segment {seg}")
+
+        if len(all_files) != n:
+            self._log(f"  Warning: expected {n} outputs, got {len(all_files)} — using first {n}")
+            all_files = all_files[:n]
 
         downloaded = []
         for idx, file_info in enumerate(all_files):
@@ -379,6 +388,18 @@ class BatchChainWorker(QThread):
                 "input_type": tmpl.get("input_type", "frame"),
             })
         return segs
+
+    def _trim_log(self, log_path: Path, keep: int):
+        delimiter = "=== New batch run started ==="
+        if not log_path.exists():
+            return
+        text = log_path.read_text(encoding='utf-8')
+        parts = text.split(delimiter)
+        # parts[0] is anything before the first delimiter (empty or header noise)
+        batches = [p for p in parts[1:] if p.strip()]
+        if len(batches) >= keep:
+            trimmed = delimiter.join([""] + batches[-(keep - 1):])
+            log_path.write_text(trimmed.lstrip('\n'), encoding='utf-8')
 
     def _fmt(self, seconds: float) -> str:
         m, s = divmod(int(seconds), 60)

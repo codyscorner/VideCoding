@@ -1,6 +1,6 @@
 {
     "comfyui_url": "http://127.0.0.1:8000",
-    "input_dir": "B:/CodyForAIKissToCP/2025-05-18/resized_images",
+    "input_dir": "B:/CodyForAIKissToCP/2025-05-20/resized",
     "output_base_dir": "C:/AI/CumfyUI/output/video/Merge",
     "workflow_dir": "C:/AI/CumfyUI/Workflow_API",
     "workflows": [

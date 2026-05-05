@@ -87,6 +87,10 @@ Output: `dist\ComfyUI_Chain_Automator.exe`
 
 ## Changelog
 
+### v2.6.1
+- Log: total batch elapsed time printed as final log line after stitching completes
+- Log: append mode with rolling 50-batch history — older runs automatically trimmed on each new run
+
 ### v2.6.0
 - Batch mode: Single/Batch toggle in UI; batch runs N images through all 7 segments in one pass using `LoadImageListFromDir //Inspire`
 - Dual workflow sets: `workflow_segment_XX_batch.json` files in `{Chain}_Batch/` subfolder keep single and batch workflows separate
