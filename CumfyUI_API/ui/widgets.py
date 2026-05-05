@@ -49,6 +49,9 @@ class ThumbnailGrid(QListWidget):
         items = self.selectedItems()
         return items[0].data(Qt.ItemDataRole.UserRole) if items else None
 
+    def selected_keys(self) -> list[str]:
+        return [item.data(Qt.ItemDataRole.UserRole) for item in self.selectedItems()]
+
     def select_key(self, key: str):
         for i in range(self.count()):
             item = self.item(i)

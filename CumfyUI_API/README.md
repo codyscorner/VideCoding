@@ -6,12 +6,17 @@ Automates a chain of ComfyUI segments (up to 10), stitching the outputs into a s
 
 - Chains multiple ComfyUI workflow segments automatically
 - Segment count driven by your workflow config — no hardcoded limits (max 10)
+- **Single mode**: run one image through the full chain
+- **Batch mode**: run N images simultaneously — one model load per segment, N outputs (uses `LoadImageListFromDir //Inspire`)
+- Dual workflow sets: `workflow_segment_XX.json` (single) and `workflow_segment_XX_batch.json` in `{Chain}_Batch/` subfolder
 - Split-pane UI: image browser on the left, controls on the right
 - Background image loading — UI appears instantly, thumbnails load progressively
 - 200px letterboxed thumbnails with black padding (no cropping)
 - Segment progress dots, per-segment timing, and live log
-- RunPod support with automatic image/video upload
+- RunPod support — batch images uploaded via ComfyUI upload API, videos downloaded automatically
+- FFmpeg local last-frame extraction (`-sseof -0.1`) for smooth segment transitions
 - Final video stitched with FFmpeg and archived as a zip
+- Built-in video player with playlist — plays all batch results back-to-back after completion
 
 ## Requirements
 
@@ -54,6 +59,9 @@ Edit `main_config.json` or use the ⚙ Settings button in the app.
 | `final_video_dir` | Output folder for stitched video |
 | `zip_output_dir` | Output folder for zip archives |
 | `ffmpeg_path` | Path to ffmpeg executable |
+| `batch_dir_local` | Local folder for staging batch images (local mode) |
+| `batch_dir_runpod` | RunPod path for batch output reference |
+| `runpod_input_dir` | Absolute path to ComfyUI's input folder on RunPod |
 
 ### Workflow segment definition
 
@@ -78,6 +86,15 @@ python build_exe.py
 Output: `dist\ComfyUI_Chain_Automator.exe`
 
 ## Changelog
+
+### v2.6.0
+- Batch mode: Single/Batch toggle in UI; batch runs N images through all 7 segments in one pass using `LoadImageListFromDir //Inspire`
+- Dual workflow sets: `workflow_segment_XX_batch.json` files in `{Chain}_Batch/` subfolder keep single and batch workflows separate
+- RunPod batch upload: images uploaded directly into ComfyUI's input directory per segment via upload API
+- FFmpeg local frame extraction with `-sseof -0.1` for smooth segment transitions (no full video upload between segments)
+- Playlist video player: after batch completes, prompts to play all results back-to-back with ⏮⏭ navigation and auto-advance
+- Settings: Batch Processing section with local dir, RunPod dir, and RunPod input dir fields
+- Poll loop error detection: surfaces ComfyUI execution errors immediately instead of looping silently
 
 ### v2.5.1
 - Fix: chain folder not persisted on startup when `active_chain_folder` was absent from config, causing worker to load workflows from root instead of selected subfolder

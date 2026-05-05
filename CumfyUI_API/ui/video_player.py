@@ -21,9 +21,11 @@ def _ms_to_str(ms: int) -> str:
 
 
 class VideoPlayerDialog(QDialog):
-    def __init__(self, video_path: str, parent=None):
+    def __init__(self, video_path: str, parent=None, playlist: list[str] = None):
         super().__init__(parent)
-        self.setWindowTitle(Path(video_path).name)
+        self._playlist = playlist if playlist else [video_path]
+        self._playlist_index = 0 if not playlist else playlist.index(video_path) if video_path in playlist else 0
+
         self.setMinimumSize(900, 560)
         self.resize(1000, 620)
         self.setWindowFlags(
@@ -47,6 +49,7 @@ class VideoPlayerDialog(QDialog):
                 font-size: 10pt;
             }}
             QPushButton:hover {{ background-color: {COLORS['accent_hover']}; }}
+            QPushButton:disabled {{ background-color: {COLORS['bg_light']}; color: {COLORS['fg_secondary']}; }}
             QSlider::groove:horizontal {{
                 background: {COLORS['bg_light']};
                 height: 4px;
@@ -105,7 +108,25 @@ class VideoPlayerDialog(QDialog):
         self._fullscreen_btn.clicked.connect(self._toggle_fullscreen)
         toolbar.addWidget(self._fullscreen_btn)
 
+        # Playlist nav (only shown when playlist has multiple items)
+        self._prev_btn = QPushButton("⏮")
+        self._prev_btn.setFixedWidth(42)
+        self._prev_btn.clicked.connect(self._prev)
+        toolbar.addWidget(self._prev_btn)
+
+        self._next_btn = QPushButton("⏭")
+        self._next_btn.setFixedWidth(42)
+        self._next_btn.clicked.connect(self._next)
+        toolbar.addWidget(self._next_btn)
+
+        if len(self._playlist) <= 1:
+            self._prev_btn.setVisible(False)
+            self._next_btn.setVisible(False)
+
         toolbar.addStretch()
+
+        self._track_label = QLabel("")
+        toolbar.addWidget(self._track_label)
 
         self._time_label = QLabel("0:00 / 0:00")
         toolbar.addWidget(self._time_label)
@@ -128,15 +149,41 @@ class VideoPlayerDialog(QDialog):
         self._player.playbackStateChanged.connect(self._on_state_changed)
         self._player.positionChanged.connect(self._on_position_changed)
         self._player.durationChanged.connect(self._on_duration_changed)
+        self._player.mediaStatusChanged.connect(self._on_media_status)
         self._duration_ms = 0
 
         # Keyboard shortcuts
         QShortcut(QKeySequence(Qt.Key.Key_Space), self, self._toggle_play)
         QShortcut(QKeySequence(Qt.Key.Key_F), self, self._toggle_fullscreen)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.close)
+        QShortcut(QKeySequence(Qt.Key.Key_Left), self, self._prev)
+        QShortcut(QKeySequence(Qt.Key.Key_Right), self, self._next)
 
-        self._player.setSource(QUrl.fromLocalFile(video_path))
+        self._load_current()
+
+    def _load_current(self):
+        path = self._playlist[self._playlist_index]
+        self._player.setSource(QUrl.fromLocalFile(path))
         self._player.play()
+        n = len(self._playlist)
+        if n > 1:
+            self._track_label.setText(f"{self._playlist_index + 1}/{n}  ")
+            self.setWindowTitle(f"{self._playlist_index + 1}/{n} — {Path(path).name}")
+        else:
+            self._track_label.setText("")
+            self.setWindowTitle(Path(path).name)
+        self._prev_btn.setEnabled(self._playlist_index > 0)
+        self._next_btn.setEnabled(self._playlist_index < n - 1)
+
+    def _prev(self):
+        if self._playlist_index > 0:
+            self._playlist_index -= 1
+            self._load_current()
+
+    def _next(self):
+        if self._playlist_index < len(self._playlist) - 1:
+            self._playlist_index += 1
+            self._load_current()
 
     def _toggle_play(self):
         if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
@@ -167,6 +214,12 @@ class VideoPlayerDialog(QDialog):
         self._duration_ms = ms
         self._seek.setRange(0, ms)
         self._time_label.setText(f"0:00 / {_ms_to_str(ms)}")
+
+    def _on_media_status(self, status: QMediaPlayer.MediaStatus):
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            if self._playlist_index < len(self._playlist) - 1:
+                self._playlist_index += 1
+                self._load_current()
 
     def _on_error(self, error, error_string: str):
         self._time_label.setText(f"Error: {error_string}")

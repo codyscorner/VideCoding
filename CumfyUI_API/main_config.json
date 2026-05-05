@@ -1,6 +1,6 @@
 {
     "comfyui_url": "http://127.0.0.1:8000",
-    "input_dir": "E:/All_Picture_Files/0MP",
+    "input_dir": "B:/CodyForAIKissToCP/2025-05-18/resized_images",
     "output_base_dir": "C:/AI/CumfyUI/output/video/Merge",
     "workflow_dir": "C:/AI/CumfyUI/Workflow_API",
     "workflows": [
@@ -14,43 +14,49 @@
             "segment": 2,
             "json_file": "workflow_segment_02.json",
             "input_node_id": "126",
-            "input_type": "video"
+            "input_type": "frame"
         },
         {
             "segment": 3,
             "json_file": "workflow_segment_03.json",
             "input_node_id": "133",
-            "input_type": "video"
+            "input_type": "frame"
         },
         {
             "segment": 4,
             "json_file": "workflow_segment_04.json",
             "input_node_id": "133",
-            "input_type": "video"
+            "input_type": "frame"
         },
         {
             "segment": 5,
             "json_file": "workflow_segment_05.json",
             "input_node_id": "139",
-            "input_type": "video"
+            "input_type": "frame"
         },
         {
             "segment": 6,
             "json_file": "workflow_segment_06.json",
             "input_node_id": "139",
-            "input_type": "video"
+            "input_type": "frame"
         },
         {
             "segment": 7,
             "json_file": "workflow_segment_07.json",
             "input_node_id": "139",
-            "input_type": "video"
+            "input_type": "frame"
         }
     ],
     "mode": "runpod",
     "runpod_url": "https://dd9wq04wzccli8-8188.proxy.runpod.net",
     "ffmpeg_path": "C:/AI/CumfyUI/.venv/Lib/site-packages/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe",
-    "final_video_dir": "C:/AI/CumfyUI/output/video/Final",
+    "final_video_dir": "B:/AI/CumfyVideoChain_output",
     "zip_output_dir": "C:/AI/CumfyUI/output/video/Completed",
-    "_base_dir": "P:\\AI\\VideCoding\\CumfyUI_API"
+    "batch_dir_local": "B:/Batch_Processing",
+    "batch_dir_runpod": "/workspace/runpod-slim/Batch_Processing",
+    "runpod_input_dir": "/workspace/runpod-slim/ComfyUI/input",
+    "_base_dir": "P:\\AI\\VideCoding\\CumfyUI_API",
+    "active_chain_folder": "Video_Kiss2Creampie_Doggie",
+    "image_gen_positive": "A white teen couple standing in the driveway of a house, both wearing jeans",
+    "image_gen_negative": ""
 }

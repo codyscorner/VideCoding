@@ -77,6 +77,27 @@ class SettingsDialog(QDialog):
         )
         layout.addWidget(folders_group)
 
+        # ── Batch Processing ─────────────────────────────────────────────
+        batch_group = QGroupBox("Batch Processing")
+        batch_layout = QVBoxLayout(batch_group)
+        batch_layout.setSpacing(10)
+        self._batch_local_edit, _ = self._folder_row(
+            batch_layout, "Local Dir:",
+            config.get("batch_dir_local", ""),
+            "Local path where batch images are staged (e.g. B:/Batch_Processing)..."
+        )
+        self._batch_runpod_edit, _ = self._text_row(
+            batch_layout, "RunPod Dir:",
+            config.get("batch_dir_runpod", "/workspace/runpod-slim/Batch_Processing"),
+            "RunPod path to the same folder (e.g. /workspace/runpod-slim/Batch_Processing)..."
+        )
+        self._runpod_input_edit, _ = self._text_row(
+            batch_layout, "RunPod Input:",
+            config.get("runpod_input_dir", "/workspace/runpod-slim/ComfyUI/input"),
+            "Absolute path to ComfyUI's input folder on RunPod..."
+        )
+        layout.addWidget(batch_group)
+
         # ── FFmpeg ────────────────────────────────────────────────────────
         ffmpeg_group = QGroupBox("FFmpeg")
         ffmpeg_layout = QVBoxLayout(ffmpeg_group)
@@ -167,6 +188,9 @@ class SettingsDialog(QDialog):
         self._config.set("workflow_dir", self._workflow_edit.text().strip())
         self._config.set("final_video_dir", self._final_edit.text().strip())
         self._config.set("zip_output_dir", self._zip_edit.text().strip())
+        self._config.set("batch_dir_local", self._batch_local_edit.text().strip())
+        self._config.set("batch_dir_runpod", self._batch_runpod_edit.text().strip())
+        self._config.set("runpod_input_dir", self._runpod_input_edit.text().strip())
         self._config.set("ffmpeg_path", self._ffmpeg_edit.text().strip())
         self._config.save()
         self.accept()

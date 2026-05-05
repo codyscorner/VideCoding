@@ -14,6 +14,7 @@ from PyQt6.QtGui import QPixmap, QIcon, QPainter, QImage
 
 from config import ConfigManager
 from worker import ChainWorker
+from batch_worker import BatchChainWorker
 from ui.styles import STYLESHEET, COLORS
 from ui.video_player import VideoPlayerDialog
 from ui.settings_dialog import SettingsDialog
@@ -214,12 +215,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config = config_manager
         self.version = version
-        self._worker: ChainWorker | None = None
+        self._worker: ChainWorker | BatchChainWorker | None = None
         self._img_loader: ImageLoaderThread | None = None
         self._vid_loader: VideoLoaderThread | None = None
         self._last_vid_dir: str = ""
         self._seg_dots: list[SegmentDot] = []
         self._seg_time_labels: list[QLabel] = []
+        self._batch_mode: bool = False
 
         self.setWindowTitle(f"ComfyUI Chain Automator  v{version}")
         self.setMinimumSize(1200, 780)
@@ -371,13 +373,13 @@ class MainWindow(QMainWindow):
         folder_row.addWidget(self._show_all_chk)
         left.addLayout(folder_row)
 
-        img_group = QGroupBox("Starting Image  (Segment 1) — click to select")
-        img_layout = QVBoxLayout(img_group)
+        self._img_group = QGroupBox("Starting Image — click to select")
+        img_layout = QVBoxLayout(self._img_group)
         img_layout.setContentsMargins(6, 6, 6, 6)
         self.image_grid = ThumbnailGrid()
         img_layout.addWidget(self.image_grid)
         self.image_grid.itemSelectionChanged.connect(self._on_image_selected)
-        left.addWidget(img_group, stretch=1)
+        left.addWidget(self._img_group, stretch=1)
 
         self.selected_label = QLabel("Click an image to select it as the starting frame")
         self.selected_label.setObjectName("subtitle")
@@ -407,6 +409,47 @@ class MainWindow(QMainWindow):
         chain_sel_row.addWidget(self._chain_folder_combo, stretch=1)
         chain_sel_row.addWidget(refresh_chain_btn)
         right.addLayout(chain_sel_row)
+
+        # ── Single / Batch mode toggle ────────────────────────────────────
+        mode_toggle_style = f"""
+            QPushButton {{
+                background-color: {COLORS['bg_light']};
+                color: {COLORS['fg_secondary']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 4px;
+                font-size: 10pt;
+                font-weight: bold;
+                padding: 3px 14px;
+            }}
+            QPushButton:checked {{
+                background-color: {COLORS['accent']};
+                color: white;
+                border: 1px solid {COLORS['accent']};
+            }}
+            QPushButton:hover:!checked {{ background-color: {COLORS['bg_medium']}; }}
+        """
+        run_mode_row = QHBoxLayout()
+        run_mode_lbl = QLabel("Mode:")
+        run_mode_lbl.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
+        run_mode_lbl.setFixedWidth(48)
+        self._single_mode_btn = QPushButton("◾  Single")
+        self._single_mode_btn.setCheckable(True)
+        self._single_mode_btn.setChecked(True)
+        self._single_mode_btn.setFixedHeight(28)
+        self._single_mode_btn.setStyleSheet(mode_toggle_style)
+        self._single_mode_btn.clicked.connect(lambda: self._set_batch_mode(False))
+        self._batch_mode_btn = QPushButton("⬛  Batch")
+        self._batch_mode_btn.setCheckable(True)
+        self._batch_mode_btn.setChecked(False)
+        self._batch_mode_btn.setFixedHeight(28)
+        self._batch_mode_btn.setStyleSheet(mode_toggle_style)
+        self._batch_mode_btn.clicked.connect(lambda: self._set_batch_mode(True))
+        run_mode_row.addWidget(run_mode_lbl)
+        run_mode_row.addWidget(self._single_mode_btn)
+        run_mode_row.addSpacing(4)
+        run_mode_row.addWidget(self._batch_mode_btn)
+        run_mode_row.addStretch()
+        right.addLayout(run_mode_row)
 
         self._seg_group = QGroupBox("Segment Progress")
         self._seg_layout = QVBoxLayout(self._seg_group)
@@ -641,10 +684,32 @@ class MainWindow(QMainWindow):
             self.config.save()
             self._populate_images()
 
+    def _set_batch_mode(self, batch: bool):
+        self._batch_mode = batch
+        self._single_mode_btn.setChecked(not batch)
+        self._batch_mode_btn.setChecked(batch)
+        if batch:
+            self.image_grid.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+            self._img_group.setTitle("Starting Images — Ctrl+click or Shift+click to select multiple")
+            self.start_btn.setText("▶  Start Batch")
+            self.selected_label.setText("Select images to include in the batch")
+        else:
+            self.image_grid.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+            self.image_grid.clearSelection()
+            self._img_group.setTitle("Starting Image — click to select")
+            self.start_btn.setText("▶  Start Chain")
+            self.selected_label.setText("Click an image to select it as the starting frame")
+
     def _on_image_selected(self):
-        name = self.image_grid.selected_key()
-        if name:
-            self.selected_label.setText(f"Selected: {name}")
+        keys = self.image_grid.selected_keys()
+        if not keys:
+            return
+        if self._batch_mode:
+            self.selected_label.setText(
+                f"{len(keys)} image{'s' if len(keys) > 1 else ''} selected"
+            )
+        else:
+            self.selected_label.setText(f"Selected: {keys[0]}")
 
     # ------------------------------------------------------------------ #
     # Video library (Library view)
@@ -839,29 +904,47 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _start(self):
-        image_name = self.image_grid.selected_key()
-        if not image_name:
-            QMessageBox.critical(self, "Error", "Please click an image to select it as the starting image.")
-            return
-
         self.config.save()
-        self._reset_ui()
-        self.start_btn.setEnabled(False)
-        self.cancel_btn.setEnabled(True)
-        self.progress_label.setText("Starting...")
         self.final_label.setText("")
 
-        self._worker = ChainWorker(self.config.get_all(), image_name)
-        self._worker.log.connect(self._on_log)
-        self._worker.segment_done.connect(self._on_segment_done)
-        self._worker.segment_time.connect(self._on_segment_time)
-        self._worker.stitch_done.connect(self._on_stitch_done)
-        self._worker.error.connect(self._on_error)
-        self._worker.finished.connect(self._on_worker_finished)
-        self._worker.start()
-
-        self._seg_dots[0].set_active()
-        self.progress_label.setText(f"Segment 1/{self._seg_count} — running...")
+        if self._batch_mode:
+            keys = self.image_grid.selected_keys()
+            if not keys:
+                QMessageBox.critical(self, "Error", "Select at least one image for the batch.")
+                return
+            self._reset_ui()
+            self.start_btn.setEnabled(False)
+            self.cancel_btn.setEnabled(True)
+            self.progress_label.setText(f"Batch: {len(keys)} images — Starting...")
+            self._worker = BatchChainWorker(self.config.get_all(), keys)
+            self._worker.log.connect(self._on_log)
+            self._worker.segment_done.connect(self._on_segment_done)
+            self._worker.segment_time.connect(self._on_segment_time)
+            self._worker.all_done.connect(self._on_batch_done)
+            self._worker.error.connect(self._on_error)
+            self._worker.finished.connect(self._on_worker_finished)
+            self._worker.start()
+            self._seg_dots[0].set_active()
+            self.progress_label.setText(f"Batch: {len(keys)} images — Segment 1/{self._seg_count}...")
+        else:
+            image_name = self.image_grid.selected_key()
+            if not image_name:
+                QMessageBox.critical(self, "Error", "Click an image to select it as the starting image.")
+                return
+            self._reset_ui()
+            self.start_btn.setEnabled(False)
+            self.cancel_btn.setEnabled(True)
+            self.progress_label.setText("Starting...")
+            self._worker = ChainWorker(self.config.get_all(), image_name)
+            self._worker.log.connect(self._on_log)
+            self._worker.segment_done.connect(self._on_segment_done)
+            self._worker.segment_time.connect(self._on_segment_time)
+            self._worker.stitch_done.connect(self._on_stitch_done)
+            self._worker.error.connect(self._on_error)
+            self._worker.finished.connect(self._on_worker_finished)
+            self._worker.start()
+            self._seg_dots[0].set_active()
+            self.progress_label.setText(f"Segment 1/{self._seg_count} — running...")
 
     def _cancel(self):
         if self._worker:
@@ -892,9 +975,12 @@ class MainWindow(QMainWindow):
         if seg < n:
             if seg < len(self._seg_dots):
                 self._seg_dots[seg].set_active()
-            self.progress_label.setText(f"Segment {seg + 1}/{n} — running...")
+            label = f"Segment {seg + 1}/{n} — running..."
+            if self._batch_mode:
+                label = f"Batch — {label}"
+            self.progress_label.setText(label)
         else:
-            self.progress_label.setText("Stitching final video...")
+            self.progress_label.setText("Stitching final video..." if not self._batch_mode else "Stitching all videos...")
 
     def _on_stitch_done(self, final_path: str):
         self.final_label.setText(f"Final video saved: {final_path}")
@@ -902,7 +988,24 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(self._seg_count)
         dlg = CompletionDialog(final_path, self._seg_count, parent=self)
         dlg.exec()
-        # Remove the just-completed image from the grid unless "Show all" is checked
+        if not self._show_all_chk.isChecked():
+            self._populate_images()
+
+    def _on_batch_done(self, final_paths: list):
+        n = len(final_paths)
+        self.progress_label.setText(f"Batch complete — {n} video{'s' if n != 1 else ''}")
+        self.final_label.setText(f"{n} videos saved to final video folder")
+        msg = "\n".join(Path(p).name for p in final_paths)
+        reply = QMessageBox.question(
+            self, "Batch Complete",
+            f"Generated {n} video{'s' if n != 1 else ''}:\n\n{msg}\n\nPlay all videos now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            existing = [p for p in final_paths if Path(p).exists()]
+            if existing:
+                player = VideoPlayerDialog(existing[0], parent=self, playlist=existing)
+                player.exec()
         if not self._show_all_chk.isChecked():
             self._populate_images()
 

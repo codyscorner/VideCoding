@@ -91,10 +91,17 @@ class ChainWorker(QThread):
                     self._patch_output_prefix(workflow_json, seg)
 
                 if wf["input_type"] == "image":
-                    # ComfyUI needs just the filename, not a relative subdir path
                     image_filename = Path(self._starting_image).name
                     workflow_json[wf["input_node_id"]]["inputs"]["image"] = image_filename
                     self._log(f"[Segment {seg}/{self._total_segs}] Using starting image: {image_filename}")
+                elif wf["input_type"] == "frame":
+                    prev_video = output_videos[-1]
+                    self._log(f"[Segment {seg}/{self._total_segs}] Extracting last frame from: {prev_video.name}")
+                    frame_path = self._extract_last_frame(prev_video, seg)
+                    self._log(f"[Segment {seg}/{self._total_segs}] Uploading frame: {frame_path.name}")
+                    uploaded_name = self._upload_image(frame_path)
+                    workflow_json[wf["input_node_id"]]["inputs"]["image"] = uploaded_name
+                    self._log(f"[Segment {seg}/{self._total_segs}] Uploaded as: {uploaded_name}")
                 else:
                     prev_video = output_videos[-1]
                     # Rename with _GLF suffix when uploading to RunPod to avoid filename collision
@@ -255,6 +262,18 @@ class ChainWorker(QThread):
     # Upload helpers
     # ------------------------------------------------------------------ #
 
+    def _extract_last_frame(self, video_path: Path, seg: int) -> Path:
+        frame_path = self._temp_dir / f"frame_seg{seg}.png"
+        ffmpeg = self._config.get("ffmpeg_path", "ffmpeg")
+        result = subprocess.run(
+            [ffmpeg, "-y", "-sseof", "-0.1", "-i", str(video_path),
+             "-vframes", "1", "-q:v", "2", str(frame_path)],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"FFmpeg frame extraction failed:\n{result.stderr}")
+        return frame_path
+
     def _upload_image(self, image_path: Path) -> str:
         url = f"{self._url}/upload/image"
         with open(image_path, 'rb') as f:
@@ -371,7 +390,7 @@ class ChainWorker(QThread):
             return template
 
         chain_dir = workflow_dir / folder
-        files = sorted(chain_dir.glob("workflow_segment_*.json"))
+        files = sorted(f for f in chain_dir.glob("workflow_segment_*.json") if "_batch" not in f.name)
         if not files:
             return template
 
@@ -400,7 +419,7 @@ class ChainWorker(QThread):
             path = workflow_dir / folder / wf["json_file"]
         else:
             path = workflow_dir / wf["json_file"]
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             return json.load(f)
 
     def _stitch(self, videos: list[Path]) -> Path:
