@@ -34,7 +34,7 @@ class ChainWorker(QThread):
         self._cancelled = False
         self._total_segs = len(config.get("workflows", []))
         self._client_id = str(uuid.uuid4())
-        self._run_id = str(int(time.time()))
+        self._run_id = str(int(time.time() * 1000))
         self._runpod_override_filename = None
         self._runpod = config.get("mode", "local") == "runpod"
         self._url = (
@@ -169,10 +169,9 @@ class ChainWorker(QThread):
                 inp["seed"] = new_seed
 
     def _patch_output_prefix(self, workflow: dict, seg: int):
-        seg_id = str(uuid.uuid4())[:8]
         for node in workflow.values():
             if node.get("class_type") == "VHS_VideoCombine":
-                node["inputs"]["filename_prefix"] = f"Merge/Segment_{seg}_{seg_id}"
+                node["inputs"]["filename_prefix"] = f"Merge/{self._run_id}/Segment_{seg}"
                 break
 
     def _find_local_output_video(self, seg: int) -> Path:
@@ -203,13 +202,13 @@ class ChainWorker(QThread):
                 self._log(f"[Segment {seg}/{self._total_segs}] File not ready, retrying in 5s... ({attempt+1}/6)")
                 time.sleep(5)
             dl_resp.raise_for_status()
-            local_path = self._temp_dir / Path(dl_filename).name
+            local_path = self._temp_dir / Path(ov_filename).name
             with open(local_path, 'wb') as f:
                 for chunk in dl_resp.iter_content(chunk_size=1024 * 1024):
                     f.write(chunk)
             merge_dir = Path(self._config["output_base_dir"])
             merge_dir.mkdir(parents=True, exist_ok=True)
-            dest = merge_dir / Path(dl_filename).name
+            dest = merge_dir / Path(ov_filename).name
             dest.write_bytes(local_path.read_bytes())
             return dest
 

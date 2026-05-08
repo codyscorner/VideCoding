@@ -27,7 +27,7 @@ class BatchChainWorker(QThread):
         self._cancelled = False
         self._total_segs = len(config.get("workflows", []))
         self._client_id = str(uuid.uuid4())
-        self._run_id = str(uuid.uuid4())[:8]
+        self._run_id = str(int(time.time() * 1000))
         self._runpod = config.get("mode", "local") == "runpod"
         self._url = (
             config.get("runpod_url", "").rstrip("/")
@@ -193,7 +193,7 @@ class BatchChainWorker(QThread):
     def _patch_batch_output_prefix(self, workflow: dict, seg: int):
         for node in workflow.values():
             if node.get("class_type") == "VHS_VideoCombine":
-                node["inputs"]["filename_prefix"] = f"Merge/Batch_{seg}_{self._run_id}"
+                node["inputs"]["filename_prefix"] = f"Merge/{self._run_id}/Batch_{seg}"
                 break
 
     def _bust_cache(self, workflow: dict):

@@ -1,6 +1,6 @@
 {
     "comfyui_url": "http://127.0.0.1:8000",
-    "input_dir": "B:/CodyForAIKissToCP/2025-05-20/resized",
+    "input_dir": "B:/CodyForAIKissToCP/2025-05-18/resized_images",
     "output_base_dir": "C:/AI/CumfyUI/output/video/Merge",
     "workflow_dir": "C:/AI/CumfyUI/Workflow_API",
     "workflows": [
@@ -48,7 +48,7 @@
         }
     ],
     "mode": "runpod",
-    "runpod_url": "https://dd9wq04wzccli8-8188.proxy.runpod.net",
+    "runpod_url": "https://zkp2bkfg7p6zta-8188.proxy.runpod.net/",
     "ffmpeg_path": "C:/AI/CumfyUI/.venv/Lib/site-packages/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe",
     "final_video_dir": "B:/AI/CumfyVideoChain_output",
     "zip_output_dir": "C:/AI/CumfyUI/output/video/Completed",
