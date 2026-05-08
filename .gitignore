@@ -39,6 +39,7 @@ Thumbs.db
 # Logs
 *.log
 run_log.txt
+batch_run_log.txt
 
 # Local user configs (runtime state)
 **/main_config.json
