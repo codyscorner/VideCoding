@@ -61,6 +61,7 @@ class ChainWorker(QThread):
         try:
             logger.info("=== New run started ===")
             self._temp_dir.mkdir(exist_ok=True)
+            self._clean_temp_dir()
             self._clean_merge_dir()
             output_videos = []
             workflows = self._build_effective_workflows()
@@ -363,6 +364,15 @@ class ChainWorker(QThread):
     # ------------------------------------------------------------------ #
     # Stitch / zip / misc
     # ------------------------------------------------------------------ #
+
+    def _clean_temp_dir(self):
+        removed = 0
+        for f in self._temp_dir.iterdir():
+            if f.is_file():
+                f.unlink()
+                removed += 1
+        if removed:
+            self._log(f"Cleared {removed} file(s) from temp folder.")
 
     def _clean_merge_dir(self):
         merge_dir = Path(self._config["output_base_dir"])

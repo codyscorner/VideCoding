@@ -63,6 +63,7 @@ class BatchChainWorker(QThread):
             logger.info("=== New batch run started ===")
             batch_start = time.time()
             self._temp_dir.mkdir(exist_ok=True)
+            self._clean_temp_dir()
             self._batch_dir_local.mkdir(parents=True, exist_ok=True)
             n = len(self._images)
             self._log(f"Batch: {n} image{'s' if n != 1 else ''}")
@@ -305,6 +306,15 @@ class BatchChainWorker(QThread):
     # ------------------------------------------------------------------ #
     # API helpers
     # ------------------------------------------------------------------ #
+
+    def _clean_temp_dir(self):
+        removed = 0
+        for f in self._temp_dir.iterdir():
+            if f.is_file():
+                f.unlink()
+                removed += 1
+        if removed:
+            self._log(f"Cleared {removed} file(s) from temp folder.")
 
     def _queue_prompt(self, workflow: dict) -> str:
         resp = requests.post(
