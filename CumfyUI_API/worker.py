@@ -68,10 +68,9 @@ class ChainWorker(QThread):
             self._total_segs = len(workflows)
             chain_start = time.time()
 
-            if self._runpod:
-                input_path = Path(self._config["input_dir"]) / self._starting_image
-                self._log(f"[RunPod] Uploading starting image: {input_path.name}")
-                self._upload_image(input_path)
+            input_path = Path(self._config["input_dir"]) / self._starting_image
+            self._log(f"Uploading starting image: {input_path.name}")
+            self._upload_image(input_path)
 
             for wf in workflows:
                 if self._cancelled:
@@ -87,35 +86,21 @@ class ChainWorker(QThread):
                 # Always randomize seeds to bust ComfyUI prompt cache
                 self._bust_cache(workflow_json)
 
-                # RunPod: strip Windows path from filename_prefix — use simple Segment_N
-                if self._runpod:
-                    self._patch_output_prefix(workflow_json, seg)
+                # Always normalize output prefix so _find_local_output_video can locate the file
+                self._patch_output_prefix(workflow_json, seg)
 
                 if wf["input_type"] == "image":
                     image_filename = Path(self._starting_image).name
                     workflow_json[wf["input_node_id"]]["inputs"]["image"] = image_filename
                     self._log(f"[Segment {seg}/{self._total_segs}] Using starting image: {image_filename}")
-                elif wf["input_type"] == "frame":
+                else:
+                    # All subsequent segments: extract last frame from previous video and upload as image
                     prev_video = output_videos[-1]
                     self._log(f"[Segment {seg}/{self._total_segs}] Extracting last frame from: {prev_video.name}")
                     frame_path = self._extract_last_frame(prev_video, seg)
                     self._log(f"[Segment {seg}/{self._total_segs}] Uploading frame: {frame_path.name}")
                     uploaded_name = self._upload_image(frame_path)
                     workflow_json[wf["input_node_id"]]["inputs"]["image"] = uploaded_name
-                    self._log(f"[Segment {seg}/{self._total_segs}] Uploaded as: {uploaded_name}")
-                else:
-                    prev_video = output_videos[-1]
-                    # Rename with _GLF suffix when uploading to RunPod to avoid filename collision
-                    if self._runpod:
-                        glf_name = prev_video.stem + "_GLF" + prev_video.suffix
-                        glf_path = self._temp_dir / glf_name
-                        glf_path.write_bytes(prev_video.read_bytes())
-                        upload_path = glf_path
-                    else:
-                        upload_path = prev_video
-                    self._log(f"[Segment {seg}/{self._total_segs}] Uploading video: {upload_path.name}")
-                    uploaded_name = self._upload_video(upload_path)
-                    workflow_json[wf["input_node_id"]]["inputs"]["video"] = uploaded_name
                     self._log(f"[Segment {seg}/{self._total_segs}] Uploaded as: {uploaded_name}")
 
                 prompt_id = self._queue_prompt(workflow_json)
@@ -156,9 +141,27 @@ class ChainWorker(QThread):
     # ------------------------------------------------------------------ #
 
     def _get_output_video(self, seg: int, prompt_id: str) -> Path:
-        if self._runpod:
-            return self._download_output_video(seg, prompt_id)
-        return self._find_local_output_video(seg)
+        return self._download_output_video(seg, prompt_id)
+
+    def _fetch_output_video_by_prefix(self, seg: int) -> Path | None:
+        """Download the expected output video using the known prefix we patched in.
+        VHS_VideoCombine names files as {prefix_last_part}_00001.mp4, so we try a
+        few sequence numbers via /view without relying on the history API at all."""
+        subfolder = f"Merge/{self._run_id}"
+        for n in range(1, 6):
+            filename = f"Segment_{seg}_{n:05d}.mp4"
+            params = {"filename": filename, "subfolder": subfolder, "type": "output"}
+            try:
+                resp = requests.get(f"{self._url}/view", params=params, timeout=60, stream=True)
+                if resp.status_code == 200:
+                    local_path = self._temp_dir / filename
+                    with open(local_path, 'wb') as f:
+                        for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                            f.write(chunk)
+                    return local_path
+            except requests.RequestException:
+                pass
+        return None
 
     def _bust_cache(self, workflow: dict):
         new_seed = int(uuid.uuid4().int % (2**32))
@@ -170,21 +173,16 @@ class ChainWorker(QThread):
                 inp["seed"] = new_seed
 
     def _patch_output_prefix(self, workflow: dict, seg: int):
+        _VIDEO_COMBINE_TYPES = {"VHS_VideoCombine", "VHS_VideoCombineV2", "SaveVideo"}
         for node in workflow.values():
-            if node.get("class_type") == "VHS_VideoCombine":
+            ct = node.get("class_type", "")
+            if ct in _VIDEO_COMBINE_TYPES:
                 node["inputs"]["filename_prefix"] = f"Merge/{self._run_id}/Segment_{seg}"
-                break
-
-    def _find_local_output_video(self, seg: int) -> Path:
-        base_dir = Path(self._config["output_base_dir"])
-        mp4s = sorted(
-            base_dir.glob(f"Segment_{seg}_*.mp4"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True
-        )
-        if not mp4s:
-            raise FileNotFoundError(f"No .mp4 found in {base_dir} matching Segment_{seg}_*.mp4")
-        return mp4s[0]
+                self._log(f"[Segment {seg}/{self._total_segs}] Patched output prefix on {ct}")
+                return
+        class_types = [n.get("class_type", "?") for n in workflow.values()]
+        self._log(f"[Segment {seg}/{self._total_segs}] WARNING: no video combine node found. "
+                  f"Nodes: {', '.join(sorted(set(class_types)))}")
 
     def _download_output_video(self, seg: int, prompt_id: str) -> Path:
         # Check if polling extracted filename from "already exists" error
@@ -219,23 +217,61 @@ class ChainWorker(QThread):
         resp.raise_for_status()
         history = resp.json().get(prompt_id, {})
 
+        _VIDEO_EXTS = {".mp4", ".webm", ".avi", ".mov", ".mkv", ".gif"}
         filename = None
         subfolder = ""
         for node_output in history.get("outputs", {}).values():
-            files = node_output.get("videos") or node_output.get("gifs") or []
-            if files:
+            # VHS_VideoCombine may report under "videos", "gifs", or "images" depending on version
+            all_files = []
+            for key in ("videos", "gifs", "images"):
+                candidates = node_output.get(key, [])
+                video_candidates = [f for f in candidates if Path(f["filename"]).suffix.lower() in _VIDEO_EXTS]
+                all_files.extend(video_candidates)
+            if all_files:
                 match = next(
-                    (f for f in files if f"Segment_{seg}_" in f["filename"]),
-                    files[0]
+                    (f for f in all_files if f"Segment_{seg}_" in f["filename"]),
+                    all_files[0]
                 )
                 filename = match["filename"]
                 subfolder = match.get("subfolder", "")
                 break
 
         if not filename:
-            raise RuntimeError(f"Could not find output video in history for segment {seg}")
+            status_info = history.get("status", {})
+            messages = status_info.get("messages", [])
+            logger.debug(f"Segment {seg} history status: {status_info}")
+            logger.debug(f"Segment {seg} history outputs: {history.get('outputs', {})}")
+            errors = [m for m in messages if m[0] in ("execution_error", "execution_interrupted")]
+            if errors:
+                ex_msg = errors[-1][1].get("exception_message", str(errors[-1][1]))
+                raise RuntimeError(f"Segment {seg} failed in ComfyUI: {ex_msg}")
 
-        dl_filename = filename
+            # History didn't report a video — fetch it directly using the known prefix.
+            # We patched the prefix to Merge/{run_id}/Segment_{seg} so we know the filename.
+            self._log(f"[Segment {seg}/{self._total_segs}] Not in history — fetching by prefix...")
+            fetched = self._fetch_output_video_by_prefix(seg)
+            if fetched:
+                self._log(f"[Segment {seg}/{self._total_segs}] Fetched: {fetched.name}")
+                merge_dir = Path(self._config["output_base_dir"])
+                merge_dir.mkdir(parents=True, exist_ok=True)
+                dest = merge_dir / fetched.name
+                if fetched != dest:
+                    dest.write_bytes(fetched.read_bytes())
+                return dest
+
+            all_found = []
+            for node_output in history.get("outputs", {}).values():
+                for key in ("videos", "gifs", "images"):
+                    for f in node_output.get(key, []):
+                        all_found.append(f"{key}:{f.get('filename', '?')}")
+            outputs_keys = {k for v in history.get("outputs", {}).values() for k in v}
+            detail = ", ".join(all_found) if all_found else "none"
+            raise RuntimeError(
+                f"Could not find output video in history for segment {seg}.\n"
+                f"Output keys present: {outputs_keys or 'none'}\n"
+                f"Files found: {detail}"
+            )
+
         self._log(f"[Segment {seg}/{self._total_segs}] Downloading: {subfolder}/{filename}")
         params = {"filename": filename, "subfolder": subfolder, "type": "output"}
         for attempt in range(6):
@@ -286,18 +322,6 @@ class ChainWorker(QThread):
         resp.raise_for_status()
         return resp.json()["name"]
 
-    def _upload_video(self, video_path: Path) -> str:
-        url = f"{self._url}/upload/image"
-        with open(video_path, 'rb') as f:
-            resp = requests.post(
-                url,
-                files={"image": (video_path.name, f, "video/mp4")},
-                data={"type": "input", "overwrite": "true"},
-                timeout=120,
-            )
-        resp.raise_for_status()
-        return resp.json()["name"]
-
     def _queue_prompt(self, workflow: dict) -> str:
         url = f"{self._url}/prompt"
         payload = {
@@ -306,7 +330,12 @@ class ChainWorker(QThread):
             "extra_data": {"extra_pnginfo": {}},
         }
         resp = requests.post(url, json=payload, timeout=30)
-        resp.raise_for_status()
+        if not resp.ok:
+            try:
+                detail = resp.json()
+            except Exception:
+                detail = resp.text
+            raise RuntimeError(f"ComfyUI rejected prompt ({resp.status_code}): {detail}")
         return resp.json()["prompt_id"]
 
     # ------------------------------------------------------------------ #
@@ -341,20 +370,22 @@ class ChainWorker(QThread):
                 if prompt_id in h_data:
                     status = h_data[prompt_id].get("status", {})
                     msgs = status.get("messages", [])
-                    if status.get("completed", False):
-                        return
-                    # Treat execution_error from "already exists" as complete — file is there
-                    last_msg = msgs[-1][0] if msgs else ""
-                    if last_msg == "execution_error":
-                        ex_msg = msgs[-1][1].get("exception_message", "")
+                    # Check for execution errors before treating as done
+                    error_msgs = [m for m in msgs if m[0] == "execution_error"]
+                    if error_msgs:
+                        ex_msg = error_msgs[-1][1].get("exception_message", str(error_msgs[-1][1]))
                         if "already exists" in ex_msg:
                             self._log(f"[Segment {seg}/{self._total_segs}] File exists on pod, downloading...")
-                            # Extract actual filename from error path
                             import re
                             match = re.search(r"output/(.+?)'\s+already exists", ex_msg)
                             if match:
                                 self._runpod_override_filename = match.group(1)
                             return
+                        raise RuntimeError(f"Segment {seg} failed in ComfyUI: {ex_msg}")
+                    if status.get("completed", False):
+                        all_msg_types = [m[0] for m in msgs]
+                        self._log(f"[Segment {seg}/{self._total_segs}] ComfyUI completed. Messages: {all_msg_types}")
+                        return
                     self._log(f"[Segment {seg}/{self._total_segs}] Status: {msgs[-1] if msgs else 'unknown'}")
             except requests.RequestException as e:
                 self._log(f"[Segment {seg}/{self._total_segs}] Poll error: {e}")
@@ -389,35 +420,47 @@ class ChainWorker(QThread):
         m, s = divmod(int(seconds), 60)
         return f"{m:02d}m {s:02d}s"
 
+    # Known ComfyUI image loader class types (single frame injection)
+    _IMAGE_LOADER_TYPES = {"LoadImage", "LoadImageMask", "Load Image", "LoadImagesFromDirectory"}
+
+    def _detect_input_node(self, workflow: dict, seg_index: int) -> tuple[str, str]:
+        """Auto-detect the LoadImage node that receives the injected frame/image."""
+        for nid, node in workflow.items():
+            if node.get("class_type") in self._IMAGE_LOADER_TYPES:
+                return nid, "image" if seg_index == 0 else "frame"
+        # Structural fallback: any node with a plain string "image" input
+        for nid, node in workflow.items():
+            if isinstance(node.get("inputs", {}).get("image"), str):
+                return nid, "image" if seg_index == 0 else "frame"
+        raise RuntimeError(
+            "Could not auto-detect input node — no LoadImage node found in workflow"
+        )
+
     def _build_effective_workflows(self) -> list[dict]:
-        """Build segment list from the active chain folder + node ID template."""
+        """Discover segments by scanning the chain folder; auto-detect input node + type."""
         workflow_dir = Path(self._config["workflow_dir"])
         folder = self._config.get("active_chain_folder", "")
-        template = self._config.get("workflows", [])
 
-        if not folder:
-            return template
-
-        chain_dir = workflow_dir / folder
+        chain_dir = (workflow_dir / folder) if folder else workflow_dir
         files = sorted(f for f in chain_dir.glob("workflow_segment_*.json") if "_batch" not in f.name)
-        if not files:
-            return template
 
-        # Node ID fallbacks: seg 1 → image, segs 2+ → last video entry in template
-        video_entries = [t for t in template if t.get("input_type") == "video"]
-        fallback_video = video_entries[-1] if video_entries else (template[-1] if template else {})
+        if not files:
+            return self._config.get("workflows", [])
 
         segs = []
         for i, f in enumerate(files, 1):
-            if i - 1 < len(template):
-                tmpl = template[i - 1]
-            else:
-                tmpl = fallback_video
+            try:
+                with open(f, "r", encoding="utf-8") as fh:
+                    wf_json = json.load(fh)
+                node_id, input_type = self._detect_input_node(wf_json, i - 1)
+            except Exception as e:
+                raise RuntimeError(f"Failed to read/parse {f.name}: {e}")
+            logger.info(f"Segment {i}: {f.name} → node {node_id} ({input_type})")
             segs.append({
                 "segment": i,
                 "json_file": f.name,
-                "input_node_id": tmpl.get("input_node_id", ""),
-                "input_type": tmpl.get("input_type", "video"),
+                "input_node_id": node_id,
+                "input_type": input_type,
             })
         return segs
 
@@ -435,23 +478,35 @@ class ChainWorker(QThread):
         final_dir = Path(self._config.get("final_video_dir", self._config["output_base_dir"]))
         final_dir.mkdir(parents=True, exist_ok=True)
 
-        concat_file = self._temp_dir / "concat_list.txt"
-        lines = [f"file '{v.as_posix()}'" for v in videos]
-        concat_file.write_text("\n".join(lines), encoding="utf-8")
-
         stem = Path(self._starting_image).stem
         final_path = final_dir / f"{stem}.mp4"
+        n = len(videos)
+        self._log(f"Stitching {n} segments: {[v.name for v in videos]}")
 
+        # Use concat filter (not demuxer) so mixed codecs (H.264 + HEVC) are decoded
+        # individually before being joined — much more robust than stream copy concat.
         ffmpeg = self._config.get("ffmpeg_path", "ffmpeg")
+        inputs = []
+        for v in videos:
+            inputs += ["-i", str(v)]
+        filter_inputs = "".join(f"[{i}:v]" for i in range(n))
+        filter_complex = f"{filter_inputs}concat=n={n}:v=1[out]"
+
         result = subprocess.run(
-            [ffmpeg, "-y", "-f", "concat", "-safe", "0",
-             "-i", str(concat_file), "-c", "copy", str(final_path)],
+            [ffmpeg, "-y"] + inputs + [
+                "-filter_complex", filter_complex,
+                "-map", "[out]",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                "-an",
+                str(final_path),
+            ],
             capture_output=True, text=True
         )
-        concat_file.unlink(missing_ok=True)
 
         if result.returncode != 0:
-            raise RuntimeError(f"FFmpeg stitch failed:\n{result.stderr}")
+            raise RuntimeError(f"FFmpeg stitch failed:\n{result.stderr[-3000:]}")
+        if result.stderr:
+            logger.debug(f"FFmpeg stitch stderr:\n{result.stderr[-3000:]}")
 
         return final_path
 

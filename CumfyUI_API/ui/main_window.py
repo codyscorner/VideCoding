@@ -198,7 +198,7 @@ class SegmentDot(QLabel):
     def _apply(self, bg: str, fg: str):
         self.setStyleSheet(
             f"background-color:{bg}; color:{fg}; border-radius:17px;"
-            f" font-weight:bold; font-size:10pt; cursor:pointer;"
+            f" font-weight:bold; font-size:10pt;"
         )
 
     def set_pending(self): self._apply(COLORS['seg_pending'], COLORS['fg_dim'])
@@ -846,7 +846,7 @@ class MainWindow(QMainWindow):
             if not wf:
                 return
             json_path = workflow_dir / wf["json_file"]
-        dlg = SegmentEditorDialog(segment, json_path, parent=self)
+        dlg = SegmentEditorDialog(segment, json_path, config=self.config, parent=self)
         dlg.exec()
 
     def _open_settings(self):
