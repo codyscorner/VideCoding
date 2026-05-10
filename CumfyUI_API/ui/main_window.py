@@ -810,7 +810,7 @@ class MainWindow(QMainWindow):
         if wf_dir.exists():
             folders = sorted(
                 p.name for p in wf_dir.iterdir()
-                if p.is_dir() and p.name.startswith("Video_")
+                if p.is_dir() and p.name.startswith("Video_") and not p.name.endswith("_Batch")
             )
             for f in folders:
                 self._chain_folder_combo.addItem(f)

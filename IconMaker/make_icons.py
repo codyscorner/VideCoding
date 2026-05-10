@@ -254,6 +254,72 @@ APPS = [
             "sharp edges, modern Windows app icon design, 512x512"
         ),
     },
+    {
+        "name": "AIImageGenerator",
+        "project_folder": "AI_Image_Generator",
+        "prompt": (
+            "Minimalist flat app icon, dark deep purple background #120a1f, "
+            "a glowing neural network pattern forming a paintbrush stroke that "
+            "transforms into a vivid landscape image, representing AI image generation, "
+            "clean vector style, no text, square icon, sharp edges, "
+            "modern Windows app icon design, 512x512"
+        ),
+    },
+    {
+        "name": "ClipboardQueueLoader",
+        "project_folder": "clipboard-queue-loader",
+        "prompt": (
+            "Minimalist flat app icon, dark slate blue background #0d1520, "
+            "a glowing clipboard with a stacked queue of items and a bright "
+            "loading arrow, representing clipboard history management, "
+            "clean vector style, no text, square icon, sharp edges, "
+            "modern Windows app icon design, 512x512"
+        ),
+    },
+    {
+        "name": "ComfyUIWorkflowEditor",
+        "project_folder": "Cumfy_Workflow_Editor",
+        "prompt": (
+            "Minimalist flat app icon, dark charcoal background #111111, "
+            "glowing node graph with connecting lines and edit cursor, "
+            "representing a visual workflow editor for AI pipelines, "
+            "clean vector style, no text, square icon, sharp edges, "
+            "modern Windows app icon design, 512x512"
+        ),
+    },
+    {
+        "name": "ComfyUIChainAutomator",
+        "project_folder": "CumfyUI_API",
+        "prompt": (
+            "Minimalist flat app icon, dark navy background #0a0f1f, "
+            "a glowing chain of connected film frames with a play button "
+            "and automation arrows, representing automated video segment chaining, "
+            "clean vector style, no text, square icon, sharp edges, "
+            "modern Windows app icon design, 512x512"
+        ),
+    },
+    {
+        "name": "FolderBackupArchiver",
+        "project_folder": "7z_Folder_backup",
+        "prompt": (
+            "Minimalist flat app icon, dark forest green background #0a1a0a, "
+            "a glowing folder with a zipper and a shield checkmark, "
+            "representing compressed folder backup and archiving, "
+            "clean vector style, no text, square icon, sharp edges, "
+            "modern Windows app icon design, 512x512"
+        ),
+    },
+    {
+        "name": "IMDBPhotoDownloader",
+        "project_folder": "IMDB_Scraper",
+        "prompt": (
+            "Minimalist flat app icon, dark amber background #1a1200, "
+            "a glowing movie star silhouette with a downward arrow and "
+            "a film reel, representing celebrity photo downloading, "
+            "clean vector style, no text, square icon, sharp edges, "
+            "modern Windows app icon design, 512x512"
+        ),
+    },
 ]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -310,12 +376,23 @@ def convert_to_ico(png_path: Path, ico_path: Path) -> None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+NEW_APPS = {
+    "AIImageGenerator",
+    "ClipboardQueueLoader",
+    "ComfyUIWorkflowEditor",
+    "ComfyUIChainAutomator",
+    "FolderBackupArchiver",
+    "IMDBPhotoDownloader",
+}
+
+
 def main() -> None:
     OUTPUT_DIR.mkdir(exist_ok=True)
     base_workflow = load_workflow()
 
-    total = len(APPS)
-    for idx, app in enumerate(APPS, 1):
+    apps_to_run = [a for a in APPS if a["name"] in NEW_APPS]
+    total = len(apps_to_run)
+    for idx, app in enumerate(apps_to_run, 1):
         name           = app["name"]
         project_folder = PROJECTS_ROOT / app["project_folder"]
 

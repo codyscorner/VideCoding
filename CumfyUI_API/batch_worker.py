@@ -211,9 +211,7 @@ class BatchChainWorker(QThread):
     # ------------------------------------------------------------------ #
 
     def _collect_outputs(self, seg: int, prompt_id: str, n: int) -> list[Path]:
-        if self._runpod:
-            return self._download_batch_outputs(seg, prompt_id, n)
-        return self._find_local_batch_outputs(seg)
+        return self._download_batch_outputs(seg, prompt_id, n)
 
     def _download_batch_outputs(self, seg: int, prompt_id: str, n: int) -> list[Path]:
         history_url = f"{self._url}/history/{prompt_id}"
@@ -285,22 +283,27 @@ class BatchChainWorker(QThread):
     def _stitch(self, videos: list[Path], img_name: str) -> Path:
         final_dir = Path(self._config.get("final_video_dir", self._config["output_base_dir"]))
         final_dir.mkdir(parents=True, exist_ok=True)
-        concat_file = self._temp_dir / f"concat_{self._run_id}.txt"
-        concat_file.write_text(
-            "\n".join(f"file '{v.as_posix()}'" for v in videos),
-            encoding="utf-8"
-        )
         stem = Path(img_name).stem
         final_path = final_dir / f"{stem}.mp4"
+        n = len(videos)
         ffmpeg = self._config.get("ffmpeg_path", "ffmpeg")
+        inputs = []
+        for v in videos:
+            inputs += ["-i", str(v)]
+        filter_inputs = "".join(f"[{i}:v]" for i in range(n))
+        filter_complex = f"{filter_inputs}concat=n={n}:v=1[out]"
         result = subprocess.run(
-            [ffmpeg, "-y", "-f", "concat", "-safe", "0",
-             "-i", str(concat_file), "-c", "copy", str(final_path)],
+            [ffmpeg, "-y"] + inputs + [
+                "-filter_complex", filter_complex,
+                "-map", "[out]",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                "-an",
+                str(final_path),
+            ],
             capture_output=True, text=True
         )
-        concat_file.unlink(missing_ok=True)
         if result.returncode != 0:
-            raise RuntimeError(f"FFmpeg stitch failed:\n{result.stderr}")
+            raise RuntimeError(f"FFmpeg stitch failed:\n{result.stderr[-3000:]}")
         return final_path
 
     # ------------------------------------------------------------------ #

@@ -65,6 +65,11 @@ class SettingsDialog(QDialog):
             config.get("workflow_dir", ""),
             "Folder containing workflow_segment_XX.json files..."
         )
+        self._loras_edit, _ = self._folder_row(
+            folders_layout, "LoRAs:",
+            config.get("loras_dir", ""),
+            "ComfyUI models/loras folder (used by the segment editor dropdown)..."
+        )
         self._final_edit, _ = self._folder_row(
             folders_layout, "Final Video:",
             config.get("final_video_dir", ""),
@@ -186,6 +191,7 @@ class SettingsDialog(QDialog):
         self._config.set("comfyui_url", self._local_url_edit.text().strip())
         self._config.set("runpod_url", self._runpod_edit.text().strip())
         self._config.set("workflow_dir", self._workflow_edit.text().strip())
+        self._config.set("loras_dir", self._loras_edit.text().strip())
         self._config.set("final_video_dir", self._final_edit.text().strip())
         self._config.set("zip_output_dir", self._zip_edit.text().strip())
         self._config.set("batch_dir_local", self._batch_local_edit.text().strip())

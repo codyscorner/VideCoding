@@ -421,7 +421,7 @@ class ChainWorker(QThread):
         return f"{m:02d}m {s:02d}s"
 
     # Known ComfyUI image loader class types (single frame injection)
-    _IMAGE_LOADER_TYPES = {"LoadImage", "LoadImageMask", "Load Image", "LoadImagesFromDirectory"}
+    _IMAGE_LOADER_TYPES = {"LoadImage", "LoadImageMask", "Load Image", "LoadImagesFromDirectory", "LoadImageListFromDir //Inspire"}
 
     def _detect_input_node(self, workflow: dict, seg_index: int) -> tuple[str, str]:
         """Auto-detect the LoadImage node that receives the injected frame/image."""

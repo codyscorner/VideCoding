@@ -4,7 +4,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QDoubleSpinBox, QSpinBox, QGroupBox, QScrollArea,
-    QWidget, QFormLayout, QDialogButtonBox, QFrame,
+    QWidget, QFormLayout, QDialogButtonBox, QFrame, QComboBox,
 )
 from PyQt6.QtCore import Qt
 from ui.styles import COLORS
@@ -26,11 +26,12 @@ class SegmentEditorDialog(QDialog):
     _CLIP_TYPES  = {"CLIPTextEncode"}
     _WAN_TYPES   = {"WanImageToVideo", "WanVideoToVideo"}
 
-    def __init__(self, segment: int, json_path: Path, parent=None):
+    def __init__(self, segment: int, json_path: Path, config: dict = None, parent=None):
         super().__init__(parent)
         self._json_path = json_path
         self._segment = segment
         self._workflow: dict = {}
+        self._lora_names: list[str] = self._scan_loras(config or {})
 
         self.setWindowTitle(f"Segment {segment} — Quick Edit")
         self.setMinimumSize(700, 560)
@@ -46,7 +47,7 @@ class SegmentEditorDialog(QDialog):
 
     def _load_workflow(self):
         try:
-            with open(self._json_path, "r") as f:
+            with open(self._json_path, "r", encoding="utf-8") as f:
                 self._workflow = json.load(f)
         except Exception as e:
             self._workflow = {}
@@ -55,8 +56,27 @@ class SegmentEditorDialog(QDialog):
             self._load_error = ""
 
     def _save_workflow(self):
-        with open(self._json_path, "w") as f:
+        with open(self._json_path, "w", encoding="utf-8") as f:
             json.dump(self._workflow, f, indent=4)
+
+    def _scan_loras(self, config: dict) -> list[str]:
+        loras_dir = config.get("loras_dir", "")
+        if not loras_dir:
+            workflow_dir = config.get("workflow_dir", "")
+            if workflow_dir:
+                loras_dir = str(Path(workflow_dir).parent / "models" / "loras")
+        if not loras_dir:
+            return []
+        base = Path(loras_dir)
+        if not base.is_dir():
+            return []
+        exts = {".safetensors", ".ckpt", ".pt"}
+        files = sorted(
+            str(p.relative_to(base)).replace("\\", "/")
+            for p in base.rglob("*")
+            if p.suffix.lower() in exts
+        )
+        return files
 
     # ------------------------------------------------------------------ #
     # Identify nodes
@@ -161,8 +181,10 @@ class SegmentEditorDialog(QDialog):
             lora_form.setContentsMargins(12, 12, 12, 12)
 
             for nid, node in lora_nodes:
-                lora_name = node["inputs"].get("lora_name", f"Node {nid}")
+                lora_name = node["inputs"].get("lora_name", "")
                 strength = float(node["inputs"].get("strength_model", 1.0))
+
+                combo = self._lora_combo(lora_name)
                 spinbox = QDoubleSpinBox()
                 spinbox.setRange(0.0, 4.0)
                 spinbox.setSingleStep(0.05)
@@ -170,10 +192,19 @@ class SegmentEditorDialog(QDialog):
                 spinbox.setValue(strength)
                 spinbox.setFixedWidth(90)
                 spinbox.setStyleSheet(self._input_style())
-                name_lbl = QLabel(Path(lora_name).stem)
-                name_lbl.setStyleSheet(f"color: {COLORS['fg_primary']}; font-size: 9pt;")
-                name_lbl.setWordWrap(True)
-                lora_form.addRow(name_lbl, spinbox)
+
+                row = QHBoxLayout()
+                row.setSpacing(6)
+                row.addWidget(combo, stretch=1)
+                strength_lbl = QLabel("Strength:")
+                strength_lbl.setStyleSheet(f"color: {COLORS['fg_dim']}; font-size: 9pt;")
+                row.addWidget(strength_lbl)
+                row.addWidget(spinbox)
+                row_widget = QWidget()
+                row_widget.setLayout(row)
+
+                lora_form.addRow(row_widget)
+                self._editors.append((nid, "lora_name", combo))
                 self._editors.append((nid, "strength_model", spinbox))
 
             content_layout.addWidget(lora_group)
@@ -197,6 +228,7 @@ class SegmentEditorDialog(QDialog):
                 lora_name = inputs.get(key_lora, "None")
                 strength  = float(inputs.get(key_str, 1.0))
                 if lora_name and lora_name != "None":
+                    combo = self._lora_combo(lora_name)
                     spinbox = QDoubleSpinBox()
                     spinbox.setRange(0.0, 4.0)
                     spinbox.setSingleStep(0.05)
@@ -204,10 +236,19 @@ class SegmentEditorDialog(QDialog):
                     spinbox.setValue(strength)
                     spinbox.setFixedWidth(90)
                     spinbox.setStyleSheet(self._input_style())
-                    name_lbl = QLabel(Path(lora_name).stem)
-                    name_lbl.setStyleSheet(f"color: {COLORS['fg_primary']}; font-size: 9pt;")
-                    name_lbl.setWordWrap(True)
-                    stack_form.addRow(name_lbl, spinbox)
+
+                    row = QHBoxLayout()
+                    row.setSpacing(6)
+                    row.addWidget(combo, stretch=1)
+                    strength_lbl = QLabel("Strength:")
+                    strength_lbl.setStyleSheet(f"color: {COLORS['fg_dim']}; font-size: 9pt;")
+                    row.addWidget(strength_lbl)
+                    row.addWidget(spinbox)
+                    row_widget = QWidget()
+                    row_widget.setLayout(row)
+
+                    stack_form.addRow(row_widget)
+                    self._editors.append((nid, key_lora, combo))
                     self._editors.append((nid, key_str, spinbox))
                 i += 1
 
@@ -239,6 +280,8 @@ class SegmentEditorDialog(QDialog):
                 continue
             if isinstance(widget, QTextEdit):
                 node["inputs"][field] = widget.toPlainText()
+            elif isinstance(widget, QComboBox):
+                node["inputs"][field] = widget.currentText()
             elif isinstance(widget, QDoubleSpinBox):
                 node["inputs"][field] = round(widget.value(), 4)
             elif isinstance(widget, QSpinBox):
@@ -310,6 +353,47 @@ class SegmentEditorDialog(QDialog):
                 padding: 0 4px;
             }}
         """
+
+    def _lora_combo(self, current: str) -> QComboBox:
+        combo = QComboBox()
+        combo.setEditable(True)
+        combo.addItems(self._lora_names)
+        idx = combo.findText(current)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        else:
+            combo.setCurrentText(current)
+        combo.setStyleSheet(f"""
+            QComboBox {{
+                background-color: {COLORS['bg_medium']};
+                color: {COLORS['fg_primary']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 3px;
+                padding: 3px 24px 3px 6px;
+                font-size: 9pt;
+            }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 20px;
+                border-left: 1px solid {COLORS['border']};
+            }}
+            QComboBox::down-arrow {{
+                width: 10px;
+                height: 10px;
+                border: 2px solid {COLORS['fg_primary']};
+                border-top: none;
+                border-right: none;
+                transform: rotate(-45deg);
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {COLORS['bg_medium']};
+                color: {COLORS['fg_primary']};
+                selection-background-color: {COLORS['accent']};
+                border: 1px solid {COLORS['border']};
+            }}
+        """)
+        return combo
 
     def _input_style(self) -> str:
         return f"""

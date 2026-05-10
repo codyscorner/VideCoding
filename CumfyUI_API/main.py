@@ -1,6 +1,6 @@
 """
 ComfyUI Workflow Chain Automator
-Version: 2.6.1
+Version: 2.6.3
 """
 
 import sys
@@ -12,7 +12,7 @@ from PyQt6.QtGui import QIcon
 from config import ConfigManager
 from ui.main_window import MainWindow
 
-VERSION = "2.6.1"
+VERSION = "2.6.3"
 
 
 def get_script_dir() -> Path:

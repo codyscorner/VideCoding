@@ -19,7 +19,7 @@ class ConfigManager:
     def _load(self) -> dict:
         if self.config_path.exists():
             try:
-                with open(self.config_path, 'r') as f:
+                with open(self.config_path, 'r', encoding='utf-8') as f:
                     return {**self.DEFAULT, **json.load(f)}
             except (json.JSONDecodeError, OSError):
                 pass
@@ -27,7 +27,7 @@ class ConfigManager:
 
     def save(self) -> bool:
         try:
-            with open(self.config_path, 'w') as f:
+            with open(self.config_path, 'w', encoding='utf-8') as f:
                 json.dump(self._data, f, indent=4)
             return True
         except OSError:
