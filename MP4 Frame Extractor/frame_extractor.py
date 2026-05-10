@@ -259,7 +259,7 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    config_path = Path(__file__).parent / "frame_extractor_config.json"
+    config_path = (Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent) / "frame_extractor_config.json"
     config = ConfigManager(config_path)
 
     window = FrameExtractorApp(config)
