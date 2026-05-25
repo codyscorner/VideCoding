@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
-from PyQt6.QtCore import Qt, QUrl, QEvent
+from PyQt6.QtCore import Qt, QUrl, QEvent, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
 
 from ui.styles import COLORS
@@ -219,7 +219,7 @@ class VideoPlayerDialog(QDialog):
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
             if self._playlist_index < len(self._playlist) - 1:
                 self._playlist_index += 1
-                self._load_current()
+                QTimer.singleShot(0, self._load_current)
 
     def _on_error(self, error, error_string: str):
         self._time_label.setText(f"Error: {error_string}")

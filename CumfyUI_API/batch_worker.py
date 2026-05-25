@@ -162,7 +162,8 @@ class BatchChainWorker(QThread):
                 chain_videos = [segment_outputs[s][i] for s in range(len(workflows))]
                 final = self._stitch(chain_videos, img_name)
                 final_paths.append(str(final))
-                self._log(f"  [{i+1}/{n}] {final.name}")
+                size_kb = final.stat().st_size // 1024
+                self._log(f"  [{i+1}/{n}] {final.name}  ({size_kb} KB)")
 
             self._log(f"Total batch time: {self._fmt(time.time() - batch_start)}")
             self.all_done.emit(final_paths)
@@ -376,7 +377,7 @@ class BatchChainWorker(QThread):
     def _batch_chain_dir(self) -> Path:
         workflow_dir = Path(self._config["workflow_dir"])
         folder = self._config.get("active_chain_folder", "")
-        return workflow_dir / (folder + "_Batch") if folder else workflow_dir
+        return workflow_dir / folder if folder else workflow_dir
 
     def _load_workflow(self, wf: dict) -> dict:
         path = self._batch_chain_dir() / wf["json_file"]

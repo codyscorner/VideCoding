@@ -235,9 +235,9 @@ class MainWindow(QMainWindow):
         folder = self.config.get("active_chain_folder", "")
         wf_dir = Path(self.config.get("workflow_dir", ""))
         if folder and wf_dir:
-            batch_dir = wf_dir / (folder + "_Batch")
-            if batch_dir.exists():
-                return min(len(list(batch_dir.glob("workflow_segment_*_batch.json"))), MAX_SEGMENTS)
+            chain_dir = wf_dir / folder
+            if chain_dir.exists():
+                return min(len(list(chain_dir.glob("workflow_segment_*_batch.json"))), MAX_SEGMENTS)
             return 0
         return min(max(len(self.config.get("workflows", [])), 1), MAX_SEGMENTS)
 
@@ -539,7 +539,7 @@ class MainWindow(QMainWindow):
         n = self._seg_count
 
         if n == 0:
-            no_wf_label = QLabel("No batch workflow files found in _Batch folder")
+            no_wf_label = QLabel("No *_batch.json workflow files found in selected folder")
             no_wf_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             no_wf_label.setStyleSheet(f"color:{COLORS['fg_dim']}; font-size:10pt;")
             self._seg_layout.addWidget(no_wf_label)
@@ -765,7 +765,7 @@ class MainWindow(QMainWindow):
         if wf_dir.exists():
             folders = sorted(
                 p.name for p in wf_dir.iterdir()
-                if p.is_dir() and p.name.startswith("Video_") and not p.name.endswith("_Batch")
+                if p.is_dir()
             )
             for f in folders:
                 self._chain_folder_combo.addItem(f)
@@ -794,7 +794,7 @@ class MainWindow(QMainWindow):
         folder = self.config.get("active_chain_folder", "")
         if folder:
             seg_file = f"workflow_segment_{segment:02d}_batch.json"
-            json_path = workflow_dir / (folder + "_Batch") / seg_file
+            json_path = workflow_dir / folder / seg_file
         else:
             workflows = self.config.get("workflows", [])
             wf = next((w for w in workflows if w["segment"] == segment), None)
@@ -934,7 +934,12 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            existing = [p for p in final_paths if Path(p).exists()]
+            seen: set[str] = set()
+            existing = []
+            for p in final_paths:
+                if Path(p).exists() and p not in seen:
+                    existing.append(p)
+                    seen.add(p)
             if existing:
                 player = VideoPlayerDialog(existing[0], parent=self, playlist=existing)
                 player.exec()
