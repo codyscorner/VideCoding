@@ -14,6 +14,15 @@ from ui.main_window import MainWindow
 
 VERSION = "2.6.3"
 
+# Windows taskbar icon fix — must be called before QApplication
+try:
+    import ctypes
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+        "ComfyUI.ChainAutomator.2"
+    )
+except Exception:
+    pass
+
 
 def get_script_dir() -> Path:
     if getattr(sys, 'frozen', False):
@@ -21,14 +30,28 @@ def get_script_dir() -> Path:
     return Path(__file__).parent
 
 
+def _find_icon() -> Path | None:
+    """Look for app_icon.ico next to the EXE, then in the bundled _MEIPASS dir."""
+    script_dir = get_script_dir()
+    candidate = script_dir / "app_icon.ico"
+    if candidate.exists():
+        return candidate
+    if getattr(sys, 'frozen', False):
+        bundled = Path(sys._MEIPASS) / "app_icon.ico"
+        if bundled.exists():
+            return bundled
+    return None
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("ComfyUI Chain Automator")
 
-    script_dir = get_script_dir()
-    icon_path = script_dir / "app_icon.ico"
-    if icon_path.exists():
+    icon_path = _find_icon()
+    if icon_path:
         app.setWindowIcon(QIcon(str(icon_path)))
+
+    script_dir = get_script_dir()
 
     config_file = script_dir / "main_config.json"
     config_manager = ConfigManager(config_file)

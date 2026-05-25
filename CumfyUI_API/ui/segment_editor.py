@@ -220,40 +220,44 @@ class SegmentEditorDialog(QDialog):
             stack_form.setContentsMargins(12, 12, 12, 12)
 
             inputs = node["inputs"]
-            # Find all lora_NN / strength_NN pairs
+            # Find all lora_NN / strength_NN pairs — always show every slot
             i = 1
             while f"lora_{i:02d}" in inputs or f"lora_0{i}" in inputs:
                 key_lora = f"lora_{i:02d}" if f"lora_{i:02d}" in inputs else f"lora_0{i}"
                 key_str  = f"strength_{i:02d}" if f"strength_{i:02d}" in inputs else f"strength_0{i}"
-                lora_name = inputs.get(key_lora, "None")
-                strength  = float(inputs.get(key_str, 1.0))
-                if lora_name and lora_name != "None":
-                    combo = self._lora_combo(lora_name)
-                    spinbox = QDoubleSpinBox()
-                    spinbox.setRange(0.0, 4.0)
-                    spinbox.setSingleStep(0.05)
-                    spinbox.setDecimals(2)
-                    spinbox.setValue(strength)
-                    spinbox.setFixedWidth(90)
-                    spinbox.setStyleSheet(self._input_style())
+                lora_name = inputs.get(key_lora, "None") or "None"
+                strength  = float(inputs.get(key_str, 0.0))
 
-                    row = QHBoxLayout()
-                    row.setSpacing(6)
-                    row.addWidget(combo, stretch=1)
-                    strength_lbl = QLabel("Strength:")
-                    strength_lbl.setStyleSheet(f"color: {COLORS['fg_dim']}; font-size: 9pt;")
-                    row.addWidget(strength_lbl)
-                    row.addWidget(spinbox)
-                    row_widget = QWidget()
-                    row_widget.setLayout(row)
+                slot_lbl = QLabel(f"Slot {i}:")
+                slot_lbl.setFixedWidth(46)
+                slot_lbl.setStyleSheet(f"color: {COLORS['fg_dim']}; font-size: 9pt;")
 
-                    stack_form.addRow(row_widget)
-                    self._editors.append((nid, key_lora, combo))
-                    self._editors.append((nid, key_str, spinbox))
+                combo = self._lora_combo(lora_name)
+                spinbox = QDoubleSpinBox()
+                spinbox.setRange(0.0, 4.0)
+                spinbox.setSingleStep(0.05)
+                spinbox.setDecimals(2)
+                spinbox.setValue(strength)
+                spinbox.setFixedWidth(90)
+                spinbox.setStyleSheet(self._input_style())
+
+                row = QHBoxLayout()
+                row.setSpacing(6)
+                row.addWidget(slot_lbl)
+                row.addWidget(combo, stretch=1)
+                strength_lbl = QLabel("Strength:")
+                strength_lbl.setStyleSheet(f"color: {COLORS['fg_dim']}; font-size: 9pt;")
+                row.addWidget(strength_lbl)
+                row.addWidget(spinbox)
+                row_widget = QWidget()
+                row_widget.setLayout(row)
+
+                stack_form.addRow(row_widget)
+                self._editors.append((nid, key_lora, combo))
+                self._editors.append((nid, key_str, spinbox))
                 i += 1
 
-            if stack_form.rowCount() > 0:
-                content_layout.addWidget(stack_group)
+            content_layout.addWidget(stack_group)
 
         content_layout.addStretch()
 
@@ -357,6 +361,7 @@ class SegmentEditorDialog(QDialog):
     def _lora_combo(self, current: str) -> QComboBox:
         combo = QComboBox()
         combo.setEditable(True)
+        combo.addItem("None")
         combo.addItems(self._lora_names)
         idx = combo.findText(current)
         if idx >= 0:

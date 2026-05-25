@@ -45,7 +45,10 @@
       "Bash(git rm:*)",
       "Bash(git fetch:*)",
       "Bash(cmd /c build_exe.bat)",
-      "Bash(start \"\" \"p:/AI/VideCoding/Calculator/dist/MidnightCalculator.exe\")"
+      "Bash(start \"\" \"p:/AI/VideCoding/Calculator/dist/MidnightCalculator.exe\")",
+      "PowerShell($logFile = \"p:\\\\AI\\\\VideCoding\\\\FluxGenerator\\\\error_log.txt\")",
+      "PowerShell(Get-Process -Name \"python\" -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Force)"
     ],
     "deny": [],
     "ask": []

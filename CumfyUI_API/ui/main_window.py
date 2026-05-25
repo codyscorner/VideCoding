@@ -13,7 +13,6 @@ from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QIcon, QPainter, QImage
 
 from config import ConfigManager
-from worker import ChainWorker
 from batch_worker import BatchChainWorker
 from ui.styles import STYLESHEET, COLORS
 from ui.video_player import VideoPlayerDialog
@@ -215,13 +214,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config = config_manager
         self.version = version
-        self._worker: ChainWorker | BatchChainWorker | None = None
+        self._worker: BatchChainWorker | None = None
         self._img_loader: ImageLoaderThread | None = None
         self._vid_loader: VideoLoaderThread | None = None
         self._last_vid_dir: str = ""
         self._seg_dots: list[SegmentDot] = []
         self._seg_time_labels: list[QLabel] = []
-        self._batch_mode: bool = False
 
         self.setWindowTitle(f"ComfyUI Chain Automator  v{version}")
         self.setMinimumSize(1200, 780)
@@ -236,10 +234,11 @@ class MainWindow(QMainWindow):
     def _seg_count(self) -> int:
         folder = self.config.get("active_chain_folder", "")
         wf_dir = Path(self.config.get("workflow_dir", ""))
-        if folder and (wf_dir / folder).exists():
-            count = len(list((wf_dir / folder).glob("workflow_segment_*.json")))
-            if count > 0:
-                return min(count, MAX_SEGMENTS)
+        if folder and wf_dir:
+            batch_dir = wf_dir / (folder + "_Batch")
+            if batch_dir.exists():
+                return min(len(list(batch_dir.glob("workflow_segment_*_batch.json"))), MAX_SEGMENTS)
+            return 0
         return min(max(len(self.config.get("workflows", [])), 1), MAX_SEGMENTS)
 
     def _ffmpeg_path(self) -> str:
@@ -373,15 +372,16 @@ class MainWindow(QMainWindow):
         folder_row.addWidget(self._show_all_chk)
         left.addLayout(folder_row)
 
-        self._img_group = QGroupBox("Starting Image — click to select")
+        self._img_group = QGroupBox("Starting Images — Ctrl+click or Shift+click to select multiple")
         img_layout = QVBoxLayout(self._img_group)
         img_layout.setContentsMargins(6, 6, 6, 6)
         self.image_grid = ThumbnailGrid()
+        self.image_grid.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         img_layout.addWidget(self.image_grid)
         self.image_grid.itemSelectionChanged.connect(self._on_image_selected)
         left.addWidget(self._img_group, stretch=1)
 
-        self.selected_label = QLabel("Click an image to select it as the starting frame")
+        self.selected_label = QLabel("Select images to include in the batch")
         self.selected_label.setObjectName("subtitle")
         self.selected_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         left.addWidget(self.selected_label)
@@ -410,47 +410,6 @@ class MainWindow(QMainWindow):
         chain_sel_row.addWidget(refresh_chain_btn)
         right.addLayout(chain_sel_row)
 
-        # ── Single / Batch mode toggle ────────────────────────────────────
-        mode_toggle_style = f"""
-            QPushButton {{
-                background-color: {COLORS['bg_light']};
-                color: {COLORS['fg_secondary']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 4px;
-                font-size: 10pt;
-                font-weight: bold;
-                padding: 3px 14px;
-            }}
-            QPushButton:checked {{
-                background-color: {COLORS['accent']};
-                color: white;
-                border: 1px solid {COLORS['accent']};
-            }}
-            QPushButton:hover:!checked {{ background-color: {COLORS['bg_medium']}; }}
-        """
-        run_mode_row = QHBoxLayout()
-        run_mode_lbl = QLabel("Mode:")
-        run_mode_lbl.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
-        run_mode_lbl.setFixedWidth(48)
-        self._single_mode_btn = QPushButton("◾  Single")
-        self._single_mode_btn.setCheckable(True)
-        self._single_mode_btn.setChecked(True)
-        self._single_mode_btn.setFixedHeight(28)
-        self._single_mode_btn.setStyleSheet(mode_toggle_style)
-        self._single_mode_btn.clicked.connect(lambda: self._set_batch_mode(False))
-        self._batch_mode_btn = QPushButton("⬛  Batch")
-        self._batch_mode_btn.setCheckable(True)
-        self._batch_mode_btn.setChecked(False)
-        self._batch_mode_btn.setFixedHeight(28)
-        self._batch_mode_btn.setStyleSheet(mode_toggle_style)
-        self._batch_mode_btn.clicked.connect(lambda: self._set_batch_mode(True))
-        run_mode_row.addWidget(run_mode_lbl)
-        run_mode_row.addWidget(self._single_mode_btn)
-        run_mode_row.addSpacing(4)
-        run_mode_row.addWidget(self._batch_mode_btn)
-        run_mode_row.addStretch()
-        right.addLayout(run_mode_row)
-
         self._seg_group = QGroupBox("Segment Progress")
         self._seg_layout = QVBoxLayout(self._seg_group)
         self._rebuild_seg_panel()
@@ -472,7 +431,7 @@ class MainWindow(QMainWindow):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        self.start_btn = QPushButton("▶  Start Chain")
+        self.start_btn = QPushButton("▶  Start Batch")
         self.start_btn.clicked.connect(self._start)
         self.cancel_btn = QPushButton("✕  Cancel")
         self.cancel_btn.setObjectName("cancel_btn")
@@ -579,6 +538,21 @@ class MainWindow(QMainWindow):
         self._seg_time_labels = []
         n = self._seg_count
 
+        if n == 0:
+            no_wf_label = QLabel("No batch workflow files found in _Batch folder")
+            no_wf_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            no_wf_label.setStyleSheet(f"color:{COLORS['fg_dim']}; font-size:10pt;")
+            self._seg_layout.addWidget(no_wf_label)
+            self.progress_bar = QProgressBar()
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(0)
+            self._seg_layout.addWidget(self.progress_bar)
+            self.progress_label = QLabel("No workflows configured")
+            self.progress_label.setObjectName("subtitle")
+            self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._seg_layout.addWidget(self.progress_label)
+            return
+
         dots_row = QHBoxLayout()
         dots_row.setSpacing(6)
         dots_row.addStretch()
@@ -673,7 +647,7 @@ class MainWindow(QMainWindow):
         if total == 0:
             self.selected_label.setText("No images found in input folder")
         else:
-            self.selected_label.setText("Click an image to select it as the starting frame")
+            self.selected_label.setText("Select images to include in the batch")
 
     def _browse_input_dir(self):
         current = self._input_dir_edit.text().strip()
@@ -684,32 +658,13 @@ class MainWindow(QMainWindow):
             self.config.save()
             self._populate_images()
 
-    def _set_batch_mode(self, batch: bool):
-        self._batch_mode = batch
-        self._single_mode_btn.setChecked(not batch)
-        self._batch_mode_btn.setChecked(batch)
-        if batch:
-            self.image_grid.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-            self._img_group.setTitle("Starting Images — Ctrl+click or Shift+click to select multiple")
-            self.start_btn.setText("▶  Start Batch")
-            self.selected_label.setText("Select images to include in the batch")
-        else:
-            self.image_grid.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-            self.image_grid.clearSelection()
-            self._img_group.setTitle("Starting Image — click to select")
-            self.start_btn.setText("▶  Start Chain")
-            self.selected_label.setText("Click an image to select it as the starting frame")
-
     def _on_image_selected(self):
         keys = self.image_grid.selected_keys()
         if not keys:
             return
-        if self._batch_mode:
-            self.selected_label.setText(
-                f"{len(keys)} image{'s' if len(keys) > 1 else ''} selected"
-            )
-        else:
-            self.selected_label.setText(f"Selected: {keys[0]}")
+        self.selected_label.setText(
+            f"{len(keys)} image{'s' if len(keys) > 1 else ''} selected"
+        )
 
     # ------------------------------------------------------------------ #
     # Video library (Library view)
@@ -838,8 +793,8 @@ class MainWindow(QMainWindow):
         workflow_dir = Path(self.config.get("workflow_dir", ""))
         folder = self.config.get("active_chain_folder", "")
         if folder:
-            seg_file = f"workflow_segment_{segment:02d}.json"
-            json_path = workflow_dir / folder / seg_file
+            seg_file = f"workflow_segment_{segment:02d}_batch.json"
+            json_path = workflow_dir / (folder + "_Batch") / seg_file
         else:
             workflows = self.config.get("workflows", [])
             wf = next((w for w in workflows if w["segment"] == segment), None)
@@ -907,44 +862,24 @@ class MainWindow(QMainWindow):
         self.config.save()
         self.final_label.setText("")
 
-        if self._batch_mode:
-            keys = self.image_grid.selected_keys()
-            if not keys:
-                QMessageBox.critical(self, "Error", "Select at least one image for the batch.")
-                return
-            self._reset_ui()
-            self.start_btn.setEnabled(False)
-            self.cancel_btn.setEnabled(True)
-            self.progress_label.setText(f"Batch: {len(keys)} images — Starting...")
-            self._worker = BatchChainWorker(self.config.get_all(), keys)
-            self._worker.log.connect(self._on_log)
-            self._worker.segment_done.connect(self._on_segment_done)
-            self._worker.segment_time.connect(self._on_segment_time)
-            self._worker.all_done.connect(self._on_batch_done)
-            self._worker.error.connect(self._on_error)
-            self._worker.finished.connect(self._on_worker_finished)
-            self._worker.start()
-            self._seg_dots[0].set_active()
-            self.progress_label.setText(f"Batch: {len(keys)} images — Segment 1/{self._seg_count}...")
-        else:
-            image_name = self.image_grid.selected_key()
-            if not image_name:
-                QMessageBox.critical(self, "Error", "Click an image to select it as the starting image.")
-                return
-            self._reset_ui()
-            self.start_btn.setEnabled(False)
-            self.cancel_btn.setEnabled(True)
-            self.progress_label.setText("Starting...")
-            self._worker = ChainWorker(self.config.get_all(), image_name)
-            self._worker.log.connect(self._on_log)
-            self._worker.segment_done.connect(self._on_segment_done)
-            self._worker.segment_time.connect(self._on_segment_time)
-            self._worker.stitch_done.connect(self._on_stitch_done)
-            self._worker.error.connect(self._on_error)
-            self._worker.finished.connect(self._on_worker_finished)
-            self._worker.start()
-            self._seg_dots[0].set_active()
-            self.progress_label.setText(f"Segment 1/{self._seg_count} — running...")
+        keys = self.image_grid.selected_keys()
+        if not keys:
+            QMessageBox.critical(self, "Error", "Select at least one image for the batch.")
+            return
+        self._reset_ui()
+        self.start_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.progress_label.setText(f"Batch: {len(keys)} images — Starting...")
+        self._worker = BatchChainWorker(self.config.get_all(), keys)
+        self._worker.log.connect(self._on_log)
+        self._worker.segment_done.connect(self._on_segment_done)
+        self._worker.segment_time.connect(self._on_segment_time)
+        self._worker.all_done.connect(self._on_batch_done)
+        self._worker.error.connect(self._on_error)
+        self._worker.finished.connect(self._on_worker_finished)
+        self._worker.start()
+        self._seg_dots[0].set_active()
+        self.progress_label.setText(f"Batch: {len(keys)} images — Segment 1/{self._seg_count}...")
 
     def _cancel(self):
         if self._worker:
@@ -975,12 +910,9 @@ class MainWindow(QMainWindow):
         if seg < n:
             if seg < len(self._seg_dots):
                 self._seg_dots[seg].set_active()
-            label = f"Segment {seg + 1}/{n} — running..."
-            if self._batch_mode:
-                label = f"Batch — {label}"
-            self.progress_label.setText(label)
+            self.progress_label.setText(f"Batch — Segment {seg + 1}/{n} — running...")
         else:
-            self.progress_label.setText("Stitching final video..." if not self._batch_mode else "Stitching all videos...")
+            self.progress_label.setText("Stitching all videos...")
 
     def _on_stitch_done(self, final_path: str):
         self.final_label.setText(f"Final video saved: {final_path}")

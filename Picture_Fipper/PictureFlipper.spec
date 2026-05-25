@@ -4,64 +4,86 @@ PictureFlipper.spec — PyInstaller build spec.
 
 Layout (dist/PictureFlipper/):
   PictureFlipper.exe      ← launcher (small)
-  _internal/              ← Python runtime + all deps (external DLLs)
-  models/                 ← yolov8n.pt  (copy manually or via post-build)
-  deepface_weights/       ← facenet_weights.h5 etc.  (copy manually)
+  _internal/              ← Python runtime + all deps
+  models/                 ← yolov8n.pt  (copied post-build)
+  .deepface/weights/      ← facenet_weights.h5 etc. (copied post-build)
 """
-import os, sys
+import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_all
 
 HERE = Path(SPECPATH)  # noqa: F821  (PyInstaller injects SPECPATH)
 
-# ── Collect deepface package data (commons/config/models sub-packages) ────────
-import deepface as _df
-deepface_pkg = Path(_df.__file__).parent
+# ── Locate package dirs via sys.path (avoids importing torch/ultralytics) ──────
+def _find_pkg(name: str) -> Path:
+    for p in sys.path:
+        candidate = Path(p) / name
+        if candidate.is_dir():
+            return candidate
+    raise FileNotFoundError(f"Cannot find package '{name}' in sys.path")
 
-# ── Hidden imports needed by ultralytics / deepface ───────────────────────────
-HIDDEN = [
-    # PySide6
-    'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets',
-    # Image / ML
-    'PIL', 'PIL.Image', 'PIL.ImageChops',
-    'numpy', 'cv2',
-    # YOLO
-    'ultralytics', 'ultralytics.models', 'ultralytics.nn.tasks',
-    'ultralytics.utils', 'ultralytics.utils.ops',
-    # DeepFace
-    'deepface', 'deepface.DeepFace',
-    'deepface.commons', 'deepface.commons.image_utils',
-    'deepface.commons.package_utils',
-    'deepface.models', 'deepface.models.facial_recognition',
-    'deepface.modules',
-    # TF / Keras (DeepFace Facenet backend)
-    'tensorflow', 'tf_keras',
-    # scipy (distance metrics used by deepface)
-    'scipy', 'scipy.spatial', 'scipy.spatial.distance',
-    # pandas (required by deepface internals)
-    'pandas',
-]
+deepface_pkg   = _find_pkg('deepface')
+ultralytics_pkg = _find_pkg('ultralytics')
+
+# ── collect_all for packages with dynamic/runtime imports ─────────────────────
+# tensorflow: hundreds of ops modules loaded dynamically at runtime
+tf_datas,     tf_binaries,     tf_hidden     = collect_all('tensorflow')
+# tf_keras: keras backend loaded dynamically
+tfk_datas,    tfk_binaries,    tfk_hidden    = collect_all('tf_keras')
+# tqdm: TF pulls it in partially — full collection prevents "unknown location"
+tqdm_datas,   tqdm_binaries,   tqdm_hidden   = collect_all('tqdm')
+# pandas: deepface uses internal submodules (e.g. _config.display)
+pd_datas,     pd_binaries,     pd_hidden     = collect_all('pandas')
+
+# ── Merge all collected results ───────────────────────────────────────────────
+ALL_DATAS = (
+    tf_datas + tfk_datas + tqdm_datas + pd_datas + [
+        (str(HERE / 'app_icon.ico'), '.'),
+        # deepface: copy the whole package as data so dynamic backends are importable
+        (str(deepface_pkg), 'deepface'),
+        # ultralytics: config files + default assets
+        (str(ultralytics_pkg / 'cfg'),    'ultralytics/cfg'),
+        (str(ultralytics_pkg / 'assets'), 'ultralytics/assets'),
+        # OpenCV Haar cascade XMLs required by deepface's opencv detector
+        (str(_find_pkg('cv2') / 'data'), 'cv2/data'),
+    ]
+)
+
+ALL_BINARIES = tf_binaries + tfk_binaries + tqdm_binaries + pd_binaries
+
+ALL_HIDDEN = (
+    tf_hidden + tfk_hidden + tqdm_hidden + pd_hidden + [
+        # PySide6 GUI
+        'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets',
+        # Image processing
+        'PIL', 'PIL.Image', 'PIL.ImageChops',
+        'numpy', 'cv2',
+        # YOLO person detection
+        'ultralytics', 'ultralytics.models', 'ultralytics.nn.tasks',
+        'ultralytics.utils', 'ultralytics.utils.ops',
+        # DeepFace face matching (all submodules deepface imports dynamically)
+        'deepface', 'deepface.DeepFace',
+        'deepface.commons', 'deepface.commons.image_utils',
+        'deepface.commons.package_utils',
+        'deepface.models', 'deepface.models.facial_recognition',
+        'deepface.modules', 'deepface.modules.representation',
+        'deepface.modules.detection', 'deepface.modules.recognition',
+        'deepface.detectors', 'deepface.detectors.OpenCvWrapper',
+        # scipy distance metrics used by deepface
+        'scipy', 'scipy.spatial', 'scipy.spatial.distance',
+    ]
+)
 
 a = Analysis(
     [str(HERE / 'main.py')],
     pathex=[str(HERE)],
-    binaries=[],
-    datas=[
-        # app icon
-        (str(HERE / 'app_icon.ico'), '.'),
-        # deepface package data (detection / recognition model configs)
-        (str(deepface_pkg), 'deepface'),
-        # ultralytics cfg + assets
-        (str(Path(__import__('ultralytics').__file__).parent / 'cfg'), 'ultralytics/cfg'),
-        (str(Path(__import__('ultralytics').__file__).parent / 'assets'), 'ultralytics/assets'),
-        # OpenCV Haar cascade XML files (required by deepface opencv detector)
-        (str(Path(__import__('cv2').__file__).parent / 'data'), 'cv2/data'),
-    ],
-    hiddenimports=HIDDEN,
+    binaries=ALL_BINARIES,
+    datas=ALL_DATAS,
+    hiddenimports=ALL_HIDDEN,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[str(HERE / 'runtime_hook.py')],
     excludes=[
-        # Keep bundle lean — we don't use these
         'matplotlib', 'sklearn', 'IPython',
         'notebook', 'jupyter', 'sphinx', 'pytest',
         'tkinter', '_tkinter',
@@ -76,13 +98,13 @@ exe = EXE(  # noqa: F821
     pyz,
     a.scripts,
     [],
-    exclude_binaries=True,   # ← DLLs go into COLLECT folder, not the EXE
+    exclude_binaries=True,
     name='PictureFlipper',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,           # no console window
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

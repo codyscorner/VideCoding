@@ -47,8 +47,8 @@
             "input_type": "frame"
         }
     ],
-    "mode": "local",
-    "runpod_url": "https://zkp2bkfg7p6zta-8188.proxy.runpod.net/",
+    "mode": "runpod",
+    "runpod_url": "https://dd9wq04wzccli8-8188.proxy.runpod.net/",
     "ffmpeg_path": "C:/AI/CumfyUI/.venv/Lib/site-packages/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe",
     "final_video_dir": "B:/AI/CumfyVideoChain_output",
     "zip_output_dir": "C:/AI/CumfyUI/output/video/Completed",
@@ -56,7 +56,7 @@
     "batch_dir_runpod": "/workspace/runpod-slim/Batch_Processing",
     "runpod_input_dir": "/workspace/runpod-slim/ComfyUI/input",
     "_base_dir": "P:\\AI\\VideCoding\\CumfyUI_API",
-    "active_chain_folder": "Video_Dev_Testing",
+    "active_chain_folder": "Video_Kiss2Creampie_Doggie",
     "image_gen_positive": "A white teen couple standing in the driveway of a house, both wearing jeans",
     "image_gen_negative": "",
     "loras_dir": "C:/AI/CumfyUI/models/loras"
