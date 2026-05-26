@@ -284,9 +284,12 @@ class BatchChainWorker(QThread):
     def _stitch(self, videos: list[Path], img_name: str) -> Path:
         final_dir = Path(self._config.get("final_video_dir", self._config["output_base_dir"]))
         final_dir.mkdir(parents=True, exist_ok=True)
-        p = Path(img_name)
-        stem = f"{p.stem}_{p.suffix.lstrip('.')}"
+        stem = Path(img_name).stem
         final_path = final_dir / f"{stem}.mp4"
+        counter = 1
+        while final_path.exists():
+            final_path = final_dir / f"{stem}_{counter}.mp4"
+            counter += 1
         n = len(videos)
         ffmpeg = self._config.get("ffmpeg_path", "ffmpeg")
         inputs = []

@@ -12,7 +12,7 @@ from PyQt6.QtGui import QIcon
 from config import ConfigManager
 from ui.main_window import MainWindow
 
-VERSION = "2.7.2"
+VERSION = "2.7.3"
 
 # Windows taskbar icon fix — must be called before QApplication
 try:
