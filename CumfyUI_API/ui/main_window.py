@@ -601,11 +601,19 @@ class MainWindow(QMainWindow):
     # Image picker (Chain view)
     # ------------------------------------------------------------------ #
 
-    def _existing_video_stems(self) -> set[str]:
+    def _existing_video_counts(self) -> dict[str, int]:
+        """Return {base_stem: video_count}, stripping _N suffixes from auto-numbered outputs."""
+        import re
         vid_dir = Path(self.config.get("final_video_dir", ""))
         if not vid_dir.exists():
-            return set()
-        return {p.stem for p in vid_dir.iterdir() if p.suffix.lower() in VIDEO_EXTS}
+            return {}
+        counts: dict[str, int] = {}
+        for p in vid_dir.iterdir():
+            if p.suffix.lower() not in VIDEO_EXTS:
+                continue
+            base = re.sub(r'_\d+$', '', p.stem)
+            counts[base] = counts.get(base, 0) + 1
+        return counts
 
     def _populate_images(self):
         input_dir = Path(self._input_dir_edit.text().strip() or self.config.get("input_dir", ""))
@@ -627,7 +635,16 @@ class MainWindow(QMainWindow):
             self.start_btn.setEnabled(True)
             return
 
-        excluded = set() if self._show_all_chk.isChecked() else self._existing_video_stems()
+        if self._show_all_chk.isChecked():
+            excluded = set()
+        else:
+            video_counts = self._existing_video_counts()
+            image_counts: dict[str, int] = {}
+            for p in input_dir.rglob("*"):
+                if p.suffix.lower() in IMAGE_EXTS:
+                    image_counts[p.stem] = image_counts.get(p.stem, 0) + 1
+            excluded = {stem for stem, vc in video_counts.items()
+                        if vc >= image_counts.get(stem, 1)}
         self._img_loader = ImageLoaderThread(input_dir, excluded)
         self._img_loader.image_ready.connect(self.image_grid.add_item)
         self._img_loader.progress.connect(self._on_img_load_progress)
