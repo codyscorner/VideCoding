@@ -3,7 +3,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox,
     QLabel, QLineEdit, QPushButton, QRadioButton, QButtonGroup,
-    QFileDialog, QDialogButtonBox,
+    QFileDialog, QDialogButtonBox, QCheckBox,
 )
 from PyQt6.QtCore import Qt
 
@@ -113,6 +113,23 @@ class SettingsDialog(QDialog):
         )
         layout.addWidget(ffmpeg_group)
 
+        # ── Completion Sound ──────────────────────────────────────────────
+        sound_group = QGroupBox("Completion Sound")
+        sound_layout = QVBoxLayout(sound_group)
+        sound_layout.setSpacing(10)
+
+        self._sound_enabled_chk = QCheckBox("Play a sound when the batch finishes")
+        self._sound_enabled_chk.setChecked(bool(config.get("completion_sound_enabled", False)))
+        self._sound_enabled_chk.setStyleSheet(f"color: {COLORS['fg_primary']};")
+        sound_layout.addWidget(self._sound_enabled_chk)
+
+        self._sound_file_edit, _ = self._audio_file_row(
+            sound_layout, "Sound File:",
+            config.get("completion_sound_path", ""),
+            "Path to a .wav or .mp3 audio file..."
+        )
+        layout.addWidget(sound_group)
+
         # OK / Cancel
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -177,11 +194,38 @@ class SettingsDialog(QDialog):
         if folder:
             edit.setText(folder)
 
+    def _audio_file_row(self, parent_layout, label: str, value: str, placeholder: str):
+        row = QHBoxLayout()
+        lbl = QLabel(label)
+        lbl.setFixedWidth(110)
+        lbl.setStyleSheet(f"color: {COLORS['fg_primary']};")
+        edit = QLineEdit(value)
+        edit.setPlaceholderText(placeholder)
+        btn = QPushButton("...")
+        btn.setFixedWidth(40)
+        btn.setFixedHeight(30)
+        btn.clicked.connect(lambda: self._browse_audio(edit))
+        row.addWidget(lbl)
+        row.addWidget(edit, stretch=1)
+        row.addWidget(btn)
+        parent_layout.addLayout(row)
+        return edit, btn
+
     def _browse_file(self, edit: QLineEdit):
         current = edit.text().strip()
         path, _ = QFileDialog.getOpenFileName(
             self, "Select FFmpeg", current or str(Path.home()),
             "Executables (*.exe);;All Files (*)"
+        )
+        if path:
+            edit.setText(path)
+
+    def _browse_audio(self, edit: QLineEdit):
+        current = edit.text().strip()
+        start_dir = str(Path(current).parent) if current else str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Audio File", start_dir,
+            "Audio Files (*.wav *.mp3 *.ogg *.flac *.aac *.m4a *.wma);;All Files (*)"
         )
         if path:
             edit.setText(path)
@@ -198,5 +242,7 @@ class SettingsDialog(QDialog):
         self._config.set("batch_dir_runpod", self._batch_runpod_edit.text().strip())
         self._config.set("runpod_input_dir", self._runpod_input_edit.text().strip())
         self._config.set("ffmpeg_path", self._ffmpeg_edit.text().strip())
+        self._config.set("completion_sound_enabled", self._sound_enabled_chk.isChecked())
+        self._config.set("completion_sound_path", self._sound_file_edit.text().strip())
         self._config.save()
         self.accept()

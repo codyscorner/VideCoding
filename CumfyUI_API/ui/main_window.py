@@ -1,12 +1,16 @@
 from datetime import datetime
 from pathlib import Path
 import subprocess
+import threading
+
+from PIL import Image, ImageOps
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QPushButton, QLineEdit,
     QProgressBar, QListWidget, QListWidgetItem, QGroupBox,
     QVBoxLayout, QHBoxLayout, QStackedWidget,
     QDialog, QMessageBox, QAbstractItemView, QFileDialog, QCheckBox, QComboBox,
+    QProgressDialog,
 )
 
 from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
@@ -55,7 +59,14 @@ class ImageLoaderThread(QThread):
         for img_path in images:
             if self._cancelled:
                 return
-            img = QImage(str(img_path))
+            try:
+                pil_img = Image.open(img_path)
+                pil_img = ImageOps.exif_transpose(pil_img)
+                pil_img = pil_img.convert("RGBA")
+                data = pil_img.tobytes("raw", "RGBA")
+                img = QImage(data, pil_img.width, pil_img.height, QImage.Format.Format_RGBA8888)
+            except Exception:
+                img = QImage(str(img_path))
             if img.isNull():
                 continue
             img = img.scaled(THUMB_SIZE, THUMB_SIZE,
@@ -72,13 +83,16 @@ class ImageLoaderThread(QThread):
 class VideoLoaderThread(QThread):
     """Loads video thumbnails from cache; generates missing ones via FFmpeg."""
     video_ready = pyqtSignal(QImage, str, str)  # image, full_path, label
-    progress = pyqtSignal(int, int)
+    progress = pyqtSignal(int, int)              # current, total (thumbnail generation)
+    thumbnails_needed = pyqtSignal(int)          # fires with count before generation starts
     finished_loading = pyqtSignal(int)
 
-    def __init__(self, video_dir: Path, ffmpeg: str):
+    def __init__(self, video_dir: Path, ffmpeg: str, sort_key=None, sort_reverse: bool = False):
         super().__init__()
         self._video_dir = video_dir
         self._ffmpeg = ffmpeg
+        self._sort_key = sort_key or (lambda p: p.name.lower())
+        self._sort_reverse = sort_reverse
         self._cancelled = False
 
     def cancel(self):
@@ -89,17 +103,31 @@ class VideoLoaderThread(QThread):
         thumb_dir.mkdir(exist_ok=True)
 
         videos = sorted(
-            p for p in self._video_dir.iterdir()
-            if p.suffix.lower() in VIDEO_EXTS
+            (p for p in self._video_dir.iterdir() if p.suffix.lower() in VIDEO_EXTS),
+            key=self._sort_key,
+            reverse=self._sort_reverse,
         )
-        total = len(videos)
+
+        # Phase 1: generate any missing thumbnails
+        missing = [
+            (v, thumb_dir / (v.stem + ".jpg"))
+            for v in videos
+            if not (thumb_dir / (v.stem + ".jpg")).exists()
+        ]
+        if missing:
+            self.thumbnails_needed.emit(len(missing))
+            for i, (vid_path, thumb_path) in enumerate(missing, 1):
+                if self._cancelled:
+                    return
+                self._extract_frame(vid_path, thumb_path)
+                self.progress.emit(i, len(missing))
+
+        # Phase 2: load all into grid
         loaded = 0
         for vid_path in videos:
             if self._cancelled:
                 return
             thumb_path = thumb_dir / (vid_path.stem + ".jpg")
-            if not thumb_path.exists():
-                self._extract_frame(vid_path, thumb_path)
             img = QImage(str(thumb_path))
             if img.isNull():
                 continue
@@ -108,7 +136,6 @@ class VideoLoaderThread(QThread):
                              Qt.TransformationMode.SmoothTransformation)
             self.video_ready.emit(img, str(vid_path), vid_path.name)
             loaded += 1
-            self.progress.emit(loaded, total)
         self.finished_loading.emit(loaded)
 
     def _extract_frame(self, vid_path: Path, thumb_path: Path):
@@ -116,7 +143,8 @@ class VideoLoaderThread(QThread):
             subprocess.run(
                 [self._ffmpeg, "-y", "-i", str(vid_path),
                  "-vframes", "1", "-q:v", "3", str(thumb_path)],
-                capture_output=True, timeout=15
+                capture_output=True, timeout=15,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
         except Exception:
             pass
@@ -210,6 +238,15 @@ class SegmentDot(QLabel):
 # ------------------------------------------------------------------ #
 
 class MainWindow(QMainWindow):
+    _VID_SORT_OPTIONS = [
+        ("Newest First",   lambda p: p.stat().st_mtime, True),
+        ("Oldest First",   lambda p: p.stat().st_mtime, False),
+        ("Name A → Z",     lambda p: p.name.lower(),    False),
+        ("Name Z → A",     lambda p: p.name.lower(),    True),
+        ("Largest First",  lambda p: p.stat().st_size,  True),
+        ("Smallest First", lambda p: p.stat().st_size,  False),
+    ]
+
     def __init__(self, config_manager: ConfigManager, version: str):
         super().__init__()
         self.config = config_manager
@@ -466,6 +503,12 @@ class MainWindow(QMainWindow):
         refresh_btn = QPushButton("↻  Refresh")
         refresh_btn.setFixedHeight(40)
         refresh_btn.clicked.connect(lambda: self._populate_videos(force=True))
+        self._vid_sort_combo = QComboBox()
+        self._vid_sort_combo.setFixedHeight(40)
+        self._vid_sort_combo.setMinimumWidth(160)
+        for label, *_ in self._VID_SORT_OPTIONS:
+            self._vid_sort_combo.addItem(label)
+        self._vid_sort_combo.currentIndexChanged.connect(self._on_vid_sort_changed)
         self._vid_delete_btn = QPushButton("🗑  Delete")
         self._vid_delete_btn.setFixedHeight(40)
         self._vid_delete_btn.setObjectName("cancel_btn")
@@ -475,6 +518,8 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._vid_dir_edit, stretch=1)
         toolbar.addWidget(vid_browse_btn)
         toolbar.addSpacing(8)
+        toolbar.addWidget(self._vid_sort_combo)
+        toolbar.addSpacing(4)
         toolbar.addWidget(refresh_btn)
         toolbar.addSpacing(4)
         toolbar.addWidget(self._vid_delete_btn)
@@ -485,9 +530,10 @@ class MainWindow(QMainWindow):
         vid_layout = QVBoxLayout(vid_group)
         vid_layout.setContentsMargins(6, 6, 6, 6)
         self.video_grid = ThumbnailGrid()
+        self.video_grid.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.video_grid.itemDoubleClicked.connect(self._on_video_double_clicked)
         self.video_grid.itemSelectionChanged.connect(
-            lambda: self._vid_delete_btn.setEnabled(self.video_grid.selected_key() is not None)
+            lambda: self._vid_delete_btn.setEnabled(bool(self.video_grid.selected_keys()))
         )
         vid_layout.addWidget(self.video_grid)
         layout.addWidget(vid_group, stretch=1)
@@ -601,19 +647,21 @@ class MainWindow(QMainWindow):
     # Image picker (Chain view)
     # ------------------------------------------------------------------ #
 
-    def _existing_video_counts(self) -> dict[str, int]:
-        """Return {base_stem: video_count}, stripping _N suffixes from auto-numbered outputs."""
+    def _existing_video_stems(self) -> set[str]:
+        """Return stems of videos in the final video folder.
+        Adds both the raw stem and the _N-stripped stem so images like
+        'photo_1.png' are excluded when 'photo_1.mp4' exists, and plain
+        'photo.png' is excluded when 'photo_1.mp4' (auto-numbered) exists."""
         import re
         vid_dir = Path(self.config.get("final_video_dir", ""))
         if not vid_dir.exists():
-            return {}
-        counts: dict[str, int] = {}
+            return set()
+        stems: set[str] = set()
         for p in vid_dir.iterdir():
-            if p.suffix.lower() not in VIDEO_EXTS:
-                continue
-            base = re.sub(r'_\d+$', '', p.stem)
-            counts[base] = counts.get(base, 0) + 1
-        return counts
+            if p.suffix.lower() in VIDEO_EXTS:
+                stems.add(p.stem)
+                stems.add(re.sub(r'_\d+$', '', p.stem))
+        return stems
 
     def _populate_images(self):
         input_dir = Path(self._input_dir_edit.text().strip() or self.config.get("input_dir", ""))
@@ -635,16 +683,28 @@ class MainWindow(QMainWindow):
             self.start_btn.setEnabled(True)
             return
 
+        # Warn if any stem appears with more than one extension
+        stem_exts: dict[str, list[str]] = {}
+        for p in input_dir.rglob("*"):
+            if p.suffix.lower() in IMAGE_EXTS:
+                stem_exts.setdefault(p.stem, []).append(p.suffix.lower())
+        duplicates = {s: exts for s, exts in stem_exts.items() if len(exts) > 1}
+        if duplicates:
+            lines = "\n".join(
+                f"  {s}: {', '.join(exts)}" for s, exts in list(duplicates.items())[:10]
+            )
+            QMessageBox.warning(
+                self, "Duplicate Filenames Detected",
+                f"Some files share the same name but have different extensions:\n\n{lines}\n\n"
+                "Consider converting your batch folder to a single extension (e.g. all PNG) "
+                "to avoid ambiguous one-to-one matching."
+            )
+
         if self._show_all_chk.isChecked():
             excluded = set()
         else:
-            video_counts = self._existing_video_counts()
-            image_counts: dict[str, int] = {}
-            for p in input_dir.rglob("*"):
-                if p.suffix.lower() in IMAGE_EXTS:
-                    image_counts[p.stem] = image_counts.get(p.stem, 0) + 1
-            excluded = {stem for stem, vc in video_counts.items()
-                        if vc >= image_counts.get(stem, 1)}
+            excluded = self._existing_video_stems()
+
         self._img_loader = ImageLoaderThread(input_dir, excluded)
         self._img_loader.image_ready.connect(self.image_grid.add_item)
         self._img_loader.progress.connect(self._on_img_load_progress)
@@ -661,6 +721,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_label.setText("Ready")
         self.start_btn.setEnabled(True)
+        self.image_grid.sort_by_filename()
         if total == 0:
             self.selected_label.setText("No images found in input folder")
         else:
@@ -709,23 +770,50 @@ class MainWindow(QMainWindow):
             self._vid_progress.setVisible(False)
             return
 
-        self._vid_loader = VideoLoaderThread(vid_dir, self._ffmpeg_path())
+        self._thumb_gen_dlg: QProgressDialog | None = None
+        sort_idx = self._vid_sort_combo.currentIndex()
+        _, sort_key, sort_reverse = self._VID_SORT_OPTIONS[sort_idx]
+        self._vid_loader = VideoLoaderThread(vid_dir, self._ffmpeg_path(), sort_key, sort_reverse)
         self._vid_loader.video_ready.connect(self.video_grid.add_item)
+        self._vid_loader.thumbnails_needed.connect(self._on_thumbnails_needed)
         self._vid_loader.progress.connect(self._on_vid_load_progress)
         self._vid_loader.finished_loading.connect(self._on_vid_load_finished)
         self._vid_loader.start()
 
+    def _on_thumbnails_needed(self, count: int):
+        self._thumb_gen_dlg = QProgressDialog(
+            f"Generating {count} new thumbnail{'s' if count != 1 else ''}...",
+            None, 0, count, self
+        )
+        self._thumb_gen_dlg.setWindowTitle("Updating Library")
+        self._thumb_gen_dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        self._thumb_gen_dlg.setMinimumWidth(380)
+        self._thumb_gen_dlg.setAutoClose(False)
+        self._thumb_gen_dlg.setAutoReset(False)
+        self._thumb_gen_dlg.setValue(0)
+        self._thumb_gen_dlg.show()
+
     def _on_vid_load_progress(self, current: int, total: int):
-        self._vid_progress.setRange(0, total)
-        self._vid_progress.setValue(current)
-        self._vid_status_label.setText(f"Loading thumbnails... {current}/{total}")
+        if self._thumb_gen_dlg and self._thumb_gen_dlg.isVisible():
+            self._thumb_gen_dlg.setLabelText(f"Generating thumbnails... {current}/{total}")
+            self._thumb_gen_dlg.setValue(current)
+        else:
+            self._vid_progress.setRange(0, total)
+            self._vid_progress.setValue(current)
+            self._vid_status_label.setText(f"Loading thumbnails... {current}/{total}")
 
     def _on_vid_load_finished(self, total: int):
+        if self._thumb_gen_dlg:
+            self._thumb_gen_dlg.close()
+            self._thumb_gen_dlg = None
         self._vid_progress.setVisible(False)
         if total == 0:
             self._vid_status_label.setText("No video files found in folder")
         else:
             self._vid_status_label.setText(f"{total} video{'s' if total != 1 else ''} — double-click to play")
+
+    def _on_vid_sort_changed(self):
+        self._populate_videos(force=True)
 
     def _browse_video_dir(self):
         current = self._vid_dir_edit.text().strip()
@@ -743,27 +831,32 @@ class MainWindow(QMainWindow):
             player.exec()
 
     def _delete_selected_video(self):
-        key = self.video_grid.selected_key()
-        if not key:
+        keys = self.video_grid.selected_keys()
+        if not keys:
             return
-        path = Path(key)
+        n = len(keys)
+        if n == 1:
+            msg = f"Permanently delete:\n{Path(keys[0]).name}?\n\nThis cannot be undone."
+        else:
+            msg = f"Permanently delete {n} videos?\n\nThis cannot be undone."
         reply = QMessageBox.question(
-            self, "Delete Video",
-            f"Permanently delete:\n{path.name}?\n\nThis cannot be undone.",
+            self, "Delete Video", msg,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        try:
-            path.unlink()
-            thumb = path.parent / "thumbnails" / (path.stem + ".jpg")
-            thumb.unlink(missing_ok=True)
-        except OSError as e:
-            QMessageBox.critical(self, "Error", f"Could not delete: {e}")
-            return
-        items = self.video_grid.selectedItems()
-        if items:
-            self.video_grid.takeItem(self.video_grid.row(items[0]))
+        errors = []
+        for key in keys:
+            path = Path(key)
+            try:
+                path.unlink()
+                (path.parent / "thumbnails" / (path.stem + ".jpg")).unlink(missing_ok=True)
+            except OSError as e:
+                errors.append(f"{path.name}: {e}")
+        if errors:
+            QMessageBox.critical(self, "Error", "Some files could not be deleted:\n" + "\n".join(errors))
+        for item in self.video_grid.selectedItems():
+            self.video_grid.takeItem(self.video_grid.row(item))
         self._vid_delete_btn.setEnabled(False)
         count = self.video_grid.count()
         self._vid_status_label.setText(
@@ -932,6 +1025,7 @@ class MainWindow(QMainWindow):
             self.progress_label.setText("Stitching all videos...")
 
     def _on_stitch_done(self, final_path: str):
+        self._play_completion_sound()
         self.final_label.setText(f"Final video saved: {final_path}")
         self.progress_label.setText("Complete!")
         self.progress_bar.setValue(self._seg_count)
@@ -940,10 +1034,39 @@ class MainWindow(QMainWindow):
         if not self._show_all_chk.isChecked():
             self._populate_images()
 
+    def _play_completion_sound(self):
+        if not self.config.get("completion_sound_enabled", False):
+            return
+        path = self.config.get("completion_sound_path", "").strip()
+        if not path:
+            return
+        sound_path = Path(path)
+        if not sound_path.exists():
+            return
+
+        def _do_play():
+            try:
+                if sound_path.suffix.lower() == ".wav":
+                    import winsound
+                    winsound.PlaySound(str(sound_path), winsound.SND_FILENAME)
+                else:
+                    import os
+                    os.startfile(str(sound_path))
+            except Exception:
+                pass
+
+        threading.Thread(target=_do_play, daemon=True).start()
+
     def _on_batch_done(self, final_paths: list):
+        self._play_completion_sound()
         n = len(final_paths)
         self.progress_label.setText(f"Batch complete — {n} video{'s' if n != 1 else ''}")
         self.final_label.setText(f"{n} videos saved to final video folder")
+
+        if not self._show_all_chk.isChecked():
+            processed_stems = {Path(p).stem for p in final_paths}
+            self.image_grid.remove_items_by_stems(processed_stems)
+
         msg = "\n".join(Path(p).name for p in final_paths)
         reply = QMessageBox.question(
             self, "Batch Complete",
@@ -992,4 +1115,7 @@ class MainWindow(QMainWindow):
         if self._worker and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(3000)
+        self.config.set("input_dir", self._input_dir_edit.text().strip())
+        self.config.set("active_chain_folder", self._chain_folder_combo.currentText())
+        self.config.save()
         event.accept()

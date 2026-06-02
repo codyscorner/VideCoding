@@ -123,13 +123,12 @@ class ChainWorker(QThread):
 
             self._log("All segments complete. Stitching final video...")
             final_path = self._stitch(output_videos)
-            total_elapsed = time.time() - chain_start
-            self._log(f"Total time: {self._fmt(total_elapsed)}")
             self._log(f"Final video: {final_path}")
 
             self._log("Zipping segment files...")
             zip_path = self._zip_segments(output_videos, final_path)
             self._log(f"Archive: {zip_path.name}")
+            self._log(f"Total time: {self._fmt(time.time() - chain_start)}")
             self.stitch_done.emit(str(final_path))
 
         except Exception as e:
@@ -304,7 +303,8 @@ class ChainWorker(QThread):
         result = subprocess.run(
             [ffmpeg, "-y", "-sseof", "-0.1", "-i", str(video_path),
              "-vframes", "1", "-q:v", "2", str(frame_path)],
-            capture_output=True, text=True
+            capture_output=True, text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg frame extraction failed:\n{result.stderr}")
@@ -500,7 +500,8 @@ class ChainWorker(QThread):
                 "-an",
                 str(final_path),
             ],
-            capture_output=True, text=True
+            capture_output=True, text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
 
         if result.returncode != 0:
@@ -517,6 +518,9 @@ class ChainWorker(QThread):
         zip_path = zip_dir / f"{stem}.zip"
 
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zf:
+            src = Path(self._starting_image)
+            if src.exists():
+                zf.write(src, src.name)
             for v in videos:
                 zf.write(v, v.name)
             zf.write(final_path, final_path.name)

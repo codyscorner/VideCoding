@@ -1,6 +1,6 @@
 {
     "comfyui_url": "http://127.0.0.1:8000",
-    "input_dir": "B:/AI/Tesing_Images",
+    "input_dir": "D:/AI Chain Input Images/For_Chain/_0ForCreamPie/resized",
     "output_base_dir": "C:/AI/CumfyUI/output/video/Merge",
     "workflow_dir": "C:/AI/CumfyUI/Workflow_API",
     "workflows": [
@@ -48,16 +48,18 @@
         }
     ],
     "mode": "runpod",
-    "runpod_url": "https://33ochq2pup8htn-8188.proxy.runpod.net/",
+    "runpod_url": "https://l8vp4y9102koke-8188.proxy.runpod.net/",
     "ffmpeg_path": "C:/AI/CumfyUI/.venv/Lib/site-packages/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe",
     "final_video_dir": "B:/AI/CumfyVideoChain_output",
     "zip_output_dir": "C:/AI/CumfyUI/output/video/Completed",
     "batch_dir_local": "B:\\AI\\Batch_Processing",
     "batch_dir_runpod": "/workspace/runpod-slim/Batch_Processing",
     "runpod_input_dir": "/workspace/runpod-slim/ComfyUI/input",
-    "_base_dir": "p:\\AI\\VideCoding\\CumfyUI_API",
-    "active_chain_folder": "Video_Kiss2Creampie_Missionary",
+    "_base_dir": "P:\\AI\\VideCoding\\CumfyUI_API",
+    "active_chain_folder": "Video_Dev_Testing_Batch",
     "image_gen_positive": "A white teen couple standing in the driveway of a house, both wearing jeans",
     "image_gen_negative": "",
-    "loras_dir": "C:/AI/CumfyUI/models/loras"
+    "loras_dir": "C:/AI/CumfyUI/models/loras",
+    "completion_sound_enabled": true,
+    "completion_sound_path": "C:/Windows/Media/Alarm01.wav"
 }

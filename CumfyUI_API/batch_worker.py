@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import time
 import uuid
+import zipfile
 from pathlib import Path
 
 import requests
@@ -82,6 +83,8 @@ class BatchChainWorker(QThread):
 
             # segment_outputs[seg_idx] = list of N video Paths (one per image)
             segment_outputs: list[list[Path]] = []
+            # transition_frames[i] = frames extracted between segments for image i
+            transition_frames: list[list[Path]] = [[] for _ in range(n)]
 
             for wf in workflows:
                 if self._cancelled:
@@ -121,6 +124,7 @@ class BatchChainWorker(QThread):
                             frame = self._temp_dir / f"{i+1:03d}_frame_seg{seg}.png"
                             self._extract_last_frame_to(prev_video, frame)
                             self._upload_batch_image(frame, upload_subfolder, frame.name)
+                            transition_frames[i].append(frame)
                         self._log(f"[Segment {seg}/{self._total_segs}] Uploaded {n} frames")
                     else:
                         local_subdir = seg_subdirs[seg]
@@ -129,6 +133,7 @@ class BatchChainWorker(QThread):
                         for i, prev_video in enumerate(prev_videos):
                             dst = local_subdir / f"{i+1:03d}_frame_seg{seg}.png"
                             self._extract_last_frame_to(prev_video, dst)
+                            transition_frames[i].append(dst)
                         self._log(f"[Segment {seg}/{self._total_segs}] Extracted {n} last frames")
 
                 # Set directory for LoadImageListFromDir
@@ -164,8 +169,11 @@ class BatchChainWorker(QThread):
                 final_paths.append(str(final))
                 size_kb = final.stat().st_size // 1024
                 self._log(f"  [{i+1}/{n}] {final.name}  ({size_kb} KB)")
+                src_image = Path(self._config["input_dir"]) / img_name
+                zip_path = self._zip_segments(chain_videos, final, src_image, transition_frames[i])
+                self._log(f"  [{i+1}/{n}] Archive: {zip_path.name}")
 
-            self._log(f"Total batch time: {self._fmt(time.time() - batch_start)}")
+            self._log(f"Total time: {self._fmt(time.time() - batch_start)}")
             self.all_done.emit(final_paths)
 
         except Exception as e:
@@ -271,7 +279,8 @@ class BatchChainWorker(QThread):
         result = subprocess.run(
             [ffmpeg, "-y", "-sseof", "-0.1", "-i", str(video_path),
              "-vframes", "1", "-q:v", "2", str(dst)],
-            capture_output=True, text=True
+            capture_output=True, text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg frame extraction failed:\n{result.stderr}")
@@ -281,15 +290,26 @@ class BatchChainWorker(QThread):
     # Stitch
     # ------------------------------------------------------------------ #
 
+    def _zip_segments(self, videos: list[Path], final_path: Path, src_image: Path, frames: list[Path] | None = None) -> Path:
+        zip_dir = Path(self._config.get("zip_output_dir", self._config.get("final_video_dir", str(final_path.parent))))
+        zip_dir.mkdir(parents=True, exist_ok=True)
+        zip_path = zip_dir / f"{final_path.stem}.zip"
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zf:
+            if src_image.exists():
+                zf.write(src_image, src_image.name)
+            for seg_idx, frame in enumerate(frames or [], start=2):
+                if frame.exists():
+                    zf.write(frame, f"frame_start_seg{seg_idx}.png")
+            for v in videos:
+                zf.write(v, v.name)
+            zf.write(final_path, final_path.name)
+        return zip_path
+
     def _stitch(self, videos: list[Path], img_name: str) -> Path:
         final_dir = Path(self._config.get("final_video_dir", self._config["output_base_dir"]))
         final_dir.mkdir(parents=True, exist_ok=True)
         stem = Path(img_name).stem
         final_path = final_dir / f"{stem}.mp4"
-        counter = 1
-        while final_path.exists():
-            final_path = final_dir / f"{stem}_{counter}.mp4"
-            counter += 1
         n = len(videos)
         ffmpeg = self._config.get("ffmpeg_path", "ffmpeg")
         inputs = []
@@ -305,7 +325,8 @@ class BatchChainWorker(QThread):
                 "-an",
                 str(final_path),
             ],
-            capture_output=True, text=True
+            capture_output=True, text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg stitch failed:\n{result.stderr[-3000:]}")
