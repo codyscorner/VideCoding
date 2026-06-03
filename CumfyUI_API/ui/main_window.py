@@ -39,10 +39,13 @@ class ImageLoaderThread(QThread):
     progress = pyqtSignal(int, int)
     finished_loading = pyqtSignal(int)
 
-    def __init__(self, input_dir: Path, excluded_stems: set[str] | None = None):
+    def __init__(self, input_dir: Path, excluded_stems: set[str] | None = None,
+                 sort_key=None, sort_reverse: bool = False):
         super().__init__()
         self._input_dir = input_dir
         self._excluded_stems = excluded_stems or set()
+        self._sort_key = sort_key or (lambda p: p.name.lower())
+        self._sort_reverse = sort_reverse
         self._cancelled = False
 
     def cancel(self):
@@ -50,8 +53,9 @@ class ImageLoaderThread(QThread):
 
     def run(self):
         all_images = sorted(
-            p for p in self._input_dir.rglob("*")
-            if p.suffix.lower() in IMAGE_EXTS
+            (p for p in self._input_dir.rglob("*") if p.suffix.lower() in IMAGE_EXTS),
+            key=self._sort_key,
+            reverse=self._sort_reverse,
         )
         images = [p for p in all_images if p.stem not in self._excluded_stems]
         total = len(images)
@@ -247,6 +251,13 @@ class MainWindow(QMainWindow):
         ("Smallest First", lambda p: p.stat().st_size,  False),
     ]
 
+    _IMG_SORT_OPTIONS = [
+        ("Name A → Z",     lambda p: p.name.lower(),    False),
+        ("Name Z → A",     lambda p: p.name.lower(),    True),
+        ("Newest First",   lambda p: p.stat().st_mtime, True),
+        ("Oldest First",   lambda p: p.stat().st_mtime, False),
+    ]
+
     def __init__(self, config_manager: ConfigManager, version: str):
         super().__init__()
         self.config = config_manager
@@ -402,9 +413,17 @@ class MainWindow(QMainWindow):
         self._show_all_chk.setChecked(False)
         self._show_all_chk.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
         self._show_all_chk.stateChanged.connect(lambda _: self._populate_images())
+        self._img_sort_combo = QComboBox()
+        self._img_sort_combo.setFixedHeight(30)
+        self._img_sort_combo.setMinimumWidth(140)
+        for label, *_ in self._IMG_SORT_OPTIONS:
+            self._img_sort_combo.addItem(label)
+        self._img_sort_combo.currentIndexChanged.connect(lambda _: self._populate_images())
         folder_row.addWidget(folder_lbl)
         folder_row.addWidget(self._input_dir_edit, stretch=1)
         folder_row.addWidget(folder_browse_btn)
+        folder_row.addSpacing(8)
+        folder_row.addWidget(self._img_sort_combo)
         folder_row.addSpacing(8)
         folder_row.addWidget(self._show_all_chk)
         left.addLayout(folder_row)
@@ -705,7 +724,9 @@ class MainWindow(QMainWindow):
         else:
             excluded = self._existing_video_stems()
 
-        self._img_loader = ImageLoaderThread(input_dir, excluded)
+        sort_idx = self._img_sort_combo.currentIndex()
+        _, sort_key, sort_reverse = self._IMG_SORT_OPTIONS[sort_idx]
+        self._img_loader = ImageLoaderThread(input_dir, excluded, sort_key, sort_reverse)
         self._img_loader.image_ready.connect(self.image_grid.add_item)
         self._img_loader.progress.connect(self._on_img_load_progress)
         self._img_loader.finished_loading.connect(self._on_img_load_finished)
@@ -721,7 +742,6 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_label.setText("Ready")
         self.start_btn.setEnabled(True)
-        self.image_grid.sort_by_filename()
         if total == 0:
             self.selected_label.setText("No images found in input folder")
         else:
@@ -980,6 +1000,13 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.progress_label.setText(f"Batch: {len(keys)} images — Starting...")
+        sep_date = datetime.now().strftime("%m/%d/%Y  %H:%M:%S")
+        self._write_daily_log("")
+        self._write_daily_log("=" * 80)
+        self._write_daily_log(f"  NEW BATCH  |  {sep_date}  |  {len(keys)} image(s)")
+        self._write_daily_log("=" * 80)
+        for k in keys:
+            self._write_daily_log(f"  - {Path(k).name}")
         self._worker = BatchChainWorker(self.config.get_all(), keys)
         self._worker.log.connect(self._on_log)
         self._worker.segment_done.connect(self._on_segment_done)
@@ -1001,9 +1028,13 @@ class MainWindow(QMainWindow):
     # Worker signal handlers
     # ------------------------------------------------------------------ #
 
+    _LOG_NOISE = ("] Running... (", "] Queued... (", "] Waiting for history... (", "] Not yet in history... (")
+
     def _on_log(self, message: str):
         self.log_list.addItem(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
         self.log_list.scrollToBottom()
+        if not any(n in message for n in self._LOG_NOISE):
+            self._write_daily_log(message)
 
     def _on_segment_time(self, seg: int, elapsed: str):
         if seg - 1 < len(self._seg_time_labels):
@@ -1060,6 +1091,7 @@ class MainWindow(QMainWindow):
     def _on_batch_done(self, final_paths: list):
         self._play_completion_sound()
         n = len(final_paths)
+        self._write_daily_log(f"=== Batch complete: {n} video{'s' if n != 1 else ''} ===")
         self.progress_label.setText(f"Batch complete — {n} video{'s' if n != 1 else ''}")
         self.final_label.setText(f"{n} videos saved to final video folder")
 
@@ -1087,12 +1119,30 @@ class MainWindow(QMainWindow):
             self._populate_images()
 
     def _on_error(self, message: str):
+        self._write_daily_log(f"ERROR: {message}")
         self.progress_label.setText("Error")
         QMessageBox.critical(self, "Error", message)
 
     def _on_worker_finished(self):
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
+
+    # ------------------------------------------------------------------ #
+    # Daily log
+    # ------------------------------------------------------------------ #
+
+    def _write_daily_log(self, message: str):
+        vid_dir = Path(self.config.get("final_video_dir", ""))
+        if not vid_dir.exists():
+            return
+        today = datetime.now().strftime("%m_%d_%Y")
+        log_path = vid_dir / f"ComfyUI_Chain_Log_{today}.txt"
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{timestamp}] {message}\n")
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------ #
     # Helpers
