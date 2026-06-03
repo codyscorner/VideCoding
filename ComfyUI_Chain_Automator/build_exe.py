@@ -1,4 +1,4 @@
-"""Build script for ComfyUI Chain Automator — produces a standalone .exe"""
+"""Build script for ComfyUI Workflow Chain Automator — produces a standalone .exe"""
 
 import subprocess
 import sys
@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT   = Path(__file__).parent
 DIST   = ROOT / "dist"
-OUTPUT = Path(r"P:\Apps\VibeCoded\ComfyUI Chain Automator")
+OUTPUT = Path(r"P:\Apps\VibeCoded\ComfyUI Workflow Chain Automator")
 
 print("Building EXE...")
 result = subprocess.run(

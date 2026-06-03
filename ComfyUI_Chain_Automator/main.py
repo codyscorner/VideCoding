@@ -45,7 +45,7 @@ def _find_icon() -> Path | None:
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("ComfyUI Chain Automator")
+    app.setApplicationName("ComfyUI Workflow Chain Automator")
 
     icon_path = _find_icon()
     if icon_path:

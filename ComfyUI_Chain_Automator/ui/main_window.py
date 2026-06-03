@@ -269,7 +269,7 @@ class MainWindow(QMainWindow):
         self._seg_dots: list[SegmentDot] = []
         self._seg_time_labels: list[QLabel] = []
 
-        self.setWindowTitle(f"ComfyUI Chain Automator  v{version}")
+        self.setWindowTitle(f"ComfyUI Workflow Chain Automator  v{version}")
         self.setMinimumSize(1200, 780)
         self.resize(1600, 860)
         self.setStyleSheet(STYLESHEET)

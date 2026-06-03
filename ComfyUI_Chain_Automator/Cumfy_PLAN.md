@@ -48,7 +48,7 @@ Workflow API format: each workflow is exported from ComfyUI as an **API JSON** (
 ## Architecture
 
 ```
-CumfyUI_API/
+ComfyUI_Chain_Automator/
 │
 ├── main.py                   ← entry point (QApplication + MainWindow)
 ├── config.py                 ← ConfigManager (JSON load/save)
