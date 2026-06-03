@@ -6,17 +6,20 @@ Automates a chain of ComfyUI segments (up to 10), stitching the outputs into a s
 
 - Chains multiple ComfyUI workflow segments automatically
 - Segment count driven by your workflow config — no hardcoded limits (max 10)
-- **Single mode**: run one image through the full chain
 - **Batch mode**: run N images simultaneously — one model load per segment, N outputs (uses `LoadImageListFromDir //Inspire`)
-- Dual workflow sets: `workflow_segment_XX.json` (single) and `workflow_segment_XX_batch.json` in `{Chain}_Batch/` subfolder
-- Split-pane UI: image browser on the left, controls on the right
+- Dual workflow sets: `workflow_segment_XX_batch.json` in chain subfolder
+- Split-pane UI: image browser (with sort) on the left, controls on the right
 - Background image loading — UI appears instantly, thumbnails load progressively
 - 200px letterboxed thumbnails with black padding (no cropping)
+- Starting image sort: Name A→Z / Z→A, Newest First, Oldest First
 - Segment progress dots, per-segment timing, and live log
+- Daily log file (`ComfyUI_Chain_Log_mm_dd_yyyy.txt`) written to final video folder — run separator, per-image list, segment times, zip info
 - RunPod support — batch images uploaded via ComfyUI upload API, videos downloaded automatically
 - FFmpeg local last-frame extraction (`-sseof -0.1`) for smooth segment transitions
 - Final video stitched with FFmpeg and archived as a zip
 - Built-in video player with playlist — plays all batch results back-to-back after completion
+- Completion sound (optional, configurable in Settings)
+- Library tab with video browser, sort options, and delete
 
 ## Requirements
 
@@ -86,6 +89,36 @@ python build_exe.py
 Output: `dist\ComfyUI_Chain_Automator.exe`
 
 ## Changelog
+
+### v3.0.0
+- Starting Images sort combo: Name A→Z, Name Z→A, Newest First, Oldest First
+- Daily log file: `ComfyUI_Chain_Log_mm_dd_yyyy.txt` written to final video folder each run
+  - 80-char separator header between runs with date/time and image count
+  - Each starting image listed on its own line
+  - Logs segment times, zip archive names, total time; filters out poll-noise lines
+- Unified all naming to "ComfyUI Workflow Chain Automator" / `ComfyUI_Chain_Automator`
+- Source folder renamed from `CumfyUI_API` to `ComfyUI_Chain_Automator`
+
+### v2.9.0
+- Completion sound: optional audio cue on batch finish (configurable in Settings)
+- Fix: total batch elapsed time now reflects full run including stitching
+
+### v2.7.4
+- Smart same-stem image filtering: images sharing a stem with an existing video are excluded from the Starting Images grid
+
+### v2.7.3
+- Auto-number output filename on collision (e.g. `photo_1.mp4`) to prevent overwriting
+
+### v2.7.2
+- Fix output filename collision when multiple images share the same stem
+
+### v2.7.1
+- Fix playlist not advancing correctly in batch playback
+- Batch-only cleanup: removed unused single-mode code paths
+
+### v2.7.0
+- Batch-only mode: removed single/batch toggle — all runs are batch mode
+- Chain folder dropdown: auto-detects segment count from `*_batch.json` files in selected folder
 
 ### v2.6.1
 - Log: total batch elapsed time printed as final log line after stitching completes
