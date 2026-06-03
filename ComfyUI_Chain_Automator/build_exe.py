@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT   = Path(__file__).parent
 DIST   = ROOT / "dist"
-OUTPUT = Path(r"P:\Apps\VibeCoded\ComfyUI Workflow Chain Automator")
+OUTPUT = Path(r"P:\Apps\VibeCoded\ComfyUI Chain Automator")
 
 print("Building EXE...")
 result = subprocess.run(
