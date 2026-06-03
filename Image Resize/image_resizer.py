@@ -10,9 +10,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QIcon
-from PIL import Image
+from PIL import Image, ImageOps
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 def get_settings_file():
     """Get the settings file path based on the executable/script name."""
@@ -293,7 +293,7 @@ class ResizeWorker(QThread):
         for i, filename in enumerate(image_files):
             try:
                 img_path = os.path.join(self.folder_path, filename)
-                img = Image.open(img_path)
+                img = ImageOps.exif_transpose(Image.open(img_path))
 
                 if self.preserve_ratio and self.use_padding:
                     img_resized = resize_with_padding(img, self.target_size, self.padding_color)
