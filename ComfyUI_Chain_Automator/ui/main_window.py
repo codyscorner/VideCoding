@@ -1193,7 +1193,6 @@ class MainWindow(QMainWindow):
         threading.Thread(target=_do_play, daemon=True).start()
 
     def _on_batch_done(self, final_paths: list):
-        self._play_completion_sound()
         n = len(final_paths)
         self._write_daily_log(f"=== Batch complete: {n} video{'s' if n != 1 else ''} ===")
         self.progress_label.setText(f"Batch complete — {n} video{'s' if n != 1 else ''}")
@@ -1226,6 +1225,7 @@ class MainWindow(QMainWindow):
             return
 
         # ── Normal mode: ask to play ──────────────────────────────────────
+        self._play_completion_sound()
         msg = "\n".join(Path(p).name for p in final_paths)
         reply = QMessageBox.question(
             self, "Batch Complete",
