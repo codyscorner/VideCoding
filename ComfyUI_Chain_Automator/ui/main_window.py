@@ -8,7 +8,7 @@ from PIL import Image, ImageOps
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QPushButton, QLineEdit,
     QProgressBar, QListWidget, QListWidgetItem, QGroupBox,
-    QVBoxLayout, QHBoxLayout, QStackedWidget,
+    QVBoxLayout, QHBoxLayout, QStackedWidget, QSpinBox,
     QDialog, QMessageBox, QAbstractItemView, QFileDialog, QCheckBox, QComboBox,
     QProgressDialog,
 )
@@ -268,6 +268,9 @@ class MainWindow(QMainWindow):
         self._last_vid_dir: str = ""
         self._seg_dots: list[SegmentDot] = []
         self._seg_time_labels: list[QLabel] = []
+        self._auto_mode = False
+        self._auto_stop_requested = False
+        self._auto_next_started = False
 
         self.setWindowTitle(f"ComfyUI Workflow Chain Automator  v{version}")
         self.setMinimumSize(1200, 780)
@@ -412,7 +415,7 @@ class MainWindow(QMainWindow):
         self._show_all_chk.setToolTip("Include images that already have a video in the library")
         self._show_all_chk.setChecked(False)
         self._show_all_chk.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
-        self._show_all_chk.stateChanged.connect(lambda _: self._populate_images())
+        self._show_all_chk.stateChanged.connect(lambda _: (self._populate_images(), self._update_auto_buttons()))
         self._img_sort_combo = QComboBox()
         self._img_sort_combo.setFixedHeight(30)
         self._img_sort_combo.setMinimumWidth(140)
@@ -499,6 +502,44 @@ class MainWindow(QMainWindow):
         btn_row.addStretch()
         right.addLayout(btn_row)
 
+        # ── Auto mode row ─────────────────────────────────────────────────
+        auto_row = QHBoxLayout()
+        auto_row.addStretch()
+        auto_lbl = QLabel("Batch size:")
+        auto_lbl.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
+        self._auto_size_spin = QSpinBox()
+        self._auto_size_spin.setRange(1, 50)
+        self._auto_size_spin.setValue(4)
+        self._auto_size_spin.setFixedHeight(32)
+        self._auto_size_spin.setFixedWidth(64)
+        self._auto_size_spin.setToolTip("Images per auto batch (1–50)")
+        self._auto_btn = QPushButton("▶▶  Auto Run")
+        self._auto_btn.setMinimumHeight(36)
+        self._auto_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {COLORS['seg_active']}; color: #000;"
+            f" border-radius: 4px; font-weight: bold; }}"
+            f"QPushButton:hover {{ background-color: #e8b84b; }}"
+            f"QPushButton:disabled {{ background-color: {COLORS['bg_light']};"
+            f" color: {COLORS['fg_dim']}; }}"
+        )
+        self._auto_btn.setToolTip("Automatically process all images N at a time, no prompts between batches")
+        self._auto_btn.clicked.connect(self._start_auto)
+        self._stop_auto_btn = QPushButton("⏹  Stop After Batch")
+        self._stop_auto_btn.setObjectName("cancel_btn")
+        self._stop_auto_btn.setMinimumHeight(36)
+        self._stop_auto_btn.setEnabled(False)
+        self._stop_auto_btn.setToolTip("Finish the current batch then stop auto mode")
+        self._stop_auto_btn.clicked.connect(self._stop_auto_after_batch)
+        auto_row.addWidget(auto_lbl)
+        auto_row.addSpacing(4)
+        auto_row.addWidget(self._auto_size_spin)
+        auto_row.addSpacing(10)
+        auto_row.addWidget(self._auto_btn)
+        auto_row.addSpacing(8)
+        auto_row.addWidget(self._stop_auto_btn)
+        auto_row.addStretch()
+        right.addLayout(auto_row)
+
         split.addLayout(right, stretch=2)
         return page
 
@@ -528,6 +569,10 @@ class MainWindow(QMainWindow):
         for label, *_ in self._VID_SORT_OPTIONS:
             self._vid_sort_combo.addItem(label)
         self._vid_sort_combo.currentIndexChanged.connect(self._on_vid_sort_changed)
+        self._vid_play_btn = QPushButton("▶  Play Selected")
+        self._vid_play_btn.setFixedHeight(40)
+        self._vid_play_btn.setEnabled(False)
+        self._vid_play_btn.clicked.connect(self._play_selected_videos)
         self._vid_delete_btn = QPushButton("🗑  Delete")
         self._vid_delete_btn.setFixedHeight(40)
         self._vid_delete_btn.setObjectName("cancel_btn")
@@ -541,19 +586,19 @@ class MainWindow(QMainWindow):
         toolbar.addSpacing(4)
         toolbar.addWidget(refresh_btn)
         toolbar.addSpacing(4)
+        toolbar.addWidget(self._vid_play_btn)
+        toolbar.addSpacing(4)
         toolbar.addWidget(self._vid_delete_btn)
         layout.addLayout(toolbar)
 
         # Video grid
-        vid_group = QGroupBox("Videos — double-click to play")
+        vid_group = QGroupBox("Videos — double-click to play one, or select multiple and click Play Selected")
         vid_layout = QVBoxLayout(vid_group)
         vid_layout.setContentsMargins(6, 6, 6, 6)
         self.video_grid = ThumbnailGrid()
         self.video_grid.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.video_grid.itemDoubleClicked.connect(self._on_video_double_clicked)
-        self.video_grid.itemSelectionChanged.connect(
-            lambda: self._vid_delete_btn.setEnabled(bool(self.video_grid.selected_keys()))
-        )
+        self.video_grid.itemSelectionChanged.connect(self._on_vid_selection_changed)
         vid_layout.addWidget(self.video_grid)
         layout.addWidget(vid_group, stretch=1)
 
@@ -844,6 +889,19 @@ class MainWindow(QMainWindow):
             self.config.save()
             self._populate_videos()
 
+    def _on_vid_selection_changed(self):
+        has_sel = bool(self.video_grid.selected_keys())
+        self._vid_play_btn.setEnabled(has_sel)
+        self._vid_delete_btn.setEnabled(has_sel)
+
+    def _play_selected_videos(self):
+        keys = self.video_grid.selected_keys()
+        existing = [k for k in keys if Path(k).exists()]
+        if not existing:
+            return
+        player = VideoPlayerDialog(existing[0], parent=self, playlist=existing)
+        player.exec()
+
     def _on_video_double_clicked(self, item: QListWidgetItem):
         path = item.data(Qt.ItemDataRole.UserRole)
         if path and Path(path).exists():
@@ -985,6 +1043,52 @@ class MainWindow(QMainWindow):
         self._start()
 
     # ------------------------------------------------------------------ #
+    # Auto mode
+    # ------------------------------------------------------------------ #
+
+    def _select_next_auto_batch(self) -> bool:
+        """Select the next _auto_size_spin images from the top of the grid.
+        Returns False if the grid is empty."""
+        self.image_grid.clearSelection()
+        count = self.image_grid.count()
+        if count == 0:
+            return False
+        batch = min(self._auto_size_spin.value(), count)
+        for i in range(batch):
+            self.image_grid.item(i).setSelected(True)
+        keys = self.image_grid.selected_keys()
+        if keys:
+            self.selected_label.setText(f"{len(keys)} image{'s' if len(keys) > 1 else ''} selected  (auto)")
+            return True
+        return False
+
+    def _start_auto(self):
+        if not self._select_next_auto_batch():
+            QMessageBox.information(self, "Auto Run", "No images remaining in the grid.")
+            return
+        self._auto_mode = True
+        self._auto_stop_requested = False
+        self._auto_next_started = False
+        self._update_auto_buttons()
+        self._start()
+
+    def _stop_auto_after_batch(self):
+        self._auto_stop_requested = True
+        self._stop_auto_btn.setEnabled(False)
+        self.progress_label.setText(self.progress_label.text() + "  (stopping after batch…)")
+
+    def _update_auto_buttons(self):
+        show_all = self._show_all_chk.isChecked()
+        running = self._auto_mode and not self._auto_stop_requested
+        self._auto_btn.setEnabled(not self._auto_mode and not show_all)
+        self._auto_btn.setToolTip(
+            "Disabled: uncheck 'Show all' before using Auto Run"
+            if show_all else
+            "Automatically process all images N at a time, no prompts between batches"
+        )
+        self._stop_auto_btn.setEnabled(running)
+
+    # ------------------------------------------------------------------ #
     # Chain start / cancel
     # ------------------------------------------------------------------ #
 
@@ -1099,6 +1203,29 @@ class MainWindow(QMainWindow):
             processed_stems = {Path(p).stem for p in final_paths}
             self.image_grid.remove_items_by_stems(processed_stems)
 
+        # ── Auto mode: skip dialog and continue or stop ───────────────────
+        if self._auto_mode:
+            if not self._auto_stop_requested and self._select_next_auto_batch():
+                self._auto_next_started = True
+                self._start()
+            else:
+                # No more images, or stop was requested — wind down auto mode
+                remaining = self.image_grid.count()
+                if self._auto_stop_requested:
+                    self.progress_label.setText("Auto mode stopped by user.")
+                else:
+                    self.progress_label.setText(f"Auto mode complete — no images remaining.")
+                self._write_daily_log(
+                    f"=== Auto mode ended — {remaining} image(s) left in grid ==="
+                )
+                self._auto_mode = False
+                self._auto_stop_requested = False
+                self._update_auto_buttons()
+                if not self._show_all_chk.isChecked():
+                    self._populate_images()
+            return
+
+        # ── Normal mode: ask to play ──────────────────────────────────────
         msg = "\n".join(Path(p).name for p in final_paths)
         reply = QMessageBox.question(
             self, "Batch Complete",
@@ -1121,9 +1248,22 @@ class MainWindow(QMainWindow):
     def _on_error(self, message: str):
         self._write_daily_log(f"ERROR: {message}")
         self.progress_label.setText("Error")
+        if self._auto_mode:
+            self._auto_mode = False
+            self._auto_stop_requested = False
+            self._update_auto_buttons()
         QMessageBox.critical(self, "Error", message)
 
     def _on_worker_finished(self):
+        if self._auto_next_started:
+            # A new auto batch was already started in _on_batch_done — leave buttons alone
+            self._auto_next_started = False
+            return
+        if self._auto_mode:
+            # Worker finished without completing a batch (cancelled / error mid-auto)
+            self._auto_mode = False
+            self._auto_stop_requested = False
+            self._update_auto_buttons()
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
 

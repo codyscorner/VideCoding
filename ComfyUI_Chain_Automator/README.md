@@ -19,7 +19,8 @@ Automates a chain of ComfyUI segments (up to 10), stitching the outputs into a s
 - Final video stitched with FFmpeg and archived as a zip
 - Built-in video player with playlist — plays all batch results back-to-back after completion
 - Completion sound (optional, configurable in Settings)
-- Library tab with video browser, sort options, and delete
+- Library tab with video browser, sort options, multi-select, **Play Selected** playlist, and delete
+- **Auto Run mode**: processes an entire folder of images automatically, N at a time, with no pop-ups between batches; configurable batch size; graceful **Stop After Batch** button
 
 ## Requirements
 
@@ -89,6 +90,19 @@ python build_exe.py
 Output: `dist\ComfyUI_Chain_Automator.exe`
 
 ## Changelog
+
+### v3.1.0
+- **Auto Run mode**: processes all images in the folder automatically N at a time — no confirmation dialogs between batches
+  - Configurable batch size spinner (1–50, default 4)
+  - **▶▶ Auto Run** button starts the loop; processed images are removed from the grid automatically
+  - **⏹ Stop After Batch** button finishes the current batch then stops cleanly
+  - Auto mode is disabled when "Show all" is checked (prevents re-processing already-done images)
+  - Auto mode stops automatically on error or cancellation
+- **Library: Play Selected**: select multiple videos with Ctrl+click or Shift+click, then click **▶ Play Selected** to play them back-to-back in the built-in player (⏮/⏭ navigation, auto-advance on end)
+
+### v3.0.1
+- Fix: `_on_stitch_done` signal wiring carried over from single-mode; removed dead handler
+- Minor log cleanup
 
 ### v3.0.0
 - Starting Images sort combo: Name A→Z, Name Z→A, Newest First, Oldest First
