@@ -510,23 +510,27 @@ class MainWindow(QMainWindow):
         self._auto_size_spin = QSpinBox()
         self._auto_size_spin.setRange(1, 50)
         self._auto_size_spin.setValue(4)
-        self._auto_size_spin.setFixedHeight(32)
+        self._auto_size_spin.setFixedHeight(28)
         self._auto_size_spin.setFixedWidth(64)
         self._auto_size_spin.setToolTip("Images per auto batch (1–50)")
+        _auto_btn_style = "font-size: 9pt; padding: 4px 14px;"
         self._auto_btn = QPushButton("▶▶  Auto Run")
-        self._auto_btn.setMinimumHeight(36)
+        self._auto_btn.setFixedHeight(28)
         self._auto_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {COLORS['seg_active']}; color: #000;"
-            f" border-radius: 4px; font-weight: bold; }}"
-            f"QPushButton:hover {{ background-color: #e8b84b; }}"
+            f"QPushButton {{ background-color: #4a78d4; color: white;"
+            f" border-radius: 4px; font-weight: bold; {_auto_btn_style} }}"
+            f"QPushButton:hover {{ background-color: #5b8ce0; }}"
             f"QPushButton:disabled {{ background-color: {COLORS['bg_light']};"
-            f" color: {COLORS['fg_dim']}; }}"
+            f" color: {COLORS['fg_dim']}; {_auto_btn_style} }}"
         )
         self._auto_btn.setToolTip("Automatically process all images N at a time, no prompts between batches")
         self._auto_btn.clicked.connect(self._start_auto)
         self._stop_auto_btn = QPushButton("⏹  Stop After Batch")
         self._stop_auto_btn.setObjectName("cancel_btn")
-        self._stop_auto_btn.setMinimumHeight(36)
+        self._stop_auto_btn.setFixedHeight(28)
+        self._stop_auto_btn.setStyleSheet(
+            f"QPushButton {{ font-size: 9pt; padding: 4px 14px; }}"
+        )
         self._stop_auto_btn.setEnabled(False)
         self._stop_auto_btn.setToolTip("Finish the current batch then stop auto mode")
         self._stop_auto_btn.clicked.connect(self._stop_auto_after_batch)
