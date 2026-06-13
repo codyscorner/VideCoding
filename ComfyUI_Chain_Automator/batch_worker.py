@@ -236,6 +236,29 @@ class BatchChainWorker(QThread):
                 break
 
         if not all_files:
+            if getattr(self, '_already_exists_seg', None) == seg:
+                self._already_exists_seg = None
+                self._log(f"  No history outputs — waiting 2s for writes to finish...")
+                time.sleep(2)
+                subfolder = f"Merge/{self._run_id}"
+                downloaded = []
+                for i in range(1, n + 1):
+                    filename = f"Batch_{seg}_{i:05d}.mp4"
+                    self._log(f"  Downloading {i}/{n}: {filename}")
+                    params = {"filename": filename, "subfolder": subfolder, "type": "output"}
+                    for attempt in range(6):
+                        dl = requests.get(f"{self._url}/view", params=params, timeout=300, stream=True)
+                        if dl.status_code == 200:
+                            break
+                        self._log(f"  Not ready, retrying ({attempt+1}/6)...")
+                        time.sleep(5)
+                    dl.raise_for_status()
+                    local = self._temp_dir / f"batch_seg{seg}_{i:03d}.mp4"
+                    with open(local, 'wb') as f:
+                        for chunk in dl.iter_content(1024 * 1024):
+                            f.write(chunk)
+                    downloaded.append(local)
+                return downloaded
             raise RuntimeError(f"No output videos in history for batch segment {seg}")
 
         if len(all_files) != n:
@@ -367,12 +390,12 @@ class BatchChainWorker(QThread):
                 running = [item[1] for item in q.get("queue_running", [])]
                 pending = [item[1] for item in q.get("queue_pending", [])]
                 if prompt_id in running:
-                    if elapsed % 15 == 0:
-                        self._log(f"[Segment {seg}/{self._total_segs}] Running... ({elapsed}s)")
+                    if elapsed % 60 == 0:
+                        self._log(f"[Segment {seg}/{self._total_segs}] Running... ({elapsed // 60}m)")
                     continue
                 if prompt_id in pending:
-                    if elapsed % 15 == 0:
-                        self._log(f"[Segment {seg}/{self._total_segs}] Queued... ({elapsed}s)")
+                    if elapsed % 60 == 0:
+                        self._log(f"[Segment {seg}/{self._total_segs}] Queued... ({elapsed // 60}m)")
                     continue
                 h = requests.get(history_url, timeout=10).json()
                 if prompt_id in h:
@@ -383,15 +406,16 @@ class BatchChainWorker(QThread):
                     last_msg = msgs[-1][0] if msgs else ""
                     if last_msg == "execution_error":
                         ex_msg = msgs[-1][1].get("exception_message", "")
-                        if "already exists" in ex_msg:
-                            self._log(f"[Segment {seg}/{self._total_segs}] Output exists on server, continuing...")
+                        if "already exists" in ex_msg or "Error opening output file" in ex_msg:
+                            self._log(f"[Segment {seg}/{self._total_segs}] Output exists on server, downloading...")
+                            self._already_exists_seg = seg
                             return
                         raise RuntimeError(f"ComfyUI execution error: {ex_msg}")
-                    if elapsed % 15 == 0:
-                        self._log(f"[Segment {seg}/{self._total_segs}] Waiting for history... ({elapsed}s)")
+                    if elapsed % 60 == 0:
+                        self._log(f"[Segment {seg}/{self._total_segs}] Waiting for history... ({elapsed // 60}m)")
                 else:
-                    if elapsed % 15 == 0:
-                        self._log(f"[Segment {seg}/{self._total_segs}] Not yet in history... ({elapsed}s)")
+                    if elapsed % 60 == 0:
+                        self._log(f"[Segment {seg}/{self._total_segs}] Not yet in history... ({elapsed // 60}m)")
             except requests.RequestException as e:
                 self._log(f"[Segment {seg}/{self._total_segs}] Poll error: {e}")
 

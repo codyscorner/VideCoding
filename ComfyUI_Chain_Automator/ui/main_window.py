@@ -894,9 +894,16 @@ class MainWindow(QMainWindow):
             self._populate_videos()
 
     def _on_vid_selection_changed(self):
-        has_sel = bool(self.video_grid.selected_keys())
+        keys = self.video_grid.selected_keys()
+        has_sel = bool(keys)
         self._vid_play_btn.setEnabled(has_sel)
         self._vid_delete_btn.setEnabled(has_sel)
+        total = self.video_grid.count()
+        if has_sel:
+            n = len(keys)
+            self._vid_status_label.setText(f"{n} of {total} selected")
+        elif total > 0:
+            self._vid_status_label.setText(f"{total} video{'s' if total != 1 else ''} — double-click to play")
 
     def _play_selected_videos(self):
         keys = self.video_grid.selected_keys()
