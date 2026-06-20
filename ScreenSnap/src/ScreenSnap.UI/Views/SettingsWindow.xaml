@@ -1,0 +1,54 @@
+<Window x:Class="ScreenSnap.UI.Views.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ScreenSnap Settings" Height="400" Width="480"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Hotkeys -->
+        <GroupBox Grid.Row="0" Header="Hotkeys" Margin="0,0,0,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="140"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Label Grid.Row="0" Content="Region capture:"/>
+                <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding RegionHotkey}" Margin="0,2"/>
+                <Label Grid.Row="1" Content="Full screen:"/>
+                <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding FullScreenHotkey}" Margin="0,2"/>
+                <Label Grid.Row="2" Content="Active window:"/>
+                <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding ActiveWindowHotkey}" Margin="0,2"/>
+            </Grid>
+        </GroupBox>
+
+        <!-- Behavior -->
+        <GroupBox Grid.Row="1" Header="Behavior" Margin="0,0,0,8">
+            <StackPanel>
+                <CheckBox Content="Open editor after capture" IsChecked="{Binding OpenEditorAfterCapture}" Margin="0,2"/>
+                <CheckBox Content="Copy to clipboard after save" IsChecked="{Binding CopyToClipboardAfterSave}" Margin="0,2"/>
+                <CheckBox Content="Show tray notifications" IsChecked="{Binding ShowTrayNotifications}" Margin="0,2"/>
+                <DockPanel Margin="0,4">
+                    <Label Content="Auto-save path:" DockPanel.Dock="Left" Width="110"/>
+                    <TextBox Text="{Binding AutoSavePath}"/>
+                </DockPanel>
+            </StackPanel>
+        </GroupBox>
+
+        <!-- Buttons -->
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Save" Width="75" Margin="4,0" Command="{Binding SaveCommand}" IsDefault="True"/>
+            <Button Content="Close" Width="75" Click="CloseButton_Click" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

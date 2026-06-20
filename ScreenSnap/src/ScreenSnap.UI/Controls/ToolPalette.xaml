@@ -1,0 +1,10 @@
+<UserControl x:Class="ScreenSnap.UI.Controls.ToolPalette"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <StackPanel Orientation="Horizontal">
+        <RadioButton Content="Arrow" GroupName="Tools" Tag="arrow" Checked="Tool_Checked"/>
+        <RadioButton Content="Rect"  GroupName="Tools" Tag="rect"  Checked="Tool_Checked" Margin="4,0,0,0"/>
+        <RadioButton Content="Text"  GroupName="Tools" Tag="text"  Checked="Tool_Checked" Margin="4,0,0,0"/>
+        <RadioButton Content="Bubble" GroupName="Tools" Tag="bubble" Checked="Tool_Checked" Margin="4,0,0,0"/>
+    </StackPanel>
+</UserControl>
