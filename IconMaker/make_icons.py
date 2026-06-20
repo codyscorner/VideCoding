@@ -245,16 +245,6 @@ APPS = [
         ),
     },
     {
-        "name": "WinFolderMover",
-        "project_folder": "Win Folder Mover",
-        "prompt": (
-            "Minimalist flat app icon, dark crimson red background #2b1010, "
-            "a glowing white arrow pointing right with a folder silhouette "
-            "being pushed across, clean vector style, no text, square icon, "
-            "sharp edges, modern Windows app icon design, 512x512"
-        ),
-    },
-    {
         "name": "AIImageGenerator",
         "project_folder": "AI_Image_Generator",
         "prompt": (
@@ -320,6 +310,61 @@ APPS = [
             "modern Windows app icon design, 512x512"
         ),
     },
+    {
+        "name": "BulkFileRandomizer",
+        "project_folder": "Bulk File Randomizer",
+        "prompt": (
+            "Minimalist flat app icon, dark midnight blue background #0d0d2e, "
+            "a glowing stack of file documents with shuffle arrows swirling "
+            "around them representing random file renaming and ordering, "
+            "clean vector style, no text, square icon, sharp edges, "
+            "modern Windows app icon design, 512x512"
+        ),
+    },
+    {
+        "name": "Asteroids",
+        "project_folder": "Games/Asteorids",
+        "prompt": (
+            "Minimalist flat app icon, deep space black background #050508, "
+            "a glowing white vector triangle spaceship firing bullets at "
+            "jagged asteroid rocks in a classic arcade style, "
+            "clean vector style, no text, square icon, sharp edges, "
+            "modern Windows app icon design, 512x512"
+        ),
+    },
+    {
+        "name": "JPG2PNG",
+        "project_folder": "JPG2PNG_Converter",
+        "prompt": (
+            "Minimalist flat app icon, dark teal background #081a18, "
+            "a glowing JPG badge transforming with a bright arrow into a "
+            "PNG badge with transparency checkerboard, representing image "
+            "format conversion, clean vector style, no text, square icon, "
+            "sharp edges, modern Windows app icon design, 512x512"
+        ),
+    },
+    {
+        "name": "ScreenSnap",
+        "project_folder": "ScreenSnap",
+        "prompt": (
+            "Minimalist flat app icon, dark charcoal background #0f0f0f, "
+            "a glowing monitor screen with a crosshair selection marquee and "
+            "a small annotation arrow pointing to a highlighted region, "
+            "representing screen capture and annotation, "
+            "clean vector style, no text, square icon, sharp edges, "
+            "modern Windows app icon design, 512x512"
+        ),
+    },
+    {
+        "name": "WinFolderMover",
+        "project_folder": "WinFolderMover",
+        "prompt": (
+            "Minimalist flat app icon, dark crimson red background #2b1010, "
+            "a glowing white arrow pointing right with a folder silhouette "
+            "being pushed across, clean vector style, no text, square icon, "
+            "sharp edges, modern Windows app icon design, 512x512"
+        ),
+    },
 ]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -377,12 +422,11 @@ def convert_to_ico(png_path: Path, ico_path: Path) -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 NEW_APPS = {
-    "AIImageGenerator",
-    "ClipboardQueueLoader",
-    "ComfyUIWorkflowEditor",
-    "ComfyUIChainAutomator",
-    "FolderBackupArchiver",
-    "IMDBPhotoDownloader",
+    "BulkFileRandomizer",
+    "Asteroids",
+    "JPG2PNG",
+    "ScreenSnap",
+    "WinFolderMover",
 }
 
 
