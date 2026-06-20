@@ -17,6 +17,7 @@ obj/
 *.cache
 *.AssemblyInfo.cs
 *.AssemblyAttributes.cs
+*.csproj.user
 
 # Virtual environments
 venv/
