@@ -8,6 +8,12 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
 from pathlib import Path
 import sys
+import os
+
+# Force HuggingFace/sentence-transformers to use cached models only — prevents
+# hanging on network checks when the model is already downloaded.
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
 
 from config import ConfigManager
 from app.ui.main_window import MainWindow

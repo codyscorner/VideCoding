@@ -1,10 +1,24 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import copy_metadata
+
+def safe_copy_metadata(pkg):
+    try:
+        return copy_metadata(pkg)
+    except Exception:
+        return []
+
+datas = [('app_icon.ico', '.')]
+datas += safe_copy_metadata('numpy')
+datas += safe_copy_metadata('sentence_transformers')
+datas += safe_copy_metadata('scikit-learn')
+datas += safe_copy_metadata('torch')
+datas += safe_copy_metadata('Pillow')
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('app_icon.ico', '.')],
+    datas=datas,
     hiddenimports=[
         'sentence_transformers',
         'torch',

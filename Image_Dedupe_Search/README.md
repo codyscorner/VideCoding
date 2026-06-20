@@ -2,9 +2,18 @@
 
 A tool for finding duplicate and similar images using CLIP embeddings and AI-powered similarity detection.
 
-## Version 1.3.0
+## Version 1.4.0
 
 **Dark Blue Theme** - Modern Qt-based interface with PySide6!
+
+### What's New in v1.4.0
+- **Delete All Dupes + Next** button: deletes every duplicate in a group (keeps the representative/green image) and immediately advances to the next group — one click to clear a whole group
+- **Keyboard shortcut Ctrl+Shift+D** for Delete All Dupes + Next
+- **Startup CLIP model updater**: checks HuggingFace for a newer model revision on launch; prompts to download with progress shown in the status bar (background, non-blocking)
+- **Offline mode by default**: `TRANSFORMERS_OFFLINE=1` + `HF_DATASETS_OFFLINE=1` set at startup — prevents hangs on network checks when the model is already cached; the updater worker is the only thing that goes online
+- **Thumbnail size max 400px** (was 300px); thumbnail cell height increased for clean two-line labels (filename + %)
+- **Improved filename truncation**: scales to actual cell width so long names don't push the similarity % off screen
+- **PyInstaller spec**: package metadata for numpy, sentence-transformers, scikit-learn, torch, Pillow bundled to fix import errors in the frozen EXE
 
 ### What's New in v1.3.0
 - **Multi-Select Bulk Delete**: Select multiple duplicates in the grid and delete them all at once

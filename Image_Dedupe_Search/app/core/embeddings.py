@@ -53,7 +53,7 @@ class EmbeddingEngine:
         if self.progress_callback:
             self.progress_callback(0, 1, f"Loading {self.model_name} model...")
 
-        self.model = SentenceTransformer(self.model_name)
+        self.model = SentenceTransformer(self.model_name, local_files_only=True)
         self.model.to(self.device)
 
         if self.progress_callback:

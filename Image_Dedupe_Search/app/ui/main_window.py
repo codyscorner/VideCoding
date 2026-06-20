@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 )
 import os
 from PySide6.QtCore import Qt, Slot
+from PySide6.QtGui import QShortcut, QKeySequence
 from typing import Optional, List, Dict
 import numpy as np
 
@@ -23,6 +24,7 @@ from app.core.embeddings import EmbeddingEngine
 from app.workers.scan_worker import ScanWorker
 from app.workers.embed_worker import EmbedWorker
 from app.workers.similarity_worker import SimilarityWorker
+from app.workers.model_update_worker import ModelUpdateWorker
 
 
 class MainWindow(QMainWindow):
@@ -56,6 +58,7 @@ class MainWindow(QMainWindow):
         self._scan_worker: Optional[ScanWorker] = None
         self._embed_worker: Optional[EmbedWorker] = None
         self._similarity_worker: Optional[SimilarityWorker] = None
+        self._update_worker: Optional[ModelUpdateWorker] = None
 
         # Cache
         self._cache: Optional[EmbeddingCache] = None
@@ -65,6 +68,9 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._load_from_config()
         self._apply_theme()
+
+        # Check for CLIP model updates once at startup (background, non-blocking)
+        self._start_model_update_check()
 
     def _init_cache(self) -> None:
         """Initialize embedding cache"""
@@ -272,6 +278,16 @@ class MainWindow(QMainWindow):
         self.delete_selected_btn.clicked.connect(self._delete_selected)
         layout.addWidget(self.delete_selected_btn)
 
+        # Quick-nuke button: delete all dupes in group and advance
+        self.delete_all_btn = QPushButton("Delete All Dupes + Next")
+        self.delete_all_btn.setEnabled(False)
+        self.delete_all_btn.setToolTip(
+            "Delete every duplicate in this group and move to the next  (Ctrl+Shift+D)\n"
+            "The representative image (green) is always kept."
+        )
+        self.delete_all_btn.clicked.connect(self._delete_all_and_next)
+        layout.addWidget(self.delete_all_btn)
+
         # Settings button
         self.settings_btn = QPushButton("Settings")
         self.settings_btn.setFixedWidth(100)
@@ -284,6 +300,9 @@ class MainWindow(QMainWindow):
         """Connect additional signals"""
         self.thumbnail_view.selection_changed.connect(self._on_selection_changed)
         self.thumbnail_view.delete_requested.connect(self._delete_selected)
+
+        shortcut = QShortcut(QKeySequence("Ctrl+Shift+D"), self)
+        shortcut.activated.connect(self._delete_all_and_next)
 
     def _load_from_config(self) -> None:
         """Load settings from config"""
@@ -430,6 +449,57 @@ class MainWindow(QMainWindow):
     def _on_model_loaded(self) -> None:
         """Handle model loaded"""
         self.status_label.setText("Model loaded, computing embeddings...")
+
+    def _start_model_update_check(self) -> None:
+        """Launch the one-shot startup update checker (background, non-blocking)."""
+        model_name = self.config.get("model_name", "clip-ViT-B-32")
+        self._update_worker = ModelUpdateWorker(model_name=model_name, parent=self)
+        self._update_worker.update_available.connect(self._on_model_update_available)
+        self._update_worker.download_progress.connect(self._on_model_download_progress)
+        self._update_worker.download_complete.connect(self._on_model_download_complete)
+        self._update_worker.download_failed.connect(self._on_model_download_failed)
+        self._update_worker.start()
+
+    @Slot(str)
+    def _on_model_update_available(self, remote_sha: str) -> None:
+        """Ask user whether to download the newer CLIP model revision."""
+        short_sha = remote_sha[:8]
+        reply = QMessageBox.question(
+            self,
+            "CLIP Model Update Available",
+            f"A newer version of the CLIP model is available (revision {short_sha}).\n\n"
+            "Download it now? (The current cached version will still work fine.)",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if self._update_worker:
+            self._update_worker.confirm_download(reply == QMessageBox.Yes)
+
+    @Slot(int, int, str)
+    def _on_model_download_progress(self, done: int, total: int, filename: str) -> None:
+        """Show download progress in the status bar."""
+        if total > 0:
+            self.progress_bar.setMaximum(total)
+            self.progress_bar.setValue(done)
+            mb_done = done / (1024 * 1024)
+            mb_total = total / (1024 * 1024)
+            self.status_label.setText(
+                f"Downloading {filename} — {mb_done:.1f} / {mb_total:.1f} MB"
+            )
+        else:
+            self.progress_bar.setMaximum(0)
+            self.status_label.setText(f"Downloading {filename}...")
+
+    @Slot()
+    def _on_model_download_complete(self) -> None:
+        self.status_label.setText("CLIP model updated successfully.")
+        self.progress_bar.setValue(self.progress_bar.maximum())
+        self._update_worker = None
+
+    @Slot(str)
+    def _on_model_download_failed(self, error: str) -> None:
+        self.status_label.setText(f"Model download failed: {error}")
+        self._update_worker = None
 
     @Slot(dict)
     def _on_embed_finished(self, embeddings: dict) -> None:
@@ -579,6 +649,7 @@ class MainWindow(QMainWindow):
             self.prev_group_btn.setEnabled(False)
             self.next_group_btn.setEnabled(False)
             self.compare_btn.setEnabled(False)
+            self.delete_all_btn.setEnabled(False)
         else:
             self.group_label.setText(
                 f"Group {self.current_group_index + 1} of {total}"
@@ -586,6 +657,7 @@ class MainWindow(QMainWindow):
             self.prev_group_btn.setEnabled(self.current_group_index > 0)
             self.next_group_btn.setEnabled(self.current_group_index < total - 1)
             self.compare_btn.setEnabled(True)
+            self.delete_all_btn.setEnabled(True)
 
     @Slot()
     def _show_prev_group(self) -> None:
@@ -751,6 +823,49 @@ class MainWindow(QMainWindow):
         # Update display
         self._on_group_updated()
 
+    @Slot()
+    def _delete_all_and_next(self) -> None:
+        """Delete every duplicate in the current group (keeping the representative) and advance."""
+        if not self.duplicate_groups:
+            return
+
+        group = self.duplicate_groups[self.current_group_index]
+        to_delete = list(group.duplicates)
+
+        deleted = 0
+        errors = []
+        for path in to_delete:
+            try:
+                os.remove(path)
+                deleted += 1
+            except OSError as e:
+                errors.append(str(e))
+
+        # Remove the entire group — next group slides into this index position
+        self.duplicate_groups.pop(self.current_group_index)
+
+        # Clamp index in case we just deleted the last group
+        if self.current_group_index >= len(self.duplicate_groups):
+            self.current_group_index = max(0, len(self.duplicate_groups) - 1)
+
+        remaining = len(self.duplicate_groups)
+        if errors:
+            self.status_label.setText(
+                f"Deleted {deleted}, {len(errors)} failed — {remaining} groups left"
+            )
+        else:
+            self.status_label.setText(
+                f"Deleted {deleted} duplicate(s) — {remaining} groups left"
+            )
+
+        if self.duplicate_groups:
+            self._display_current_group()
+        else:
+            self.thumbnail_view.clear_thumbnails()
+            self.status_label.setText("All duplicates have been processed!")
+
+        self._update_group_navigation()
+
     @Slot(int)
     def _on_threshold_changed(self, value: int) -> None:
         """Handle threshold slider change"""
@@ -786,6 +901,10 @@ class MainWindow(QMainWindow):
         if self._similarity_worker:
             self._similarity_worker.cancel()
             self._similarity_worker.wait()
+
+        if self._update_worker and self._update_worker.isRunning():
+            self._update_worker.confirm_download(False)  # unblock if waiting
+            self._update_worker.wait()
 
         # Close cache
         if self._cache:

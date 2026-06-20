@@ -174,7 +174,7 @@ class SettingsDialog(QDialog):
         thumb_minus.setProperty("cssClass", "spinbutton")
         self.thumbnail_size_spin = QSpinBox()
         self.thumbnail_size_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        self.thumbnail_size_spin.setRange(50, 300)
+        self.thumbnail_size_spin.setRange(50, 400)
         self.thumbnail_size_spin.setSingleStep(10)
         self.thumbnail_size_spin.setToolTip("Size of thumbnail images in the grid view")
         thumb_plus = QPushButton("+")

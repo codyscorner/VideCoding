@@ -11,14 +11,13 @@ from app.core.cache import EmbeddingCache
 class EmbedWorker(QThread):
     """Worker thread for computing image embeddings"""
 
-    # Signals
-    progress = Signal(int, int, str)  # current, total, current_file
-    batch_complete = Signal(dict)  # Dict[str, np.ndarray] - batch results
-    finished = Signal(dict)  # Dict[str, np.ndarray] - all embeddings
-    error = Signal(str)  # Error message
-    model_loading = Signal()  # Emitted when starting model load
-    model_loaded = Signal()  # Emitted when model is ready
-    status = Signal(str)  # Status message
+    progress = Signal(int, int, str)   # current, total, message
+    batch_complete = Signal(dict)       # Dict[str, np.ndarray]
+    finished = Signal(dict)             # Dict[str, np.ndarray]
+    error = Signal(str)
+    model_loading = Signal()
+    model_loaded = Signal()
+    status = Signal(str)
 
     def __init__(
         self,
@@ -30,18 +29,6 @@ class EmbedWorker(QThread):
         io_workers: int = 12,
         parent=None
     ):
-        """
-        Initialize embed worker
-
-        Args:
-            image_paths: List of image file paths to process
-            model_name: Name of the CLIP model to use
-            cache: Optional embedding cache for retrieving/storing embeddings
-            batch_size: Number of images per GPU batch
-            use_gpu: Whether to use GPU if available
-            io_workers: Number of parallel threads for loading images from disk
-            parent: Parent QObject
-        """
         super().__init__(parent)
         self.image_paths = image_paths
         self.model_name = model_name
@@ -52,20 +39,11 @@ class EmbedWorker(QThread):
         self._is_cancelled = False
 
     def run(self) -> None:
-        """
-        Compute embeddings for all images
-
-        1. Check cache for existing embeddings
-        2. Load model
-        3. Process uncached images in batches
-        4. Store new embeddings in cache
-        5. Emit finished with all embeddings
-        """
         try:
             all_embeddings: Dict[str, np.ndarray] = {}
             uncached_paths: List[str] = []
 
-            # Step 1: Check cache for existing embeddings
+            # Step 1: Check cache
             self.status.emit("Checking cache...")
             self.progress.emit(0, len(self.image_paths), "Checking cache...")
 
@@ -73,13 +51,11 @@ class EmbedWorker(QThread):
                 for i, path in enumerate(self.image_paths):
                     if self._is_cancelled:
                         return
-
                     cached = self.cache.get_embedding(path, self.model_name)
                     if cached is not None:
                         all_embeddings[path] = cached
                     else:
                         uncached_paths.append(path)
-
                     if (i + 1) % 100 == 0:
                         self.progress.emit(i + 1, len(self.image_paths), "Checking cache...")
             else:
@@ -91,16 +67,12 @@ class EmbedWorker(QThread):
             if self._is_cancelled:
                 return
 
-            # Step 2: If there are uncached images, load model and process
+            # Step 2: Load model and compute embeddings for uncached images
             if uncached_paths:
-                # Load model
                 self.model_loading.emit()
                 self.status.emit("Loading CLIP model...")
 
-                engine = EmbeddingEngine(
-                    model_name=self.model_name,
-                    use_gpu=self.use_gpu
-                )
+                engine = EmbeddingEngine(model_name=self.model_name, use_gpu=self.use_gpu)
                 engine.load_model()
 
                 self.model_loaded.emit()
@@ -110,7 +82,6 @@ class EmbedWorker(QThread):
                     engine.unload_model()
                     return
 
-                # Step 3: Process uncached images in batches
                 total = len(uncached_paths)
 
                 for batch_start in range(0, total, self.batch_size):
@@ -121,47 +92,33 @@ class EmbedWorker(QThread):
                     batch_end = min(batch_start + self.batch_size, total)
                     batch_paths = uncached_paths[batch_start:batch_end]
 
-                    # Compute embeddings for batch (parallel image loading + GPU)
                     batch_embeddings = engine.compute_embeddings_batch(
                         batch_paths,
                         batch_size=len(batch_paths),
                         num_io_workers=self.io_workers
                     )
 
-                    # Store results and update cache
                     for path, embedding in batch_embeddings.items():
                         if embedding is not None:
                             all_embeddings[path] = embedding
-
-                            # Store in cache
                             if self.cache:
                                 self.cache.store_embedding(path, embedding, self.model_name)
 
-                    # Emit progress
                     current = batch_end
                     self.progress.emit(
                         cache_hits + current,
                         len(self.image_paths),
                         f"Computing embeddings ({current}/{total})"
                     )
-
-                    # Emit batch results
                     self.batch_complete.emit(batch_embeddings)
 
-                # Cleanup
                 engine.unload_model()
 
-            # Step 4: Emit final results
-            self.progress.emit(
-                len(self.image_paths),
-                len(self.image_paths),
-                "Complete"
-            )
+            self.progress.emit(len(self.image_paths), len(self.image_paths), "Complete")
             self.finished.emit(all_embeddings)
 
         except Exception as e:
             self.error.emit(str(e))
 
     def cancel(self) -> None:
-        """Request cancellation"""
         self._is_cancelled = True

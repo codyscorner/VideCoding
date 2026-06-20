@@ -48,10 +48,10 @@ class ThumbnailView(QListWidget):
         self.setWordWrap(True)
         self.setUniformItemSizes(True)
 
-        # Set item size to accommodate thumbnail + text (filename + similarity %)
+        # Set item size to accommodate thumbnail + text (filename line + % line)
         self.setGridSize(QSize(
             self.thumbnail_size + 20,
-            self.thumbnail_size + 75
+            self.thumbnail_size + 90
         ))
 
     def _connect_signals(self) -> None:
@@ -91,9 +91,9 @@ class ThumbnailView(QListWidget):
                 # Placeholder for failed thumbnails
                 item.setIcon(QIcon())
 
-            # Set text (filename + optional similarity)
-            # Scale max filename length to thumbnail width (~1 char per 4px)
-            max_chars = max(20, (self.thumbnail_size + 20) // 4 * 2)
+            # Limit filename to one display line so the % always fits on line 2.
+            # Cell width is thumbnail_size+20 px; default font is ~7px per char.
+            max_chars = max(12, (self.thumbnail_size + 20) // 7)
             filename = path.split('\\')[-1].split('/')[-1]
             if len(filename) > max_chars:
                 filename = filename[:max_chars - 3] + "..."
@@ -231,7 +231,7 @@ class ThumbnailView(QListWidget):
         """
         self.thumbnail_size = size
         self.setIconSize(QSize(size, size))
-        self.setGridSize(QSize(size + 20, size + 75))
+        self.setGridSize(QSize(size + 20, size + 90))
 
         # Clear cache to regenerate at new size
         self._thumbnails.clear()
