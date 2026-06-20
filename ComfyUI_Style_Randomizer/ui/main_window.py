@@ -371,28 +371,27 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Path selectors
-        paths_box = QGroupBox("Paths")
-        paths_v   = QVBoxLayout(paths_box)
-        paths_v.setSpacing(6)
-
-        self._input_edit  = self._add_path_row(paths_v, "Input Folder:",  "input_dir",    folder=True)
-        self._output_edit = self._add_path_row(paths_v, "Output Folder:", "output_dir",   folder=True)
-        self._wf_edit     = self._add_path_row(paths_v, "Workflow JSON:", "workflow_path", folder=False,
-                                                file_filter="JSON Files (*.json)")
-        self._pr_edit     = self._add_path_row(paths_v, "Prompts File:",  "prompts_file", folder=False,
-                                                file_filter="Text Files (*.txt)",
-                                                extra_btn=("Edit", self._open_prompt_editor))
-
-        skip_row = QHBoxLayout()
-        self._skip_cb = QCheckBox("Skip already-processed images  (checks output folder by filename stem)")
-        self._skip_cb.setChecked(self._config.get("skip_existing", True))
-        self._skip_cb.toggled.connect(lambda v: self._config.set("skip_existing", v))
-        skip_row.addWidget(self._skip_cb)
-        skip_row.addStretch()
-        paths_v.addLayout(skip_row)
-
-        layout.addWidget(paths_box)
+        # Input folder row
+        input_row = QHBoxLayout()
+        input_lbl = QLabel("Input Folder:")
+        input_lbl.setFixedWidth(100)
+        input_lbl.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
+        self._input_edit = QLineEdit()
+        self._input_edit.setText(self._config.get("input_dir", ""))
+        self._input_edit.setPlaceholderText("Folder containing source images…")
+        self._input_edit.editingFinished.connect(self._on_input_edited)
+        input_browse = QPushButton("Browse")
+        input_browse.setObjectName("small_btn")
+        input_browse.setFixedWidth(70)
+        input_browse.clicked.connect(self._browse_input)
+        self._img_count_lbl = QLabel("Images: 0")
+        self._img_count_lbl.setObjectName("subtitle")
+        input_row.addWidget(input_lbl)
+        input_row.addWidget(self._input_edit, stretch=1)
+        input_row.addWidget(input_browse)
+        input_row.addSpacing(10)
+        input_row.addWidget(self._img_count_lbl)
+        layout.addLayout(input_row)
 
         # Splitter: thumbnails | prompts+log
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -400,9 +399,6 @@ class MainWindow(QMainWindow):
         left_w = QWidget()
         left_v = QVBoxLayout(left_w)
         left_v.setContentsMargins(0, 0, 0, 0)
-        self._img_count_lbl = QLabel("Images: 0")
-        self._img_count_lbl.setObjectName("subtitle")
-        left_v.addWidget(self._img_count_lbl)
         self._thumb_grid = ThumbnailGrid()
         left_v.addWidget(self._thumb_grid)
         splitter.addWidget(left_w)
@@ -414,9 +410,17 @@ class MainWindow(QMainWindow):
 
         prompt_group = QGroupBox("Style Prompts")
         pg_v = QVBoxLayout(prompt_group)
+        prompt_hdr = QHBoxLayout()
         self._prompt_count_lbl = QLabel("0 prompts loaded")
         self._prompt_count_lbl.setObjectName("subtitle")
-        pg_v.addWidget(self._prompt_count_lbl)
+        edit_prompts_btn = QPushButton("Edit Prompts")
+        edit_prompts_btn.setObjectName("small_btn")
+        edit_prompts_btn.setFixedWidth(100)
+        edit_prompts_btn.clicked.connect(self._open_prompt_editor)
+        prompt_hdr.addWidget(self._prompt_count_lbl)
+        prompt_hdr.addStretch()
+        prompt_hdr.addWidget(edit_prompts_btn)
+        pg_v.addLayout(prompt_hdr)
         self._prompt_list = QListWidget()
         self._prompt_list.setMaximumHeight(190)
         pg_v.addWidget(self._prompt_list)
@@ -525,37 +529,6 @@ class MainWindow(QMainWindow):
 
         return page
 
-    def _add_path_row(self, parent_layout, label: str, config_key: str,
-                       folder: bool, file_filter: str = "",
-                       extra_btn: tuple | None = None) -> QLineEdit:
-        row  = QHBoxLayout()
-        lbl  = QLabel(label)
-        lbl.setFixedWidth(112)
-        edit = QLineEdit()
-        edit.setText(self._config.get(config_key, ""))
-        edit.setPlaceholderText("Browse or paste path…")
-        edit.editingFinished.connect(lambda: self._on_path_edited(edit, config_key))
-
-        browse_btn = QPushButton("Browse")
-        browse_btn.setObjectName("small_btn")
-        browse_btn.setFixedWidth(70)
-        browse_btn.clicked.connect(lambda: self._browse_path(edit, config_key, folder, file_filter))
-
-        row.addWidget(lbl)
-        row.addWidget(edit)
-        row.addWidget(browse_btn)
-
-        if extra_btn:
-            btn_label, callback = extra_btn
-            xbtn = QPushButton(btn_label)
-            xbtn.setObjectName("small_btn")
-            xbtn.setFixedWidth(50)
-            xbtn.clicked.connect(callback)
-            row.addWidget(xbtn)
-
-        parent_layout.addLayout(row)
-        return edit
-
     # ------------------------------------------------------------------ #
     # View switching
     # ------------------------------------------------------------------ #
@@ -571,21 +544,15 @@ class MainWindow(QMainWindow):
     # Path handling
     # ------------------------------------------------------------------ #
 
-    def _browse_path(self, edit: QLineEdit, config_key: str, folder: bool, file_filter: str):
-        if folder:
-            path = QFileDialog.getExistingDirectory(self, "Select Folder", edit.text())
-        else:
-            path, _ = QFileDialog.getOpenFileName(self, "Select File", edit.text(), file_filter)
+    def _browse_input(self):
+        path = QFileDialog.getExistingDirectory(self, "Select Input Folder", self._input_edit.text())
         if path:
-            edit.setText(path)
-            self._on_path_edited(edit, config_key)
+            self._input_edit.setText(path)
+            self._on_input_edited()
 
-    def _on_path_edited(self, edit: QLineEdit, config_key: str):
-        self._config.set(config_key, edit.text())
-        if config_key == "input_dir":
-            self._reload_images()
-        elif config_key == "prompts_file":
-            self._reload_prompts()
+    def _on_input_edited(self):
+        self._config.set("input_dir", self._input_edit.text())
+        self._reload_images()
 
     # ------------------------------------------------------------------ #
     # Data loading — main tab
@@ -595,6 +562,7 @@ class MainWindow(QMainWindow):
         self._reload_images()
         self._reload_prompts()
         self._update_mode_label()
+        self._update_status()
 
     def _reload_images(self):
         input_dir = Path(self._config.get("input_dir", ""))
@@ -751,7 +719,7 @@ class MainWindow(QMainWindow):
     def _open_prompt_editor(self):
         prompts_file = Path(self._config.get("prompts_file", ""))
         if not prompts_file.is_file():
-            self._append_log("Select a prompts file first.")
+            self._append_log("No prompts file set — configure it in ⚙ Settings.")
             return
         dlg = PromptEditorDialog(prompts_file, self)
         if dlg.exec():
@@ -760,7 +728,7 @@ class MainWindow(QMainWindow):
     def _open_settings(self):
         dlg = SettingsDialog(self._config, self)
         if dlg.exec():
-            self._config.save()
+            self._reload_prompts()
             self._update_mode_label()
             self._update_status()
 
