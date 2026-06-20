@@ -8,7 +8,7 @@ from config import ConfigManager
 from ui.main_window import MainWindow
 from ui.styles import STYLESHEET
 
-BASE_DIR = Path(__file__).parent
+BASE_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
 
 
 def main():
