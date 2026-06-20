@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
-    QCheckBox, QRadioButton, QButtonGroup, QProgressBar, QListWidget,
+    QCheckBox, QRadioButton, QButtonGroup, QProgressBar, QPlainTextEdit,
     QGroupBox, QVBoxLayout, QHBoxLayout,
     QFileDialog, QMessageBox,
 )
@@ -146,8 +146,10 @@ class MainWindow(QMainWindow):
         # Status log
         status_group = QGroupBox("Status")
         status_layout = QVBoxLayout(status_group)
-        self.status_list = QListWidget()
-        status_layout.addWidget(self.status_list)
+        self.status_log = QPlainTextEdit()
+        self.status_log.setReadOnly(True)
+        self.status_log.setMaximumBlockCount(5000)  # auto-trims oldest lines
+        status_layout.addWidget(self.status_log)
         layout.addWidget(status_group, stretch=1)
 
     def _browse_source(self):
@@ -201,7 +203,7 @@ class MainWindow(QMainWindow):
         self.sort_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.progress_bar.setValue(0)
-        self.status_list.clear()
+        self.status_log.clear()
 
         options = {
             'source': source,
@@ -244,35 +246,42 @@ class MainWindow(QMainWindow):
             self._message_queue.put(('error', {'type': 'unexpected', 'message': str(e)}))
 
     def _process_messages(self):
+        status_lines = []
+        terminal_event = None
+
+        # Drain up to 200 messages per tick — avoids blocking the UI thread
+        # while still catching up on backlog quickly at 14k-image scale
         try:
-            while True:
+            for _ in range(200):
                 msg_type, data = self._message_queue.get_nowait()
 
                 if msg_type == 'status':
-                    self.status_list.addItem(data)
-                    self.status_list.scrollToBottom()
+                    status_lines.append(data)
 
                 elif msg_type == 'progress':
                     self.progress_bar.setValue(data['current'])
                     self.progress_label.setText(f"{data['current']}%: {data['filename']}")
 
-                elif msg_type == 'complete':
-                    self._poll_timer.stop()
-                    self._on_complete(data)
-                    return
-
-                elif msg_type == 'cancelled':
-                    self._poll_timer.stop()
-                    self._on_cancelled()
-                    return
-
-                elif msg_type == 'error':
-                    self._poll_timer.stop()
-                    self._on_error(data)
-                    return
+                elif msg_type in ('complete', 'cancelled', 'error'):
+                    terminal_event = (msg_type, data)
+                    break
 
         except queue.Empty:
             pass
+
+        # Batch-append all status lines in one Qt call — scrollToBottom once
+        if status_lines:
+            self.status_log.appendPlainText('\n'.join(status_lines))
+
+        if terminal_event:
+            msg_type, data = terminal_event
+            self._poll_timer.stop()
+            if msg_type == 'complete':
+                self._on_complete(data)
+            elif msg_type == 'cancelled':
+                self._on_cancelled()
+            elif msg_type == 'error':
+                self._on_error(data)
 
     def _on_complete(self, data: dict):
         self._is_processing = False
@@ -302,8 +311,7 @@ class MainWindow(QMainWindow):
         self.sort_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.progress_label.setText("Cancelled")
-        self.status_list.addItem("Operation cancelled by user")
-        self.status_list.scrollToBottom()
+        self.status_log.appendPlainText("Operation cancelled by user")
 
     def _on_error(self, data: dict):
         self._is_processing = False
@@ -320,8 +328,7 @@ class MainWindow(QMainWindow):
             self._cancel_requested = True
             self.cancel_btn.setEnabled(False)
             self.progress_label.setText("Cancelling...")
-            self.status_list.addItem("Cancellation requested, killing workers...")
-            self.status_list.scrollToBottom()
+            self.status_log.appendPlainText("Cancellation requested, killing workers...")
             self._kill_child_processes()
 
     def _kill_child_processes(self):
@@ -346,6 +353,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if self._is_processing:
             self._cancel_requested = True
+        self._poll_timer.stop()
         self._kill_child_processes()
         self._save_config()
         event.accept()

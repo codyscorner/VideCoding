@@ -1,29 +1,31 @@
-"""Face detection module for Image People Sorter - Two-pass detection strategy
+"""Face detection module for Image People Sorter - Three-pass detection strategy
 
-Pass 1: Fast HOG scan (CPU parallel) - catches frontal faces quickly
-Pass 2: Deep CNN scan (GPU batch) - catches angled/profile faces on remaining images
+Pass 1a: HOG face scan upsample=1 (CPU parallel) - fast, catches large/clear faces
+Pass 1b: HOG face scan upsample=2 (CPU parallel) - slower, catches smaller/partial faces
+Pass 2:  YOLOv8n person detection (GPU) - catches any pose, orientation, lighting
 """
 
 import os
 from pathlib import Path
 from typing import List, Tuple, Optional, Callable
 from dataclasses import dataclass
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed, BrokenExecutor
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 import face_recognition
 
 
 # Supported image extensions
 SUPPORTED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.tif', '.webp'}
 
-# Number of parallel workers for HOG (CPU-based, can use many)
-# Ryzen 9 9950X has 16 cores - use 14 to leave headroom
+# Number of parallel workers for HOG face pass (CPU-based, fast)
 MAX_WORKERS_HOG = 14
 
-# Number of parallel workers for CNN (CPU-based since dlib lacks CUDA)
-# CNN is heavier than HOG, so use fewer workers to avoid memory issues
-MAX_WORKERS_CNN = 6
+# YOLOv8 confidence threshold for person detection (lower = more sensitive, more false positives)
+YOLO_CONFIDENCE = 0.30
+
+# YOLOv8 model — 'yolov8n.pt' is the fastest/smallest; auto-downloads ~6MB on first run
+YOLO_MODEL = 'yolov8n.pt'
 
 
 @dataclass
@@ -37,85 +39,66 @@ class SortResult:
 
 
 # Standalone functions for multiprocessing (must be at module level)
-def _load_image_as_rgb_standalone(image_path: str, max_size: int = 1800) -> np.ndarray:
+def _pil_to_rgb_array(image_path: str, max_size: int = 1024) -> np.ndarray:
     """
-    Load an image and convert to RGB numpy array (standalone for multiprocessing)
+    Load any image and return a (H, W, 3) uint8 C-contiguous numpy array.
+
+    Uses img.tobytes() instead of np.array(img) to guarantee raw 3-byte-per-pixel
+    RGB output regardless of PIL version or conda environment quirks.
     """
     img = Image.open(image_path)
 
-    # Convert any format to RGB
+    # Normalize unusual modes before any other operation
+    if img.mode in ('I', 'F', 'I;16', 'I;16B'):
+        # 16/32-bit: normalize range to 0-255 via numpy, then rebuild as L
+        raw = np.array(img, dtype=np.float32)
+        mx = raw.max()
+        if mx > 0:
+            raw = raw / mx * 255
+        img = Image.fromarray(raw.astype(np.uint8), mode='L')
+    elif img.mode == 'P':
+        img = img.convert('RGBA')
+
     if img.mode != 'RGB':
         img = img.convert('RGB')
 
-    # Resize if larger than max_size for performance
+    img = ImageOps.exif_transpose(img)
+
+    # Ensure it's still RGB after transpose (defensive)
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+
     if max(img.size) > max_size:
         ratio = max_size / max(img.size)
         new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
-        img = img.resize(new_size, Image.LANCZOS)
+        img = img.resize(new_size, Image.Resampling.BILINEAR)
 
-    # Convert to numpy array
-    arr = np.array(img, dtype=np.uint8)
-
-    # Ensure contiguous memory layout for dlib
-    if not arr.flags['C_CONTIGUOUS']:
-        arr = np.ascontiguousarray(arr)
-
+    # Use tobytes() — always yields raw 3×uint8 per pixel for an RGB image,
+    # no matter what numpy/PIL version is in the worker environment
+    w, h = img.size
+    arr = np.frombuffer(img.tobytes(), dtype=np.uint8).reshape(h, w, 3).copy()
     return arr
 
 
-def _detect_faces_hog(image_path: str) -> Tuple[str, bool, Optional[str]]:
+def _detect_faces_hog(image_path: str, upsample: int = 1) -> Tuple[str, bool, Optional[str]]:
     """
-    Fast face detection using HOG model (Pass 1)
-
-    Good for frontal faces, very fast, low memory usage.
-
-    Returns:
-        Tuple of (image_path, has_faces, error_message)
+    Face detection using HOG model.
+    upsample=1 is fast (catches large/clear faces).
+    upsample=2 is slower but catches smaller/partially visible faces.
+    Returns: (image_path, has_faces, error_message)
     """
+    arr = None
     try:
-        image = _load_image_as_rgb_standalone(image_path)
-
-        # HOG model - fast, good for frontal faces
-        face_locations = face_recognition.face_locations(
-            image,
-            number_of_times_to_upsample=1,  # Keep at 1 for speed
-            model="hog"
-        )
-
+        arr = _pil_to_rgb_array(image_path)
+        face_locations = face_recognition.face_locations(arr, number_of_times_to_upsample=upsample, model="hog")
         return (image_path, len(face_locations) > 0, None)
-
     except Exception as e:
-        return (image_path, False, str(e))
-
-
-def _detect_faces_cnn(image_path: str) -> Tuple[str, bool, Optional[str]]:
-    """
-    Deep face detection using CNN model (Pass 2)
-
-    CNN is more accurate than HOG, catches faces at angles, profiles, smaller faces.
-    Note: Running on CPU since dlib lacks CUDA support.
-
-    Returns:
-        Tuple of (image_path, has_faces, error_message)
-    """
-    try:
-        image = _load_image_as_rgb_standalone(image_path, max_size=1400)
-
-        # CNN model - slower but catches angled/profile faces
-        face_locations = face_recognition.face_locations(
-            image,
-            number_of_times_to_upsample=1,
-            model="cnn"
-        )
-
-        return (image_path, len(face_locations) > 0, None)
-
-    except Exception as e:
-        return (image_path, False, str(e))
+        detail = str(e)
+        return (image_path, False, detail)
 
 
 class ImagePeopleSorter:
-    """Sorts images based on whether they contain people - two-pass detection strategy"""
+    """Sorts images based on whether they contain people - three-pass detection strategy"""
 
     def __init__(
         self,
@@ -124,42 +107,19 @@ class ImagePeopleSorter:
         cancel_check: Optional[Callable[[], bool]] = None,
         copy_mode: bool = True,
         max_workers_hog: int = MAX_WORKERS_HOG,
-        max_workers_cnn: int = MAX_WORKERS_CNN
+        max_workers_body: int = 0  # unused, kept for API compat
     ):
-        """
-        Initialize the sorter
-
-        Args:
-            status_callback: Callback for status messages
-            progress_callback: Callback for progress (current, total, filename, file_progress)
-            cancel_check: Callback that returns True if operation should be cancelled
-            copy_mode: If True, copy files; if False, move files
-            max_workers_hog: Number of parallel workers for HOG detection (CPU, fast pass)
-            max_workers_cnn: Number of parallel workers for CNN detection (CPU, deep pass)
-        """
         self.status_callback = status_callback
         self.progress_callback = progress_callback
         self.cancel_check = cancel_check
         self.copy_mode = copy_mode
         self.max_workers_hog = max_workers_hog
-        self.max_workers_cnn = max_workers_cnn
 
     def _log_status(self, message: str) -> None:
-        """Log a status message"""
         if self.status_callback:
             self.status_callback(message)
 
     def _get_image_files(self, folder: str, recursive: bool) -> List[str]:
-        """
-        Get all image files in a folder
-
-        Args:
-            folder: Folder to scan
-            recursive: If True, scan subdirectories
-
-        Returns:
-            List of image file paths
-        """
         files = []
         folder_path = Path(folder)
 
@@ -172,41 +132,23 @@ class ImagePeopleSorter:
                 files.extend(folder_path.glob(f'*{ext}'))
                 files.extend(folder_path.glob(f'*{ext.upper()}'))
 
-        # Convert to strings and remove duplicates
         return list(set(str(f) for f in files))
 
     def _copy_or_move_file(self, source: str, dest: str) -> None:
-        """Copy or move a file based on mode"""
         import shutil
-
-        # Create destination directory if needed
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-
         if self.copy_mode:
             shutil.copy2(source, dest)
         else:
             shutil.move(source, dest)
 
     def _get_unique_dest_path(self, dest_folder: str, filename: str) -> str:
-        """
-        Get a unique destination path, numbering duplicates
-
-        Args:
-            dest_folder: Destination folder
-            filename: Original filename
-
-        Returns:
-            Unique destination path
-        """
         dest_path = os.path.join(dest_folder, filename)
-
         if not os.path.exists(dest_path):
             return dest_path
 
-        # Add number for duplicates
         base_name, ext = os.path.splitext(filename)
         counter = 1
-
         while os.path.exists(dest_path):
             new_filename = f"{base_name}_{counter:03d}{ext}"
             dest_path = os.path.join(dest_folder, new_filename)
@@ -221,30 +163,22 @@ class ImagePeopleSorter:
         recursive: bool = True
     ) -> Tuple[List[SortResult], int, int]:
         """
-        Sort images into People and No_People folders using two-pass face detection
+        Sort images into People and No_People folders using two-pass detection.
 
-        Pass 1: Fast HOG scan (parallel, many workers) - catches frontal faces
-        Pass 2: Deep CNN scan (limited workers) - only on images HOG missed
-
-        Args:
-            source_folder: Source folder containing images
-            dest_folder: Destination folder for sorted images
-            recursive: If True, scan subdirectories
+        Pass 1: HOG face scan (fast, frontal faces)
+        Pass 2: OpenCV body scan (slower, catches people from behind/side/distance)
 
         Returns:
             Tuple of (results list, people count, no people count)
         """
-        # Validate folders
         if not os.path.exists(source_folder):
             raise ValueError(f"Source folder does not exist: {source_folder}")
 
-        # Create destination subfolders
         people_folder = os.path.join(dest_folder, "People")
         no_people_folder = os.path.join(dest_folder, "No_People")
         os.makedirs(people_folder, exist_ok=True)
         os.makedirs(no_people_folder, exist_ok=True)
 
-        # Get all image files
         mode_str = "recursively" if recursive else "in root folder only"
         self._log_status(f"Scanning source folder {mode_str}...")
         image_files = self._get_image_files(source_folder, recursive)
@@ -256,69 +190,168 @@ class ImagePeopleSorter:
         total_files = len(image_files)
         self._log_status(f"Found {total_files} images to process")
 
-        # Detection results storage
-        detection_results = {}  # image_path -> (has_people, error)
-        needs_deep_scan = []    # Images that need CNN pass
+        detection_results = {}
+        needs_body_scan = []
 
         # =========================================
-        # PASS 1: Fast HOG scan (parallel, many workers)
+        # PASS 1a: HOG face scan — upsample=1 (fast, catches large/clear faces)
         # =========================================
-        self._log_status(f"Pass 1: Fast scan with {self.max_workers_hog} workers...")
+        self._log_status(f"Pass 1a: Fast face scan with {self.max_workers_hog} workers...")
         processed = 0
         hog_found = 0
+        error_count = 0
+        needs_deep_face_scan = []  # images for Pass 1b (upsample=2)
 
         with ProcessPoolExecutor(max_workers=self.max_workers_hog) as executor:
-            future_to_path = {
-                executor.submit(_detect_faces_hog, path): path
-                for path in image_files
-            }
+            future_to_path = {executor.submit(_detect_faces_hog, path, 1): path for path in image_files}
 
-            for future in as_completed(future_to_path):
-                if self.cancel_check and self.cancel_check():
-                    self._log_status("Cancellation requested...")
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    break
+            try:
+                for future in as_completed(future_to_path):
+                    if self.cancel_check and self.cancel_check():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        self._log_status("Operation cancelled during Pass 1a")
+                        return [], 0, 0
 
-                try:
-                    image_path, has_people, error = future.result()
+                    try:
+                        image_path, has_people, error = future.result()
+                    except Exception as e:
+                        image_path = future_to_path[future]
+                        has_people, error = False, str(e)
+
                     processed += 1
                     filename = os.path.basename(image_path)
 
                     if error:
                         detection_results[image_path] = (False, error)
-                        self._log_status(f"Error: {filename} - {error}")
+                        error_count += 1
+                        if error_count <= 3:
+                            self._log_status(f"Error ({filename}): {error}")
+                        elif error_count == 4:
+                            self._log_status("(further errors suppressed)")
                     elif has_people:
                         detection_results[image_path] = (True, None)
                         hog_found += 1
-                        self._log_status(f"[HOG] Face found: {filename}")
+                        self._log_status(f"[Face] Found: {filename}")
                     else:
-                        # No face found - queue for deep scan
-                        needs_deep_scan.append(image_path)
+                        needs_deep_face_scan.append(image_path)
 
-                    # Progress: Pass 1 is 70% of total work (no CNN pass)
                     if self.progress_callback:
-                        progress = int((processed / total_files) * 70)
-                        self.progress_callback(progress, 100, f"Scanning: {filename}", 100)
+                        progress = int((processed / total_files) * 35)
+                        self.progress_callback(progress, 100, f"Face scan: {filename}", 100)
 
-                except Exception as e:
-                    path = future_to_path[future]
-                    detection_results[path] = (False, str(e))
-                    processed += 1
+            except BrokenExecutor:
+                self._log_status("Operation cancelled during Pass 1a")
+                return [], 0, 0
 
-        if self.cancel_check and self.cancel_check():
-            self._log_status("Operation cancelled during Pass 1")
-            return [], 0, 0
-
-        self._log_status(f"Pass 1 complete: {hog_found} faces found, {len(needs_deep_scan)} need deep scan")
+        self._log_status(
+            f"Pass 1a complete: {hog_found} faces found, "
+            f"{len(needs_deep_face_scan)} going to deep face scan"
+        )
 
         # =========================================
-        # Mark remaining images as no-face (skip CNN - too slow without GPU)
+        # PASS 1b: HOG face scan — upsample=2 (slower, catches smaller/partial faces)
+        # Only runs on images Pass 1a missed — typically much smaller subset
         # =========================================
-        cnn_found = 0
-        for image_path in needs_deep_scan:
-            detection_results[image_path] = (False, None)
+        hog_deep_found = 0
+        if needs_deep_face_scan:
+            deep_total = len(needs_deep_face_scan)
+            self._log_status(f"Pass 1b: Deep face scan ({deep_total} images)...")
+            deep_processed = 0
 
-        self._log_status(f"Skipped deep scan: {len(needs_deep_scan)} images marked as no-face (review manually if needed)")
+            with ProcessPoolExecutor(max_workers=self.max_workers_hog) as executor:
+                future_to_path = {executor.submit(_detect_faces_hog, path, 2): path for path in needs_deep_face_scan}
+
+                try:
+                    for future in as_completed(future_to_path):
+                        if self.cancel_check and self.cancel_check():
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            self._log_status("Operation cancelled during Pass 1b")
+                            return [], 0, 0
+
+                        try:
+                            image_path, has_people, error = future.result()
+                        except Exception as e:
+                            image_path = future_to_path[future]
+                            has_people, error = False, str(e)
+
+                        deep_processed += 1
+                        filename = os.path.basename(image_path)
+
+                        if error:
+                            detection_results[image_path] = (False, error)
+                        elif has_people:
+                            detection_results[image_path] = (True, None)
+                            hog_deep_found += 1
+                            self._log_status(f"[Face+] Found: {filename}")
+                        else:
+                            needs_body_scan.append(image_path)
+
+                        if self.progress_callback:
+                            progress = 35 + int((deep_processed / deep_total) * 20)
+                            self.progress_callback(progress, 100, f"Deep face scan: {filename}", 100)
+
+                except BrokenExecutor:
+                    self._log_status("Operation cancelled during Pass 1b")
+                    return [], 0, 0
+
+            self._log_status(
+                f"Pass 1b complete: {hog_deep_found} additional faces found, "
+                f"{len(needs_body_scan)} images need body scan"
+            )
+
+        # =========================================
+        # PASS 2: YOLOv8 person detection (GPU)
+        # Catches any pose, orientation, lighting — rotated photos, cyclists, dancers, etc.
+        # Runs in this thread; GPU parallelises internally, no subprocess needed.
+        # =========================================
+        body_found = 0
+        if needs_body_scan:
+            body_total = len(needs_body_scan)
+            try:
+                import torch
+                from ultralytics import YOLO
+                import warnings
+                warnings.filterwarnings('ignore', category=UserWarning)
+
+                device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                self._log_status(f"Pass 2: YOLO body scan ({body_total} images, device={device})...")
+
+                model = YOLO(YOLO_MODEL)
+
+                for i, image_path in enumerate(needs_body_scan):
+                    if self.cancel_check and self.cancel_check():
+                        self._log_status("Operation cancelled during Pass 2")
+                        return [], 0, 0
+
+                    filename = os.path.basename(image_path)
+                    try:
+                        results = model(image_path, classes=[0], verbose=False, device=device)
+                        confs = [float(c) for r in results for c in r.boxes.conf]
+                        has_people = any(c >= YOLO_CONFIDENCE for c in confs)
+                    except Exception as e:
+                        detection_results[image_path] = (False, str(e))
+                        if self.progress_callback:
+                            progress = 55 + int(((i + 1) / body_total) * 30)
+                            self.progress_callback(progress, 100, f"YOLO scan: {filename}", 100)
+                        continue
+
+                    if has_people:
+                        detection_results[image_path] = (True, None)
+                        body_found += 1
+                        self._log_status(f"[YOLO] Found: {filename}")
+                    else:
+                        detection_results[image_path] = (False, None)
+
+                    if self.progress_callback:
+                        progress = 55 + int(((i + 1) / body_total) * 30)
+                        self.progress_callback(progress, 100, f"YOLO scan: {filename}", 100)
+
+            except ImportError:
+                self._log_status("Warning: ultralytics not installed — body scan skipped. Run: pip install ultralytics")
+                for path in needs_body_scan:
+                    detection_results[path] = (False, None)
+
+            self._log_status(f"Pass 2 complete: {body_found} additional people found by YOLO")
 
         # =========================================
         # PASS 3: Copy/Move files
@@ -337,9 +370,8 @@ class ImagePeopleSorter:
             filename = os.path.basename(image_path)
             has_people, error = detection_results.get(image_path, (False, "Not processed"))
 
-            # Progress: File copy is 30% of total work (70-100%)
             if self.progress_callback:
-                progress = 70 + int((idx / total_files) * 30)
+                progress = 85 + int((idx / total_files) * 15)
                 self.progress_callback(progress, 100, f"{'Copying' if self.copy_mode else 'Moving'}: {filename}", 100)
 
             if error:
@@ -385,16 +417,15 @@ class ImagePeopleSorter:
                     error_message=str(e)
                 ))
 
-            if self.progress_callback:
-                progress = 70 + int((idx / total_files) * 30)
-                self.progress_callback(progress, 100, filename, 100)
-
-        # Summary
         if self.cancel_check and self.cancel_check():
             self._log_status(f"Operation cancelled: {people_count} people, {no_people_count} no people processed")
         else:
             error_count = sum(1 for r in results if not r.success)
             action = "copied" if self.copy_mode else "moved"
-            self._log_status(f"Complete: {people_count} with people ({hog_found} HOG + {cnn_found} CNN), {no_people_count} without, {error_count} errors")
+            self._log_status(
+                f"Complete: {people_count} with people "
+                f"({hog_found} face-fast + {hog_deep_found} face-deep + {body_found} body), "
+                f"{no_people_count} without, {error_count} errors"
+            )
 
         return results, people_count, no_people_count

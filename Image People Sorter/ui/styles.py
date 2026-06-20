@@ -127,17 +127,13 @@ QProgressBar::chunk {{
     background-color: {COLORS['progress_fg']};
     border-radius: 2px;
 }}
-QListWidget {{
+QPlainTextEdit {{
     background-color: {COLORS['bg_medium']};
     color: {COLORS['fg_primary']};
     border: 1px solid {COLORS['border']};
     border-radius: 3px;
     font-family: Consolas;
     font-size: 9pt;
-}}
-QListWidget::item:selected {{
-    background-color: {COLORS['accent']};
-    color: white;
 }}
 QScrollBar:vertical {{
     background-color: {COLORS['bg_dark']};

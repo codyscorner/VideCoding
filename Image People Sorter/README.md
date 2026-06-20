@@ -1,16 +1,29 @@
 # Image People Sorter
 
-A desktop application that automatically sorts images based on face detection. Images containing people are separated from images without people.
+A desktop application that automatically sorts images based on people detection. Images containing people are separated from images without people.
 
 ## Features
 
-- **Fast Parallel Processing**: Uses multiple CPU cores (14 workers by default) for high-speed face detection
-- **HOG Face Detection**: Histogram of Oriented Gradients algorithm for reliable frontal face detection
+- **Three-Pass Detection Pipeline**: HOG face scan (fast) → HOG face scan (deep) → YOLOv8 body detection (GPU)
+- **Maximum Recall**: Catches frontal faces, partially visible faces, people from behind/side/distance, and unusual orientations
+- **Fast Parallel Processing**: 14 CPU workers for HOG passes; YOLOv8 runs on GPU internally
+- **Robust Image Loading**: Handles 16-bit images, EXIF rotation, palette-mode PNGs, and unusual PIL modes
 - **Flexible File Operations**: Choose to copy or move files to destination folders
 - **Recursive Scanning**: Option to scan subdirectories for images
 - **Progress Tracking**: Real-time progress bar and status log
 - **Cancel Support**: Stop processing at any time with immediate worker cleanup
 - **Dark Theme UI**: Modern dark-themed interface
+
+## Detection Pipeline
+
+### Pass 1a — HOG face scan (upsample=1)
+Fast CPU-parallel scan using the HOG (Histogram of Oriented Gradients) algorithm. Catches large, clear frontal faces quickly. 14 workers run in parallel.
+
+### Pass 1b — HOG face scan (upsample=2)
+Slower CPU-parallel HOG scan with 2× upsampling — runs only on images Pass 1a missed. Catches smaller faces and partially visible faces.
+
+### Pass 2 — YOLOv8 body detection (GPU)
+Runs only on images both HOG passes missed. Uses YOLOv8n to detect the "person" class at any pose, orientation, and lighting — cyclists, dancers, people from behind, distant figures, side profiles. Runs on GPU if CUDA is available, otherwise CPU. Requires `ultralytics` package.
 
 ## Supported Image Formats
 
@@ -34,8 +47,8 @@ A desktop application that automatically sorts images based on face detection. I
 
 ```
 Destination Folder/
-├── People/      # Images with detected faces
-└── No_People/   # Images without detected faces
+├── People/      # Images with detected people
+└── No_People/   # Images without people
 ```
 
 ## Requirements
@@ -47,11 +60,13 @@ Destination Folder/
 - Pillow
 - numpy
 - psutil
+- ultralytics (for YOLOv8 body detection pass)
+- torch (for GPU acceleration)
 
 ## Installation
 
 ```bash
-pip install PyQt6 dlib-bin face_recognition --no-deps face_recognition_models pillow numpy psutil platformdirs --upgrade
+pip install PyQt6 dlib-bin face_recognition --no-deps face_recognition_models pillow numpy psutil platformdirs ultralytics torch --upgrade
 ```
 
 ## Building Executable
@@ -65,8 +80,19 @@ The executable will be created in `dist/ImagePeopleSorter/`.
 
 ## Performance
 
-Optimized for multi-core processors. Default configuration uses 14 parallel workers, suitable for 16-core CPUs like AMD Ryzen 9 series. Adjust `MAX_WORKERS_HOG` in `face_detector.py` for different hardware.
+Default: 14 HOG workers (suited for 16-core CPUs like AMD Ryzen 9 series). YOLOv8 runs in the main thread and uses GPU batch-internally — no subprocess overhead. Adjust `MAX_WORKERS_HOG` in `face_detector.py` for different hardware.
 
-## Version
+## Changelog
 
-1.1.0 — Migrated from tkinter to PyQt6, dark orange/amber theme
+### v2.0.0
+- **Three-pass detection**: added Pass 1b (HOG upsample=2) and Pass 2 (YOLOv8n person detection) to replace the skipped CNN pass
+- **YOLOv8 integration**: catches people at any pose/orientation the face passes miss; GPU-accelerated
+- **Robust image loader**: handles 16-bit TIFF (`I`, `F` modes), EXIF rotation, palette-mode PNG, and unusual PIL edge cases via `tobytes()` serialization
+- **BrokenExecutor handling**: clean cancellation from subprocess pool crashes no longer hangs the UI
+- **Error suppression**: first 3 load errors shown in log; further errors suppressed to avoid flooding
+
+### v1.1.0
+- Migrated from tkinter to PyQt6, dark orange/amber theme
+
+### v1.0.0
+- Initial release: two-pass detection (HOG + CNN)
