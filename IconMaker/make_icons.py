@@ -162,7 +162,7 @@ APPS = [
     },
     {
         "name": "LunarLander",
-        "project_folder": "Lunar Lander",
+        "project_folder": "Games/Lunar_Lander",
         "prompt": (
             "Minimalist flat app icon, dark space background #050510, "
             "a glowing lunar lander module descending toward a cratered moon "
@@ -422,11 +422,7 @@ def convert_to_ico(png_path: Path, ico_path: Path) -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 NEW_APPS = {
-    "BulkFileRandomizer",
-    "Asteroids",
-    "JPG2PNG",
-    "ScreenSnap",
-    "WinFolderMover",
+    "LunarLander",
 }
 
 
