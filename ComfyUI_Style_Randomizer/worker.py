@@ -67,6 +67,7 @@ class BatchStyleWorker(QThread):
             for i, img_path in enumerate(self._image_paths):
                 if self._cancelled:
                     self._log("Cancelled.")
+                    self.all_done.emit()
                     return
 
                 if self._skip_existing and self._output_exists(img_path.stem):
@@ -92,6 +93,8 @@ class BatchStyleWorker(QThread):
                     self._poll_until_done(prompt_id)
 
                     if self._cancelled:
+                        self._log("Cancelled.")
+                        self.all_done.emit()
                         return
 
                     saved = self._get_output(prompt_id, img_path)

@@ -6,9 +6,10 @@ from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QIcon, QPainter, QImage
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QPushButton, QLineEdit,
-    QProgressBar, QListWidget, QGroupBox, QVBoxLayout, QHBoxLayout,
-    QSplitter, QFileDialog, QAbstractItemView, QPlainTextEdit, QCheckBox,
-    QStatusBar,
+    QProgressBar, QListWidget, QListWidgetItem, QGroupBox,
+    QVBoxLayout, QHBoxLayout, QSplitter, QStackedWidget,
+    QFileDialog, QAbstractItemView, QPlainTextEdit, QCheckBox,
+    QStatusBar, QComboBox, QMessageBox, QDialog, QSizePolicy,
 )
 
 from config import ConfigManager
@@ -19,13 +20,41 @@ from ui.prompt_editor import PromptEditorDialog
 
 THUMB_SIZE = 120
 
+SORT_OPTIONS = [
+    ("Newest First",   lambda p: p.stat().st_mtime, True),
+    ("Oldest First",   lambda p: p.stat().st_mtime, False),
+    ("Name A → Z",     lambda p: p.name.lower(),    False),
+    ("Name Z → A",     lambda p: p.name.lower(),    True),
+    ("Largest First",  lambda p: p.stat().st_size,  True),
+    ("Smallest First", lambda p: p.stat().st_size,  False),
+]
+
+_MODE_BTN_STYLE = f"""
+    QPushButton {{
+        background-color: {COLORS['bg_light']};
+        color: {COLORS['fg_secondary']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 4px;
+        font-size: 10pt;
+        font-weight: bold;
+        padding: 4px 18px;
+        min-width: 100px;
+    }}
+    QPushButton:checked {{
+        background-color: {COLORS['accent']};
+        color: white;
+        border: 1px solid {COLORS['accent']};
+    }}
+    QPushButton:hover:!checked {{ background-color: {COLORS['bg_medium']}; }}
+"""
+
 
 # ------------------------------------------------------------------ #
-# Background image loader
+# Background image loaders
 # ------------------------------------------------------------------ #
 
 class ImageLoaderThread(QThread):
-    image_ready      = pyqtSignal(QImage, str, str)  # img, abs_path, label
+    image_ready      = pyqtSignal(QImage, str, str)
     finished_loading = pyqtSignal(int)
 
     def __init__(self, input_dir: Path):
@@ -70,25 +99,170 @@ class ImageLoaderThread(QThread):
         self.finished_loading.emit(loaded)
 
 
+class LibraryLoaderThread(QThread):
+    image_ready      = pyqtSignal(QImage, str, str)
+    finished_loading = pyqtSignal(int)
+
+    def __init__(self, output_dir: Path, sort_idx: int = 0):
+        super().__init__()
+        self._output_dir = output_dir
+        _, self._sort_key, self._sort_reverse = SORT_OPTIONS[sort_idx]
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            images = sorted(
+                (p for p in self._output_dir.iterdir() if p.suffix.lower() in IMAGE_EXTS),
+                key=self._sort_key,
+                reverse=self._sort_reverse,
+            )
+        except OSError:
+            self.finished_loading.emit(0)
+            return
+
+        loaded = 0
+        for img_path in images:
+            if self._cancelled:
+                return
+            try:
+                pil = Image.open(img_path)
+                pil = ImageOps.exif_transpose(pil).convert("RGBA")
+                data = pil.tobytes("raw", "RGBA")
+                img  = QImage(data, pil.width, pil.height, QImage.Format.Format_RGBA8888)
+            except Exception:
+                img = QImage(str(img_path))
+            if img.isNull():
+                continue
+            img = img.scaled(
+                THUMB_SIZE, THUMB_SIZE,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self.image_ready.emit(img, str(img_path), img_path.name)
+            loaded += 1
+
+        self.finished_loading.emit(loaded)
+
+
+# ------------------------------------------------------------------ #
+# Full-size image viewer dialog
+# ------------------------------------------------------------------ #
+
+class ImageViewerDialog(QDialog):
+    def __init__(self, paths: list[str], index: int = 0, parent=None):
+        super().__init__(parent)
+        self._paths = paths
+        self._index = index
+        self._orig_pix: QPixmap | None = None
+        self.setWindowTitle("Image Viewer")
+        self.setMinimumSize(960, 720)
+        self.resize(1100, 800)
+        self._build_ui()
+        self._load_current()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        self._title_lbl = QLabel()
+        self._title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._title_lbl.setObjectName("subtitle")
+        layout.addWidget(self._title_lbl)
+
+        self._img_lbl = QLabel()
+        self._img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._img_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._img_lbl.setMinimumSize(200, 200)
+        layout.addWidget(self._img_lbl, stretch=1)
+
+        nav_row = QHBoxLayout()
+        self._prev_btn = QPushButton("← Prev")
+        self._prev_btn.setFixedWidth(110)
+        self._prev_btn.clicked.connect(self._prev)
+        self._next_btn = QPushButton("Next →")
+        self._next_btn.setFixedWidth(110)
+        self._next_btn.clicked.connect(self._next)
+        close_btn = QPushButton("Close")
+        close_btn.setObjectName("cancel_btn")
+        close_btn.setFixedWidth(90)
+        close_btn.clicked.connect(self.accept)
+        nav_row.addWidget(self._prev_btn)
+        nav_row.addStretch()
+        nav_row.addWidget(close_btn)
+        nav_row.addStretch()
+        nav_row.addWidget(self._next_btn)
+        layout.addLayout(nav_row)
+
+    def _load_current(self):
+        path = self._paths[self._index]
+        name = Path(path).name
+        self._title_lbl.setText(f"{name}  ({self._index + 1} / {len(self._paths)})")
+        self.setWindowTitle(f"Image Viewer — {name}")
+        self._prev_btn.setEnabled(self._index > 0)
+        self._next_btn.setEnabled(self._index < len(self._paths) - 1)
+        self._orig_pix = QPixmap(path)
+        self._update_display()
+
+    def _update_display(self):
+        if self._orig_pix and not self._orig_pix.isNull():
+            scaled = self._orig_pix.scaled(
+                self._img_lbl.width(),
+                self._img_lbl.height(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self._img_lbl.setPixmap(scaled)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_display()
+
+    def _prev(self):
+        if self._index > 0:
+            self._index -= 1
+            self._load_current()
+
+    def _next(self):
+        if self._index < len(self._paths) - 1:
+            self._index += 1
+            self._load_current()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Left:
+            self._prev()
+        elif event.key() == Qt.Key.Key_Right:
+            self._next()
+        elif event.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Return):
+            self.accept()
+        else:
+            super().keyPressEvent(event)
+
+
 # ------------------------------------------------------------------ #
 # Thumbnail grid
 # ------------------------------------------------------------------ #
 
 class ThumbnailGrid(QListWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, selection_mode=QAbstractItemView.SelectionMode.NoSelection):
         super().__init__(parent)
         self.setViewMode(QListWidget.ViewMode.IconMode)
         self.setIconSize(QSize(THUMB_SIZE, THUMB_SIZE))
         self.setGridSize(QSize(THUMB_SIZE + 12, THUMB_SIZE + 28))
         self.setSpacing(4)
         self.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.setSelectionMode(selection_mode)
         self.setWrapping(True)
         self.setUniformItemSizes(True)
         self.setStyleSheet(
             f"QListWidget {{ background-color: {COLORS['bg_medium']};"
             f" border: 1px solid {COLORS['border']}; border-radius: 3px; }}"
             f"QListWidget::item {{ border: 1px solid transparent; border-radius: 3px; }}"
+            f"QListWidget::item:selected {{ border: 2px solid {COLORS['accent']}; "
+            f"background-color: rgba(94,75,219,0.25); }}"
         )
 
     def add_item(self, img: QImage, key: str, label: str):
@@ -99,7 +273,6 @@ class ThumbnailGrid(QListWidget):
         painter.drawPixmap((THUMB_SIZE - pix.width()) // 2,
                            (THUMB_SIZE - pix.height()) // 2, pix)
         painter.end()
-        from PyQt6.QtWidgets import QListWidgetItem
         item = QListWidgetItem(QIcon(canvas), label)
         item.setData(Qt.ItemDataRole.UserRole, key)
         item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
@@ -109,6 +282,9 @@ class ThumbnailGrid(QListWidget):
         return [Path(self.item(i).data(Qt.ItemDataRole.UserRole))
                 for i in range(self.count())]
 
+    def selected_keys(self) -> list[str]:
+        return [item.data(Qt.ItemDataRole.UserRole) for item in self.selectedItems()]
+
 
 # ------------------------------------------------------------------ #
 # Main window
@@ -117,11 +293,13 @@ class ThumbnailGrid(QListWidget):
 class MainWindow(QMainWindow):
     def __init__(self, config: ConfigManager, base_dir: Path):
         super().__init__()
-        self._config  = config
+        self._config   = config
         self._base_dir = base_dir
         self._prompts: list[str] = []
         self._worker: BatchStyleWorker | None = None
         self._loader: ImageLoaderThread | None = None
+        self._lib_loader: LibraryLoaderThread | None = None
+        self._last_lib_dir: str = ""
 
         self._build_ui()
         self._load_initial_state()
@@ -140,12 +318,32 @@ class MainWindow(QMainWindow):
         root.setSpacing(8)
         root.setContentsMargins(12, 12, 12, 12)
 
-        # Header
+        # Header with view toggle buttons
         hdr_row = QHBoxLayout()
+        self._randomizer_btn = QPushButton("🎲  Randomizer")
+        self._randomizer_btn.setCheckable(True)
+        self._randomizer_btn.setChecked(True)
+        self._randomizer_btn.setFixedHeight(32)
+        self._randomizer_btn.setStyleSheet(_MODE_BTN_STYLE)
+        self._randomizer_btn.clicked.connect(lambda: self._switch_view(0))
+
+        self._library_btn = QPushButton("🖼  Library")
+        self._library_btn.setCheckable(True)
+        self._library_btn.setChecked(False)
+        self._library_btn.setFixedHeight(32)
+        self._library_btn.setStyleSheet(_MODE_BTN_STYLE)
+        self._library_btn.clicked.connect(lambda: self._switch_view(1))
+
+        hdr_row.addWidget(self._randomizer_btn)
+        hdr_row.addSpacing(4)
+        hdr_row.addWidget(self._library_btn)
+        hdr_row.addStretch()
+
         hdr_lbl = QLabel("ComfyUI Style Randomizer")
         hdr_lbl.setObjectName("header")
         hdr_row.addWidget(hdr_lbl)
         hdr_row.addStretch()
+
         self._mode_lbl = QLabel("● Local")
         self._mode_lbl.setStyleSheet(f"color: {COLORS['success']}; font-weight: bold;")
         hdr_row.addWidget(self._mode_lbl)
@@ -155,6 +353,23 @@ class MainWindow(QMainWindow):
         settings_btn.clicked.connect(self._open_settings)
         hdr_row.addWidget(settings_btn)
         root.addLayout(hdr_row)
+
+        # Stacked pages
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._build_main_page())
+        self._stack.addWidget(self._build_library_page())
+        root.addWidget(self._stack, stretch=1)
+
+        # Status bar
+        self._status = QStatusBar()
+        self.setStatusBar(self._status)
+        self._update_status()
+
+    def _build_main_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # Path selectors
         paths_box = QGroupBox("Paths")
@@ -166,7 +381,8 @@ class MainWindow(QMainWindow):
         self._wf_edit     = self._add_path_row(paths_v, "Workflow JSON:", "workflow_path", folder=False,
                                                 file_filter="JSON Files (*.json)")
         self._pr_edit     = self._add_path_row(paths_v, "Prompts File:",  "prompts_file", folder=False,
-                                                file_filter="Text Files (*.txt)", extra_btn=("Edit", self._open_prompt_editor))
+                                                file_filter="Text Files (*.txt)",
+                                                extra_btn=("Edit", self._open_prompt_editor))
 
         skip_row = QHBoxLayout()
         self._skip_cb = QCheckBox("Skip already-processed images  (checks output folder by filename stem)")
@@ -176,12 +392,11 @@ class MainWindow(QMainWindow):
         skip_row.addStretch()
         paths_v.addLayout(skip_row)
 
-        root.addWidget(paths_box)
+        layout.addWidget(paths_box)
 
         # Splitter: thumbnails | prompts+log
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Left — thumbnails
         left_w = QWidget()
         left_v = QVBoxLayout(left_w)
         left_v.setContentsMargins(0, 0, 0, 0)
@@ -192,7 +407,6 @@ class MainWindow(QMainWindow):
         left_v.addWidget(self._thumb_grid)
         splitter.addWidget(left_w)
 
-        # Right — prompts list + log
         right_w = QWidget()
         right_v = QVBoxLayout(right_w)
         right_v.setContentsMargins(0, 0, 0, 0)
@@ -217,7 +431,7 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(right_w)
         splitter.setSizes([620, 430])
-        root.addWidget(splitter, stretch=1)
+        layout.addWidget(splitter, stretch=1)
 
         # Bottom — progress + controls
         bottom_row = QHBoxLayout()
@@ -238,12 +452,78 @@ class MainWindow(QMainWindow):
         self._cancel_btn.clicked.connect(self._cancel)
         bottom_row.addWidget(self._cancel_btn)
 
-        root.addLayout(bottom_row)
+        layout.addLayout(bottom_row)
+        return page
 
-        # Status bar
-        self._status = QStatusBar()
-        self.setStatusBar(self._status)
-        self._update_status()
+    def _build_library_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Toolbar
+        toolbar = QHBoxLayout()
+        folder_lbl = QLabel("Output Folder:")
+        folder_lbl.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
+        self._lib_folder_lbl = QLabel("—")
+        self._lib_folder_lbl.setStyleSheet(f"color:{COLORS['fg_dim']}; font-size:9pt;")
+        self._lib_folder_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        self._lib_sort_combo = QComboBox()
+        self._lib_sort_combo.setFixedHeight(36)
+        self._lib_sort_combo.setMinimumWidth(150)
+        for label, *_ in SORT_OPTIONS:
+            self._lib_sort_combo.addItem(label)
+        self._lib_sort_combo.currentIndexChanged.connect(lambda _: self._populate_library(force=True))
+
+        refresh_btn = QPushButton("↻  Refresh")
+        refresh_btn.setFixedHeight(36)
+        refresh_btn.clicked.connect(lambda: self._populate_library(force=True))
+
+        self._lib_view_btn = QPushButton("👁  View")
+        self._lib_view_btn.setFixedHeight(36)
+        self._lib_view_btn.setEnabled(False)
+        self._lib_view_btn.clicked.connect(self._view_selected)
+
+        self._lib_delete_btn = QPushButton("🗑  Delete")
+        self._lib_delete_btn.setObjectName("cancel_btn")
+        self._lib_delete_btn.setFixedHeight(36)
+        self._lib_delete_btn.setEnabled(False)
+        self._lib_delete_btn.clicked.connect(self._delete_selected)
+
+        toolbar.addWidget(folder_lbl)
+        toolbar.addWidget(self._lib_folder_lbl, stretch=1)
+        toolbar.addSpacing(8)
+        toolbar.addWidget(self._lib_sort_combo)
+        toolbar.addSpacing(4)
+        toolbar.addWidget(refresh_btn)
+        toolbar.addSpacing(4)
+        toolbar.addWidget(self._lib_view_btn)
+        toolbar.addSpacing(4)
+        toolbar.addWidget(self._lib_delete_btn)
+        layout.addLayout(toolbar)
+
+        # Grid
+        lib_group = QGroupBox(
+            "Output Images — double-click to view  |  Ctrl+click or Shift+click for multi-select"
+        )
+        lg_v = QVBoxLayout(lib_group)
+        lg_v.setContentsMargins(6, 6, 6, 6)
+        self._lib_grid = ThumbnailGrid(
+            selection_mode=QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        self._lib_grid.itemDoubleClicked.connect(self._on_lib_double_clicked)
+        self._lib_grid.itemSelectionChanged.connect(self._on_lib_selection_changed)
+        lg_v.addWidget(self._lib_grid)
+        layout.addWidget(lib_group, stretch=1)
+
+        # Status
+        self._lib_status_lbl = QLabel("Switch to the Randomizer tab to set an output folder")
+        self._lib_status_lbl.setObjectName("subtitle")
+        self._lib_status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._lib_status_lbl)
+
+        return page
 
     def _add_path_row(self, parent_layout, label: str, config_key: str,
                        folder: bool, file_filter: str = "",
@@ -277,6 +557,17 @@ class MainWindow(QMainWindow):
         return edit
 
     # ------------------------------------------------------------------ #
+    # View switching
+    # ------------------------------------------------------------------ #
+
+    def _switch_view(self, index: int):
+        self._randomizer_btn.setChecked(index == 0)
+        self._library_btn.setChecked(index == 1)
+        self._stack.setCurrentIndex(index)
+        if index == 1:
+            self._populate_library()
+
+    # ------------------------------------------------------------------ #
     # Path handling
     # ------------------------------------------------------------------ #
 
@@ -297,7 +588,7 @@ class MainWindow(QMainWindow):
             self._reload_prompts()
 
     # ------------------------------------------------------------------ #
-    # Data loading
+    # Data loading — main tab
     # ------------------------------------------------------------------ #
 
     def _load_initial_state(self):
@@ -342,6 +633,116 @@ class MainWindow(QMainWindow):
             self._prompt_list.addItem(f"{i+1}.  {preview}")
         n = len(self._prompts)
         self._prompt_count_lbl.setText(f"{n} style prompt{'s' if n != 1 else ''} loaded")
+
+    # ------------------------------------------------------------------ #
+    # Data loading — library tab
+    # ------------------------------------------------------------------ #
+
+    def _populate_library(self, force: bool = False):
+        output_dir = Path(self._config.get("output_dir", ""))
+        self._lib_folder_lbl.setText(str(output_dir) if output_dir != Path("") else "—")
+
+        if not force and str(output_dir) == self._last_lib_dir and self._lib_grid.count() > 0:
+            return
+
+        if self._lib_loader and self._lib_loader.isRunning():
+            self._lib_loader.cancel()
+            self._lib_loader.wait()
+
+        self._last_lib_dir = str(output_dir)
+        self._lib_grid.clear()
+        self._lib_view_btn.setEnabled(False)
+        self._lib_delete_btn.setEnabled(False)
+
+        if not output_dir.is_dir():
+            self._lib_status_lbl.setText("Output folder not set or not found — configure it in the Randomizer tab")
+            return
+
+        self._lib_status_lbl.setText("Loading…")
+        sort_idx = self._lib_sort_combo.currentIndex()
+        self._lib_loader = LibraryLoaderThread(output_dir, sort_idx)
+        self._lib_loader.image_ready.connect(
+            lambda img, key, lbl: self._lib_grid.add_item(img, key, lbl)
+        )
+        self._lib_loader.finished_loading.connect(self._on_lib_loaded)
+        self._lib_loader.start()
+
+    def _on_lib_loaded(self, count: int):
+        if count == 0:
+            self._lib_status_lbl.setText("No images in output folder")
+        else:
+            self._lib_status_lbl.setText(
+                f"{count} image{'s' if count != 1 else ''} — double-click to view"
+            )
+
+    def _on_lib_selection_changed(self):
+        keys = self._lib_grid.selected_keys()
+        has_sel = bool(keys)
+        self._lib_view_btn.setEnabled(has_sel)
+        self._lib_delete_btn.setEnabled(has_sel)
+        total = self._lib_grid.count()
+        if has_sel:
+            n = len(keys)
+            self._lib_status_lbl.setText(f"{n} of {total} selected")
+        elif total > 0:
+            self._lib_status_lbl.setText(
+                f"{total} image{'s' if total != 1 else ''} — double-click to view"
+            )
+
+    def _on_lib_double_clicked(self, item: QListWidgetItem):
+        path = item.data(Qt.ItemDataRole.UserRole)
+        if path and Path(path).exists():
+            all_paths = [
+                self._lib_grid.item(i).data(Qt.ItemDataRole.UserRole)
+                for i in range(self._lib_grid.count())
+            ]
+            idx = all_paths.index(path) if path in all_paths else 0
+            dlg = ImageViewerDialog(all_paths, idx, parent=self)
+            dlg.exec()
+
+    def _view_selected(self):
+        keys = self._lib_grid.selected_keys()
+        if not keys:
+            return
+        existing = [k for k in keys if Path(k).exists()]
+        if not existing:
+            return
+        dlg = ImageViewerDialog(existing, 0, parent=self)
+        dlg.exec()
+
+    def _delete_selected(self):
+        keys = self._lib_grid.selected_keys()
+        if not keys:
+            return
+        n = len(keys)
+        msg = (
+            f"Permanently delete:\n{Path(keys[0]).name}?\n\nThis cannot be undone."
+            if n == 1 else
+            f"Permanently delete {n} images?\n\nThis cannot be undone."
+        )
+        reply = QMessageBox.question(
+            self, "Delete Images", msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        errors = []
+        for key in keys:
+            try:
+                Path(key).unlink()
+            except OSError as e:
+                errors.append(f"{Path(key).name}: {e}")
+        if errors:
+            QMessageBox.critical(self, "Error", "Some files could not be deleted:\n" + "\n".join(errors))
+        for item in self._lib_grid.selectedItems():
+            self._lib_grid.takeItem(self._lib_grid.row(item))
+        self._lib_delete_btn.setEnabled(False)
+        self._lib_view_btn.setEnabled(False)
+        count = self._lib_grid.count()
+        self._lib_status_lbl.setText(
+            f"{count} image{'s' if count != 1 else ''} — double-click to view"
+            if count > 0 else "No images in output folder"
+        )
 
     # ------------------------------------------------------------------ #
     # Dialogs
@@ -405,9 +806,9 @@ class MainWindow(QMainWindow):
         self._cancel_btn.setEnabled(False)
 
     def _on_done(self):
-        self._append_log("All done!")
         self._start_btn.setEnabled(True)
         self._cancel_btn.setEnabled(False)
+        self._last_lib_dir = ""  # force library to reload next time it's opened
 
     def _on_error(self, msg: str):
         self._append_log(f"ERROR: {msg}")
@@ -441,6 +842,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if self._loader:
             self._loader.cancel()
+        if self._lib_loader and self._lib_loader.isRunning():
+            self._lib_loader.cancel()
+            self._lib_loader.wait(3000)
         if self._worker:
             self._worker.cancel()
         self._config.save()

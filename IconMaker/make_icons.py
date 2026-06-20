@@ -365,6 +365,18 @@ APPS = [
             "sharp edges, modern Windows app icon design, 512x512"
         ),
     },
+    {
+        "name": "ComfyUIStyleRandomizer",
+        "project_folder": "ComfyUI_Style_Randomizer",
+        "prompt": (
+            "Minimalist flat app icon, dark indigo background #0d0d1a, "
+            "a glowing image frame with a paint palette overlaid and swirling "
+            "colorful style strokes radiating outward with a dice symbol in the "
+            "corner representing random style selection, "
+            "clean vector style, no text, square icon, sharp edges, "
+            "modern Windows app icon design, 512x512"
+        ),
+    },
 ]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -422,7 +434,7 @@ def convert_to_ico(png_path: Path, ico_path: Path) -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 NEW_APPS = {
-    "LunarLander",
+    "ComfyUIStyleRandomizer",
 }
 
 
