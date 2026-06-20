@@ -77,5 +77,19 @@ api_keys.json
 # NOTE: *.dll and *.pyd are NOT ignored — some apps bundle required
 # binary dependencies. Include them if under GitHub's 50 MB file limit.
 
+# Node.js
+node_modules/
+package-lock.json
+
+# ML model weights
+*.pt
+*.pth
+*.onnx
+*.safetensors
+
+# SQLite databases (embedding caches, runtime state)
+*.sqlite
+*.db
+
 # Nested repos with their own git history
 PromptArchiver/
