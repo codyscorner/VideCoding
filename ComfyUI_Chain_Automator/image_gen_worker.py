@@ -179,12 +179,12 @@ class ImageGenWorker(QThread):
                 pending_ids = [item[1] for item in q_data.get("queue_pending", [])]
 
                 if prompt_id in running_ids:
-                    if elapsed % 15 == 0:
-                        self._log(f"Generating... ({elapsed}s)")
+                    if elapsed % 60 == 0:
+                        self._log(f"Generating... ({elapsed // 60}m)")
                     continue
                 if prompt_id in pending_ids:
-                    if elapsed % 15 == 0:
-                        self._log(f"Queued, waiting... ({elapsed}s)")
+                    if elapsed % 60 == 0:
+                        self._log(f"Queued, waiting... ({elapsed // 60}m)")
                     continue
 
                 h_resp = requests.get(history_url, timeout=10)
@@ -196,8 +196,8 @@ class ImageGenWorker(QThread):
             except requests.RequestException as e:
                 self._log(f"Poll error: {e}")
 
-            if elapsed % 15 == 0:
-                self._log(f"Waiting... ({elapsed}s)")
+            if elapsed % 60 == 0:
+                self._log(f"Waiting... ({elapsed // 60}m)")
 
     def _get_output_image(self, prompt_id: str) -> Path:
         h_resp = requests.get(f"{self._url}/history/{prompt_id}", timeout=15)

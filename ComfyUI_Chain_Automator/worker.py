@@ -356,12 +356,12 @@ class ChainWorker(QThread):
                 running_ids = [item[1] for item in q_data.get("queue_running", [])]
                 pending_ids = [item[1] for item in q_data.get("queue_pending", [])]
                 if prompt_id in running_ids:
-                    if elapsed % 15 == 0:
-                        self._log(f"[Segment {seg}/{self._total_segs}] Running... ({elapsed}s)")
+                    if elapsed % 60 == 0:
+                        self._log(f"[Segment {seg}/{self._total_segs}] Running... ({elapsed // 60}m)")
                     continue
                 if prompt_id in pending_ids:
-                    if elapsed % 15 == 0:
-                        self._log(f"[Segment {seg}/{self._total_segs}] Queued, waiting... ({elapsed}s)")
+                    if elapsed % 60 == 0:
+                        self._log(f"[Segment {seg}/{self._total_segs}] Queued, waiting... ({elapsed // 60}m)")
                     continue
 
                 h_resp = requests.get(history_url, timeout=10)
@@ -389,8 +389,8 @@ class ChainWorker(QThread):
                     self._log(f"[Segment {seg}/{self._total_segs}] Status: {msgs[-1] if msgs else 'unknown'}")
             except requests.RequestException as e:
                 self._log(f"[Segment {seg}/{self._total_segs}] Poll error: {e}")
-            if elapsed % 15 == 0:
-                self._log(f"[Segment {seg}/{self._total_segs}] Waiting... ({elapsed}s)")
+            if elapsed % 60 == 0:
+                self._log(f"[Segment {seg}/{self._total_segs}] Waiting... ({elapsed // 60}m)")
 
     # ------------------------------------------------------------------ #
     # Stitch / zip / misc

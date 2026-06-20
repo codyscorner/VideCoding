@@ -91,6 +91,13 @@ Output: `dist\ComfyUI_Chain_Automator.exe`
 
 ## Changelog
 
+### v3.3.0
+- Poll log interval changed from 15 seconds to 1 minute — log now shows elapsed time in minutes (`2m`) instead of seconds to reduce log noise during long RunPod generations
+
+### v3.2.0
+- RunPod file-exists recovery: detects output files already present on RunPod before re-downloading
+- Library tab shows selection count when multiple videos are selected
+
 ### v3.1.0
 - **Auto Run mode**: processes all images in the folder automatically N at a time — no confirmation dialogs between batches
   - Configurable batch size spinner (1–50, default 4)
