@@ -1,0 +1,999 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LUNAR LANDER — ARCADE 1979</title>
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --phosphor: #35ff8e;
+    --phosphor-bright: #a8ffc8;
+    --phosphor-dim: #1a9c4a;
+    --phosphor-glow: rgba(53, 255, 142, 0.55);
+    --amber: #ffb000;
+    --amber-glow: rgba(255, 176, 0, 0.5);
+    --red: #ff3838;
+    --bg: #000507;
+    --panel: rgba(0, 18, 8, 0.72);
+  }
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--bg);
+    overflow: hidden;
+    font-family: 'Share Tech Mono', monospace;
+    color: var(--phosphor);
+    user-select: none;
+  }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(ellipse 80% 60% at 50% 40%, #001f10 0%, #000a05 60%, #000507 100%);
+  }
+  .game-wrap {
+    position: relative; width: 100vw; height: 100vh; max-width: 1500px; overflow: hidden;
+  }
+  #game { display: block; width: 100%; height: 100%; background: var(--bg); }
+  .game-wrap::after {
+    content: ''; position: absolute; inset: 0;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,0) 0px, rgba(0,0,0,0) 2px, rgba(0,0,0,0.22) 3px, rgba(0,0,0,0.22) 3px);
+    pointer-events: none; z-index: 30; mix-blend-mode: multiply;
+  }
+  .game-wrap::before {
+    content: ''; position: absolute; inset: 0;
+    background: radial-gradient(ellipse 100% 100% at 50% 50%, transparent 55%, rgba(0,0,0,0.55) 100%);
+    pointer-events: none; z-index: 29;
+  }
+  .hud-top {
+    position: absolute; top: 22px; left: 32px; right: 32px;
+    display: flex; justify-content: space-between; z-index: 5;
+    font-family: 'VT323', monospace; pointer-events: none;
+  }
+  .hud-top .item { display: flex; flex-direction: column; line-height: 0.9; }
+  .hud-top .label { font-size: 14px; color: var(--phosphor-dim); letter-spacing: 4px; margin-bottom: 2px; }
+  .hud-top .value { font-size: 38px; color: var(--phosphor); text-shadow: 0 0 10px var(--phosphor-glow); letter-spacing: 2px; }
+  .hud-top .item.center { text-align: center; }
+  .hud-top .item.right { text-align: right; }
+  .telemetry {
+    position: absolute; top: 50%; right: 32px; transform: translateY(-50%);
+    background: var(--panel); border: 1px solid var(--phosphor-dim);
+    padding: 18px 22px; z-index: 5; min-width: 215px; backdrop-filter: blur(3px);
+    box-shadow: 0 0 24px rgba(53,255,142,0.08), inset 0 0 40px rgba(0,0,0,0.6); pointer-events: none;
+  }
+  .telemetry .title {
+    font-family: 'VT323', monospace; font-size: 20px; color: var(--phosphor-dim);
+    letter-spacing: 5px; border-bottom: 1px solid var(--phosphor-dim); padding-bottom: 7px; margin-bottom: 12px; text-align: center;
+  }
+  .telemetry .row { display: flex; justify-content: space-between; align-items: center; margin: 7px 0; font-size: 13px; }
+  .telemetry .row .key { color: var(--phosphor-dim); letter-spacing: 1.5px; }
+  .telemetry .row .val { font-size: 19px; color: var(--phosphor); text-shadow: 0 0 7px var(--phosphor-glow); font-variant-numeric: tabular-nums; }
+  .telemetry .row.warn .val { color: var(--amber); text-shadow: 0 0 7px var(--amber-glow); }
+  .telemetry .row.danger .val { color: var(--red); animation: pulse 0.45s infinite alternate; }
+  @keyframes pulse { from { opacity: 0.65; } to { opacity: 1; } }
+  .fuel-bar { height: 14px; border: 1px solid var(--phosphor-dim); margin-top: 5px; margin-bottom: 8px; background: rgba(0,0,0,0.5); overflow: hidden; }
+  .fuel-bar-fill { height: 100%; background: linear-gradient(90deg, var(--phosphor-dim), var(--phosphor), var(--phosphor-bright)); box-shadow: 0 0 10px var(--phosphor-glow); transition: width 0.12s linear; }
+  .fuel-bar.low .fuel-bar-fill { background: linear-gradient(90deg, #cc7700, var(--amber), #ffd866); box-shadow: 0 0 10px var(--amber-glow); }
+  .fuel-bar.empty .fuel-bar-fill { background: var(--red); animation: pulse 0.4s infinite alternate; }
+  .controls-hint {
+    position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 5;
+    font-family: 'VT323', monospace; font-size: 19px; color: var(--phosphor-dim); letter-spacing: 3px; text-align: center; pointer-events: none;
+  }
+  .controls-hint .key-icon { display: inline-block; border: 1px solid var(--phosphor-dim); padding: 1px 9px; margin: 0 3px; color: var(--phosphor); border-radius: 2px; }
+  .overlay {
+    position: absolute; inset: 0; background: rgba(0,5,7,0.88); backdrop-filter: blur(5px);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 20; text-align: center; transition: opacity 0.35s; padding: 30px;
+  }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .overlay h1 {
+    font-family: 'VT323', monospace; font-size: clamp(48px, 9vw, 108px); letter-spacing: clamp(4px, 1.5vw, 14px);
+    color: var(--phosphor); text-shadow: 0 0 22px var(--phosphor-glow), 0 0 6px var(--phosphor); margin-bottom: 6px; line-height: 1; animation: titleFlicker 4s infinite;
+  }
+  @keyframes titleFlicker { 0%,100%{opacity:1;} 47%{opacity:1;} 48%{opacity:0.6;} 49%{opacity:1;} 71%{opacity:1;} 72%{opacity:0.85;} 73%{opacity:1;} }
+  .overlay .subtitle { font-size: 15px; color: var(--phosphor-dim); letter-spacing: 5px; margin-bottom: 36px; }
+  .overlay h2 { font-family: 'VT323', monospace; font-size: clamp(34px,5vw,58px); color: var(--amber); text-shadow: 0 0 16px var(--amber-glow); margin-bottom: 22px; letter-spacing: 6px; }
+  .overlay h2.success { color: var(--phosphor); text-shadow: 0 0 16px var(--phosphor-glow); }
+  .overlay h2.fail { color: var(--red); text-shadow: 0 0 16px rgba(255,56,56,0.5); }
+  .instructions {
+    background: var(--panel); border: 1px solid var(--phosphor-dim); padding: 22px 36px; margin: 18px 0;
+    max-width: 520px; font-size: 14px; line-height: 1.85; color: var(--phosphor); text-align: left;
+    box-shadow: 0 0 30px rgba(53,255,142,0.08), inset 0 0 30px rgba(0,0,0,0.4);
+  }
+  .instructions .instr-row { display: flex; justify-content: space-between; border-bottom: 1px dashed rgba(53,255,142,0.18); padding: 5px 0; }
+  .instructions .instr-row:last-child { border-bottom: none; }
+  .instructions .key { color: var(--amber); }
+  .instructions .objective { color: var(--phosphor-bright); }
+  .btn {
+    font-family: 'VT323', monospace; font-size: 32px; background: transparent; color: var(--phosphor);
+    border: 2px solid var(--phosphor); padding: 6px 44px; cursor: pointer; letter-spacing: 7px;
+    text-shadow: 0 0 8px var(--phosphor-glow); transition: all 0.18s;
+    box-shadow: 0 0 22px rgba(53,255,142,0.18), inset 0 0 22px rgba(53,255,142,0.08); margin-top: 22px;
+  }
+  .btn:hover { background: var(--phosphor); color: #000507; box-shadow: 0 0 34px var(--phosphor-glow); text-shadow: none; }
+  .btn:active { transform: translateY(1px); }
+  .stats-grid { display: grid; grid-template-columns: auto auto; gap: 8px 28px; font-size: 17px; margin: 16px 0; text-align: left; }
+  .stats-grid .key { color: var(--phosphor-dim); }
+  .stats-grid .val { color: var(--phosphor); text-shadow: 0 0 6px var(--phosphor-glow); }
+  .stats-grid .val.gold { color: var(--amber); }
+  .blinker { animation: blink 1.1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .highscore-display { font-family: 'VT323', monospace; font-size: 22px; color: var(--amber); letter-spacing: 4px; margin-bottom: 22px; text-shadow: 0 0 8px var(--amber-glow); }
+  .touch-controls { position: absolute; bottom: 70px; left: 0; right: 0; z-index: 6; display: none; justify-content: space-between; padding: 0 26px; pointer-events: none; }
+  .touch-controls.show { display: flex; }
+  .touch-btn { width: 68px; height: 68px; border: 2px solid var(--phosphor-dim); background: var(--panel); color: var(--phosphor); font-size: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; pointer-events: auto; }
+  .touch-btn:active { background: var(--phosphor); color: #000507; }
+  .touch-pad-left { display: flex; gap: 14px; }
+  @media (max-width: 820px) {
+    .telemetry { top: auto; bottom: 150px; right: 14px; transform: none; min-width: 165px; padding: 11px 14px; }
+    .telemetry .row { font-size: 11px; margin: 4px 0; }
+    .telemetry .row .val { font-size: 15px; }
+    .telemetry .title { font-size: 15px; letter-spacing: 3px; }
+    .hud-top { top: 12px; left: 16px; right: 16px; }
+    .hud-top .value { font-size: 26px; }
+    .hud-top .label { font-size: 11px; letter-spacing: 2px; }
+    .controls-hint { display: none; }
+    .instructions { padding: 16px 22px; font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+<div class="game-wrap">
+  <canvas id="game"></canvas>
+
+  <div class="hud-top">
+    <div class="item"><div class="label">SCORE</div><div class="value" id="scoreVal">0000</div></div>
+    <div class="item center"><div class="label">MISSION</div><div class="value" id="missionVal">01</div></div>
+    <div class="item right"><div class="label">LIVES</div><div class="value" id="livesVal">3</div></div>
+  </div>
+
+  <div class="telemetry">
+    <div class="title">TELEMETRY</div>
+    <div class="row"><span class="key">FUEL</span><span class="val" id="fuelVal">1000</span></div>
+    <div class="fuel-bar" id="fuelBar"><div class="fuel-bar-fill" id="fuelBarFill" style="width:100%"></div></div>
+    <div class="row" id="altRow"><span class="key">ALTITUDE</span><span class="val" id="altVal">000</span></div>
+    <div class="row" id="hvelRow"><span class="key">H-VEL</span><span class="val" id="hvelVal">+0.0</span></div>
+    <div class="row" id="vvelRow"><span class="key">V-VEL</span><span class="val" id="vvelVal">+0.0</span></div>
+    <div class="row" id="angleRow"><span class="key">ANGLE</span><span class="val" id="angleVal">0°</span></div>
+  </div>
+
+  <div class="controls-hint">
+    <span class="key-icon">←</span> ROTATE LEFT &nbsp;&nbsp;
+    <span class="key-icon">→</span> ROTATE RIGHT &nbsp;&nbsp;
+    <span class="key-icon">↑</span> / <span class="key-icon">SPACE</span> THRUST
+  </div>
+
+  <div class="touch-controls" id="touchControls">
+    <div class="touch-pad-left">
+      <div class="touch-btn" data-key="ArrowLeft">◀</div>
+      <div class="touch-btn" data-key="ArrowRight">▶</div>
+    </div>
+    <div class="touch-btn" data-key="ArrowUp">▲</div>
+  </div>
+
+  <div class="overlay" id="menuOverlay">
+    <h1>LUNAR LANDER</h1>
+    <div class="subtitle">ARCADE EDITION — ATARI 1979</div>
+    <div class="highscore-display" id="menuHighScore">HIGH SCORE: 0000</div>
+    <div class="instructions">
+      <div class="instr-row"><span>ROTATE LEFT</span><span class="key">← / A</span></div>
+      <div class="instr-row"><span>ROTATE RIGHT</span><span class="key">→ / D</span></div>
+      <div class="instr-row"><span>MAIN THRUST</span><span class="key">↑ / W / SPACE</span></div>
+      <div class="instr-row"><span>OBJECTIVE</span><span class="objective">LAND GENTLY ON PAD</span></div>
+      <div class="instr-row"><span>SAFE VEL X/Y</span><span class="key">&lt; 0.4 / 0.5</span></div>
+      <div class="instr-row"><span>SAFE ANGLE</span><span class="key">&lt; 10°</span></div>
+    </div>
+    <button class="btn" id="startBtn">INSERT COIN</button>
+    <div class="subtitle blinker" style="margin-top:26px; font-size:13px;">PRESS START TO BEGIN MISSION</div>
+  </div>
+
+  <div class="overlay hidden" id="gameOverOverlay">
+    <h2 class="fail">GAME OVER</h2>
+    <div class="stats-grid">
+      <span class="key">FINAL SCORE</span><span class="val" id="finalScore">0</span>
+      <span class="key">MISSIONS COMPLETED</span><span class="val" id="finalMissions">0</span>
+      <span class="key">HIGH SCORE</span><span class="val gold" id="highScoreDisplay">0</span>
+    </div>
+    <button class="btn" id="restartBtn">RETRY</button>
+  </div>
+
+  <div class="overlay hidden" id="messageOverlay" style="background:rgba(0,5,7,0.55);">
+    <h2 id="messageTitle">THE EAGLE HAS LANDED</h2>
+    <div class="stats-grid" id="messageStats"></div>
+    <div class="subtitle blinker" style="margin-top:18px; font-size:12px;" id="messageHint">CONTINUING...</div>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  // Constants
+  const GRAVITY = 0.013;
+  const THRUST_POWER = 0.048;
+  const ROTATION_SPEED = 0.05;
+  const FUEL_MAX = 1000;
+  const FUEL_USE = 0.55;
+  const SAFE_VX = 0.4;
+  const SAFE_VY = 0.5;
+  const SAFE_ANGLE = 0.18;
+  const LANDER_HALF_H = 13;
+
+  // Safe localStorage wrappers — NavigateToString gives a null origin that blocks localStorage
+  function lsGet(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
+
+  // State
+  let state = 'menu';
+  let score = 0;
+  let highScore = parseInt(lsGet('lunarHighScore', '0'), 10);
+  let lives = 3;
+  let mission = 1;
+  let messageTimer = 0;
+  let crashShake = 0;
+  let frameCount = 0;
+
+  let lander = {};
+  let terrain = [];
+  let pads = [];
+  let particles = [];
+  let stars = [];
+  let mountains = [];
+  const keys = {};
+
+  // Difficulty — scales 0→1 with mission; every 5th mission is a breather (~35% of expected)
+  function missionDifficulty() {
+    const raw = Math.min(1.0, (mission - 1) * 0.07);
+    return (mission % 5 === 0) ? raw * 0.35 : raw;
+  }
+
+  // Audio
+  let audioCtx = null;
+  let thrustNoise = null, thrustGain = null, thrustFilter = null;
+
+  function ensureAudio() {
+    if (!audioCtx) {
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) { return; }
+    }
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  }
+
+  function startThrustSound() {
+    ensureAudio();
+    if (!audioCtx || thrustNoise) return;
+    const bufferSize = audioCtx.sampleRate * 0.5;
+    const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const output = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) output[i] = Math.random() * 2 - 1;
+    thrustNoise = audioCtx.createBufferSource();
+    thrustNoise.buffer = noiseBuffer;
+    thrustNoise.loop = true;
+    thrustFilter = audioCtx.createBiquadFilter();
+    thrustFilter.type = 'lowpass';
+    thrustFilter.frequency.value = 500;
+    thrustGain = audioCtx.createGain();
+    thrustGain.gain.value = 0.09;
+    thrustNoise.connect(thrustFilter);
+    thrustFilter.connect(thrustGain);
+    thrustGain.connect(audioCtx.destination);
+    thrustNoise.start();
+  }
+
+  function stopThrustSound() {
+    if (thrustNoise) {
+      try { thrustNoise.stop(); } catch(e) {}
+      try { thrustNoise.disconnect(); } catch(e) {}
+      try { thrustGain.disconnect(); } catch(e) {}
+      try { thrustFilter.disconnect(); } catch(e) {}
+      thrustNoise = null; thrustGain = null; thrustFilter = null;
+    }
+  }
+
+  function playExplosionSound() {
+    ensureAudio();
+    if (!audioCtx) return;
+    const duration = 1.4;
+    const bufferSize = audioCtx.sampleRate * duration;
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * Math.pow(1-i/bufferSize, 1.4);
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(900, audioCtx.currentTime);
+    filter.frequency.exponentialRampToValueAtTime(60, audioCtx.currentTime + duration);
+    const gain = audioCtx.createGain();
+    gain.gain.value = 0.35;
+    source.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+    source.start();
+  }
+
+  function playLandingSound() {
+    ensureAudio();
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    [523, 659, 784, 1047].forEach((freq, i) => {
+      const osc = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      osc.type = 'sine'; osc.frequency.value = freq;
+      const t = now + i * 0.12;
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.18, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+      osc.connect(g); g.connect(audioCtx.destination);
+      osc.start(t); osc.stop(t + 0.45);
+    });
+  }
+
+  function playFuelPickupSound() {
+    ensureAudio();
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    [440, 554, 659, 880].forEach((freq, i) => {
+      const osc = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      osc.type = 'sine'; osc.frequency.value = freq;
+      const t = now + i * 0.055;
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.13, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+      osc.connect(g); g.connect(audioCtx.destination);
+      osc.start(t); osc.stop(t + 0.26);
+    });
+  }
+
+  function playClickSound() {
+    ensureAudio();
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    osc.type = 'square'; osc.frequency.value = 880;
+    g.gain.setValueAtTime(0.08, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.08);
+    osc.connect(g); g.connect(audioCtx.destination);
+    osc.start(); osc.stop(audioCtx.currentTime + 0.1);
+  }
+
+  // Resize
+  function resize() {
+    canvas.width = canvas.clientWidth;
+    canvas.height = canvas.clientHeight;
+    generateStars();
+    generateMountains();
+    if (terrain.length === 0 || state === 'menu') generateTerrain();
+  }
+
+  // Stars
+  function generateStars() {
+    stars = [];
+    const count = Math.floor((canvas.width * canvas.height) / 3200);
+    for (let i = 0; i < count; i++) {
+      stars.push({
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height * 0.75,
+        b: 0.25 + Math.random() * 0.75,
+        tw: Math.random() * Math.PI * 2,
+        ts: 0.015 + Math.random() * 0.04,
+        sz: Math.random() < 0.05 ? 1.8 : (Math.random() < 0.3 ? 1.3 : 1)
+      });
+    }
+  }
+
+  // Mountains
+  function generateMountains() {
+    mountains = [];
+    const diff = missionDifficulty();
+    for (let layer = 0; layer < 2; layer++) {
+      const pts = [];
+      // Peaks climb higher (lower Y) as difficulty rises
+      const baseY = canvas.height * (0.55 - diff * 0.14 + layer * 0.08);
+      const variance = (80 + diff * 90) - layer * 20;
+      let x = 0, y = baseY;
+      pts.push({ x: 0, y: canvas.height });
+      pts.push({ x: 0, y });
+      while (x < canvas.width) {
+        // Shorter horizontal spacing at higher difficulty = more jagged silhouette
+        x += Math.max(20, 40 - diff * 18) + Math.random() * Math.max(30, 80 - diff * 40);
+        y = Math.max(canvas.height * 0.05, baseY + (Math.random() - 0.5) * variance);
+        pts.push({ x, y });
+      }
+      pts.push({ x: canvas.width, y: canvas.height });
+      mountains.push({ points: pts, alpha: 0.12 - layer * 0.04 });
+    }
+  }
+
+  // Terrain
+  function generateTerrain() {
+    terrain = [];
+    pads = [];
+    const diff = missionDifficulty();
+    const w = canvas.width, h = canvas.height;
+    let x = 0, y = h * (0.62 + Math.random() * 0.18);
+    terrain.push({ x: 0, y });
+
+    const numPads = 3;
+    const padPositions = [];
+    for (let i = 0; i < numPads; i++) {
+      padPositions.push((i + 0.5 + (Math.random() - 0.5) * 0.22) * (w / numPads));
+    }
+
+    // Harder missions: shorter steps (more frequent peaks) + bigger height swings
+    const minStep = Math.max(8, 14 - diff * 6);
+    const stepRange = Math.max(10, 26 - diff * 14);
+    const maxDy = 65 + diff * 95;
+    // Tighter vertical bounds at high difficulty — terrain can climb higher up the screen
+    const yFloor = h * Math.max(0.22, 0.38 - diff * 0.16);
+
+    let padIdx = 0;
+    while (x < w) {
+      const step = minStep + Math.random() * stepRange;
+      if (padIdx < numPads && x + step >= padPositions[padIdx] - 18) {
+        const padX = padPositions[padIdx];
+        terrain.push({ x: padX - 6, y });
+        const baseWidth = Math.max(35, 75 - mission * 3);
+        const padWidth = baseWidth + Math.random() * 25;
+        const baseMult = Math.max(1, Math.floor(85 / padWidth));
+        const multiplier = baseMult + Math.floor((mission - 1) / 2);
+        terrain.push({ x: padX, y, pad: true, padStart: true });
+        terrain.push({ x: padX + padWidth, y, pad: true, padEnd: true });
+        pads.push({ x: padX, width: padWidth, y, multiplier });
+        x = padX + padWidth;
+        padIdx++;
+      } else {
+        x += step;
+        const dy = (Math.random() - 0.5) * maxDy;
+        y = Math.max(yFloor, Math.min(h * 0.93, y + dy));
+        terrain.push({ x, y });
+      }
+    }
+    if (terrain[terrain.length - 1].x < w) {
+      terrain.push({ x: w, y: terrain[terrain.length - 1].y });
+    }
+    // Designate one edge pad (left or right) as the fuel station
+    if (pads.length > 0) {
+      const fuelIdx = Math.random() < 0.5 ? 0 : pads.length - 1;
+      pads[fuelIdx].fuelStation = true;
+    }
+  }
+
+  function resetLander() {
+    lander = {
+      x: canvas.width * (0.18 + Math.random() * 0.55),
+      y: 60,
+      vx: (Math.random() - 0.5) * 1.8,
+      vy: 0.2 + Math.random() * 0.3,
+      angle: (Math.random() - 0.5) * 0.4,
+      fuel: FUEL_MAX,
+      thrusting: false
+    };
+  }
+
+  // Game flow
+  function startGame() {
+    ensureAudio();
+    playClickSound();
+    score = 0; lives = 3; mission = 1;
+    particles = [];
+    newMission();
+    state = 'playing';
+    document.getElementById('menuOverlay').classList.add('hidden');
+    document.getElementById('gameOverOverlay').classList.add('hidden');
+    document.getElementById('messageOverlay').classList.add('hidden');
+  }
+
+  function newMission() {
+    generateMountains();
+    generateTerrain();
+    resetLander();
+  }
+
+  function getTerrainYAt(x) {
+    for (let i = 0; i < terrain.length - 1; i++) {
+      if (x >= terrain[i].x && x <= terrain[i+1].x) {
+        const t = (x - terrain[i].x) / (terrain[i+1].x - terrain[i].x);
+        return terrain[i].y + t * (terrain[i+1].y - terrain[i].y);
+      }
+    }
+    return canvas.height;
+  }
+
+  function getPadAt(x) {
+    for (const pad of pads) {
+      if (x >= pad.x && x <= pad.x + pad.width) return pad;
+    }
+    return null;
+  }
+
+  function normalizeAngle(a) {
+    while (a > Math.PI) a -= Math.PI * 2;
+    while (a < -Math.PI) a += Math.PI * 2;
+    return a;
+  }
+
+  // Particles
+  function spawnThrustParticle() {
+    const sin = Math.sin(lander.angle), cos = Math.cos(lander.angle);
+    const baseX = lander.x - 11 * sin, baseY = lander.y + 11 * cos;
+    const speed = 2.2 + Math.random() * 2.5;
+    const spread = 0.45;
+    const perpX = cos * (Math.random() - 0.5) * spread;
+    const perpY = -sin * (Math.random() - 0.5) * spread;
+    particles.push({
+      x: baseX + (Math.random()-0.5)*3, y: baseY + (Math.random()-0.5)*3,
+      vx: -sin * speed + perpX + lander.vx * 0.25,
+      vy: cos * speed + perpY + lander.vy * 0.25,
+      life: 1, maxLife: 1, size: 1.6 + Math.random() * 2.6, type: 'thrust'
+    });
+  }
+
+  function spawnExplosion(x, y) {
+    for (let i = 0; i < 90; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 1 + Math.random() * 5.5;
+      const colors = ['#ff3838','#ff6600','#ffaa00','#ffd866','#ffffff','#35ff8e'];
+      particles.push({
+        x, y, vx: Math.cos(angle)*speed, vy: Math.sin(angle)*speed - 0.5,
+        life: 1, maxLife: 1, size: 1.5 + Math.random()*3.5, type: 'explosion',
+        color: colors[Math.floor(Math.random()*colors.length)]
+      });
+    }
+    for (let i = 0; i < 25; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 0.3 + Math.random() * 1.2;
+      particles.push({
+        x, y, vx: Math.cos(angle)*speed, vy: Math.sin(angle)*speed - 0.8,
+        life: 1, maxLife: 1, size: 4 + Math.random()*6, type: 'smoke'
+      });
+    }
+  }
+
+  function spawnFuelSparkle(x, y) {
+    for (let i = 0; i < 28; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 1 + Math.random() * 3;
+      particles.push({
+        x, y,
+        vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed - 1,
+        life: 1, maxLife: 1, size: 1.5 + Math.random() * 2.5, type: 'sparkle',
+        color: Math.random() < 0.5 ? '#ffb000' : '#ffd866'
+      });
+    }
+  }
+
+  function spawnLandingSparkle(x, y) {
+    for (let i = 0; i < 40; i++) {
+      const angle = -Math.PI/2 + (Math.random()-0.5)*Math.PI*1.2;
+      const speed = 1 + Math.random() * 3.5;
+      particles.push({
+        x: x + (Math.random()-0.5)*26, y: y + (Math.random()-0.5)*4,
+        vx: Math.cos(angle)*speed, vy: Math.sin(angle)*speed - 1,
+        life: 1, maxLife: 1, size: 1.2 + Math.random()*2.4, type: 'sparkle',
+        color: Math.random() < 0.3 ? '#ffb000' : '#35ff8e'
+      });
+    }
+  }
+
+  // Collision
+  function checkCollision() {
+    const groundY = getTerrainYAt(lander.x);
+    const landerBottom = lander.y + LANDER_HALF_H;
+    if (landerBottom >= groundY) {
+      lander.y = groundY - LANDER_HALF_H;
+      const pad = getPadAt(lander.x);
+      const na = normalizeAngle(lander.angle);
+      const safeVx = Math.abs(lander.vx) < SAFE_VX;
+      const safeVy = lander.vy < SAFE_VY && lander.vy > -0.3;
+      const safeAngle = Math.abs(na) < SAFE_ANGLE;
+      if (pad && safeVx && safeVy && safeAngle) {
+        onLanded(pad);
+      } else {
+        let cause = 'CRASHED INTO TERRAIN';
+        if (pad) {
+          if (!safeAngle) cause = 'LANDING ANGLE TOO STEEP';
+          else if (!safeVy) cause = 'DESCENT RATE TOO HIGH';
+          else if (!safeVx) cause = 'HORIZONTAL VELOCITY TOO HIGH';
+        }
+        onCrash(cause);
+      }
+    }
+  }
+
+  function onLanded(pad) {
+    state = 'landed';
+    stopThrustSound();
+    const fuelBonus = Math.floor(lander.fuel);
+    const padBonus = pad.multiplier * 100;
+    const missionBonus = mission * 50;
+    const totalBonus = fuelBonus + padBonus + missionBonus;
+    score += totalBonus;
+    spawnLandingSparkle(lander.x, lander.y + 10);
+    playLandingSound();
+
+    let statsHTML = `
+      <span class="key">FUEL BONUS</span><span class="val">+${fuelBonus}</span>
+      <span class="key">PAD BONUS ×${pad.multiplier}</span><span class="val">+${padBonus}</span>
+      <span class="key">MISSION BONUS</span><span class="val">+${missionBonus}</span>
+      <span class="key">TOTAL</span><span class="val gold">+${totalBonus}</span>`;
+
+    if (pad.fuelStation) {
+      lander.fuel = FUEL_MAX;
+      playFuelPickupSound();
+      spawnFuelSparkle(lander.x, lander.y);
+      statsHTML += `<span class="key" style="color:#ff6600">FUEL STATION</span><span class="val" style="color:#ff6600">TANK FULL</span>`;
+    }
+
+    document.getElementById('messageStats').innerHTML = statsHTML;
+    const title = document.getElementById('messageTitle');
+    title.textContent = pad.fuelStation ? 'REFUELED & READY' : 'THE EAGLE HAS LANDED';
+    title.className = 'success';
+    document.getElementById('messageHint').textContent = 'ADVANCING TO NEXT MISSION...';
+    document.getElementById('messageOverlay').classList.remove('hidden');
+    messageTimer = 200;
+  }
+
+  function onCrash(reason) {
+    state = 'crashed';
+    stopThrustSound();
+    spawnExplosion(lander.x, lander.y);
+    playExplosionSound();
+    crashShake = 22;
+    lives--;
+    document.getElementById('messageStats').innerHTML = `
+      <span class="key">CAUSE</span><span class="val">${reason}</span>
+      <span class="key">LIVES REMAINING</span><span class="val">${Math.max(0, lives)}</span>`;
+    const title = document.getElementById('messageTitle');
+    title.textContent = 'LANDER DESTROYED';
+    title.className = 'fail';
+    document.getElementById('messageHint').textContent = lives > 0 ? 'PREPARING REPLACEMENT LANDER...' : 'MISSION FAILED';
+    document.getElementById('messageOverlay').classList.remove('hidden');
+    messageTimer = 180;
+  }
+
+  function nextLifeOrGameOver() {
+    if (lives <= 0) {
+      if (score > highScore) {
+        highScore = score;
+        lsSet('lunarHighScore', String(highScore));
+      }
+      document.getElementById('finalScore').textContent = score;
+      document.getElementById('finalMissions').textContent = Math.max(0, mission - 1);
+      document.getElementById('highScoreDisplay').textContent = highScore;
+      document.getElementById('gameOverOverlay').classList.remove('hidden');
+      state = 'gameover';
+    } else {
+      if (state === 'landed') mission++;
+      newMission();
+      state = 'playing';
+    }
+  }
+
+  // Update
+  function update() {
+    frameCount++;
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx; p.y += p.vy;
+      if (p.type === 'thrust') { p.life -= 0.045; p.vx *= 0.96; p.vy *= 0.96; }
+      else if (p.type === 'explosion') { p.vy += 0.07; p.vx *= 0.985; p.vy *= 0.985; p.life -= 0.018; }
+      else if (p.type === 'smoke') { p.vy -= 0.02; p.vx *= 0.97; p.vy *= 0.97; p.size += 0.15; p.life -= 0.012; }
+      else if (p.type === 'sparkle') { p.vy += 0.04; p.life -= 0.022; }
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+    for (const s of stars) s.tw += s.ts;
+    if (crashShake > 0) crashShake *= 0.88;
+
+    if (messageTimer > 0) {
+      messageTimer--;
+      if (messageTimer === 0) {
+        document.getElementById('messageOverlay').classList.add('hidden');
+        nextLifeOrGameOver();
+      }
+    }
+
+    if (state !== 'playing') return;
+
+    if (keys['ArrowLeft'] || keys['a'] || keys['A']) lander.angle -= ROTATION_SPEED;
+    if (keys['ArrowRight'] || keys['d'] || keys['D']) lander.angle += ROTATION_SPEED;
+    lander.angle = normalizeAngle(lander.angle);
+
+    lander.thrusting = (keys['ArrowUp'] || keys['w'] || keys['W'] || keys[' ']) && lander.fuel > 0;
+
+    lander.vy += GRAVITY;
+
+    if (lander.thrusting) {
+      lander.vx += Math.sin(lander.angle) * THRUST_POWER;
+      lander.vy -= Math.cos(lander.angle) * THRUST_POWER;
+      lander.fuel -= FUEL_USE;
+      if (lander.fuel < 0) lander.fuel = 0;
+      for (let i = 0; i < 2; i++) spawnThrustParticle();
+      if (!thrustNoise) startThrustSound();
+    } else {
+      if (thrustNoise) stopThrustSound();
+    }
+
+    lander.x += lander.vx;
+    lander.y += lander.vy;
+
+    if (lander.x < -10) lander.x = canvas.width + 10;
+    if (lander.x > canvas.width + 10) lander.x = -10;
+    if (lander.y < -30) { lander.y = -30; if (lander.vy < 0) lander.vy = 0; }
+
+    checkCollision();
+  }
+
+  // Render
+  function render() {
+    ctx.fillStyle = '#000507';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const shakeX = crashShake > 0.5 ? (Math.random() - 0.5) * crashShake : 0;
+    const shakeY = crashShake > 0.5 ? (Math.random() - 0.5) * crashShake : 0;
+    ctx.save();
+    ctx.translate(shakeX, shakeY);
+
+    // Stars
+    for (const s of stars) {
+      const b = s.b * (0.55 + 0.45 * Math.sin(s.tw));
+      ctx.fillStyle = `rgba(168, 255, 200, ${b})`;
+      ctx.fillRect(s.x, s.y, s.sz, s.sz);
+    }
+
+    // Background mountains
+    for (const m of mountains) {
+      ctx.beginPath();
+      ctx.moveTo(m.points[0].x, m.points[0].y);
+      for (const p of m.points) ctx.lineTo(p.x, p.y);
+      ctx.closePath();
+      ctx.fillStyle = `rgba(0, 40, 20, ${m.alpha * 2})`;
+      ctx.fill();
+    }
+
+    // Terrain
+    if (terrain.length < 2) { ctx.restore(); updateHUD(); return; }
+    ctx.strokeStyle = '#35ff8e';
+    ctx.lineWidth = 2;
+    ctx.shadowBlur = 8;
+    ctx.shadowColor = 'rgba(53, 255, 142, 0.6)';
+    ctx.beginPath();
+    ctx.moveTo(terrain[0].x, terrain[0].y);
+    for (let i = 1; i < terrain.length; i++) ctx.lineTo(terrain[i].x, terrain[i].y);
+    ctx.stroke();
+
+    // Fill terrain
+    ctx.lineTo(canvas.width, canvas.height);
+    ctx.lineTo(0, canvas.height);
+    ctx.closePath();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(0, 20, 8, 0.35)';
+    ctx.fill();
+
+    // Pads
+    ctx.lineWidth = 3;
+    for (const pad of pads) {
+      const col = pad.fuelStation ? '#ff6600' : '#ffb000';
+      const glow = pad.fuelStation ? 'rgba(255, 102, 0, 0.7)' : 'rgba(255, 176, 0, 0.6)';
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = glow;
+      ctx.strokeStyle = col;
+      ctx.beginPath();
+      ctx.moveTo(pad.x, pad.y);
+      ctx.lineTo(pad.x + pad.width, pad.y);
+      ctx.stroke();
+
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = col;
+      ctx.font = 'bold 14px "Share Tech Mono", monospace';
+      ctx.textAlign = 'center';
+      const label = pad.fuelStation ? `⛽ ×${pad.multiplier}` : `×${pad.multiplier}`;
+      ctx.fillText(label, pad.x + pad.width / 2, pad.y - 8);
+
+      if (pad.fuelStation) {
+        // Draw gas pump to the right of pad (flip left if near right edge)
+        const pumpX = (pad.x + pad.width + 28 < canvas.width) ? pad.x + pad.width + 14 : pad.x - 14;
+        const pumpY = pad.y;
+        const pulse = 0.7 + 0.3 * Math.sin(frameCount * 0.07);
+        ctx.save();
+        ctx.translate(pumpX, pumpY);
+        ctx.shadowBlur = 12 * pulse;
+        ctx.shadowColor = 'rgba(255, 102, 0, 0.8)';
+        ctx.strokeStyle = '#ff6600';
+        ctx.lineWidth = 1.5;
+        // Pump body
+        ctx.fillStyle = `rgba(255, 102, 0, ${0.12 + 0.07 * pulse})`;
+        ctx.beginPath(); ctx.roundRect(-7, -26, 14, 24, 2); ctx.fill(); ctx.stroke();
+        // Top dome
+        ctx.beginPath(); ctx.roundRect(-5, -31, 10, 7, 2); ctx.fill(); ctx.stroke();
+        // Display screen
+        ctx.fillStyle = `rgba(255, 102, 0, ${0.3 + 0.15 * pulse})`;
+        ctx.beginPath(); ctx.rect(-4, -22, 8, 7); ctx.fill(); ctx.stroke();
+        // Hose arm
+        ctx.shadowBlur = 0;
+        ctx.beginPath();
+        ctx.moveTo(7, -19); ctx.lineTo(13, -19); ctx.lineTo(13, -12);
+        ctx.stroke();
+        // Nozzle
+        ctx.fillStyle = 'rgba(255, 102, 0, 0.25)';
+        ctx.beginPath(); ctx.roundRect(10, -14, 6, 4, 1); ctx.fill(); ctx.stroke();
+        // Base slab
+        ctx.fillStyle = 'rgba(255, 102, 0, 0.2)';
+        ctx.beginPath(); ctx.rect(-9, -2, 18, 3); ctx.fill(); ctx.stroke();
+        ctx.restore();
+      }
+    }
+    ctx.shadowBlur = 0;
+
+    // Particles
+    for (const p of particles) {
+      const alpha = Math.max(0, p.life);
+      if (p.type === 'thrust') {
+        const r = Math.floor(255 * Math.min(1, p.life * 1.5));
+        const g = Math.floor(180 * p.life + 75);
+        ctx.fillStyle = `rgba(255, ${g}, ${Math.floor(60 * p.life)}, ${alpha})`;
+        ctx.shadowBlur = 4;
+        ctx.shadowColor = `rgba(255, 150, 0, ${alpha * 0.5})`;
+      } else if (p.type === 'explosion') {
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = alpha;
+        ctx.shadowBlur = 6;
+        ctx.shadowColor = p.color;
+      } else if (p.type === 'smoke') {
+        ctx.fillStyle = `rgba(80, 80, 80, ${alpha * 0.4})`;
+        ctx.shadowBlur = 0;
+      } else if (p.type === 'sparkle') {
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = alpha;
+        ctx.shadowBlur = 5;
+        ctx.shadowColor = p.color;
+      }
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, Math.max(0.5, p.size), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    ctx.shadowBlur = 0;
+
+    // Lander (only if playing, landed, or crashed with no shake)
+    if (state === 'playing' || state === 'landed') {
+      drawLander();
+    }
+
+    ctx.restore();
+    updateHUD();
+  }
+
+  function drawLander() {
+    ctx.save();
+    ctx.translate(lander.x, lander.y);
+    ctx.rotate(lander.angle);
+
+    ctx.strokeStyle = '#35ff8e';
+    ctx.lineWidth = 1.8;
+    ctx.shadowBlur = 6;
+    ctx.shadowColor = 'rgba(53, 255, 142, 0.5)';
+    ctx.fillStyle = 'rgba(53, 255, 142, 0.08)';
+
+    // Body — capsule shape
+    ctx.beginPath();
+    ctx.moveTo(0, -14);
+    ctx.lineTo(-6, -8);
+    ctx.lineTo(-8, 4);
+    ctx.lineTo(-8, 8);
+    ctx.lineTo(8, 8);
+    ctx.lineTo(8, 4);
+    ctx.lineTo(6, -8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Window
+    ctx.beginPath();
+    ctx.arc(0, -4, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(168, 255, 200, 0.5)';
+    ctx.fill();
+    ctx.stroke();
+
+    // Landing legs
+    ctx.beginPath();
+    ctx.moveTo(-8, 4); ctx.lineTo(-14, 10);
+    ctx.moveTo(-14, 8); ctx.lineTo(-14, 12);
+    ctx.moveTo(8, 4); ctx.lineTo(14, 10);
+    ctx.moveTo(14, 8); ctx.lineTo(14, 12);
+    ctx.stroke();
+
+    // Center strut
+    ctx.beginPath();
+    ctx.moveTo(0, 8); ctx.lineTo(0, 10);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  function updateHUD() {
+    document.getElementById('scoreVal').textContent = String(score).padStart(4, '0');
+    document.getElementById('missionVal').textContent = String(mission).padStart(2, '0');
+    document.getElementById('livesVal').textContent = Math.max(0, lives);
+    document.getElementById('menuHighScore').textContent = `HIGH SCORE: ${String(highScore).padStart(4, '0')}`;
+
+    if (state === 'playing' || state === 'landed') {
+      const fuelPct = (lander.fuel / FUEL_MAX) * 100;
+      document.getElementById('fuelVal').textContent = String(Math.floor(lander.fuel)).padStart(4, '0');
+      document.getElementById('fuelBarFill').style.width = fuelPct + '%';
+
+      const fuelBar = document.getElementById('fuelBar');
+      fuelBar.classList.remove('low', 'empty');
+      if (lander.fuel <= 0) fuelBar.classList.add('empty');
+      else if (lander.fuel < 200) fuelBar.classList.add('low');
+
+      const groundY = getTerrainYAt(lander.x);
+      const alt = Math.max(0, Math.floor(groundY - lander.y - LANDER_HALF_H));
+      document.getElementById('altVal').textContent = String(alt).padStart(3, '0');
+
+      const hvel = lander.vx;
+      const vvel = lander.vy;
+      document.getElementById('hvelVal').textContent = (hvel >= 0 ? '+' : '') + hvel.toFixed(1);
+      document.getElementById('vvelVal').textContent = (vvel >= 0 ? '+' : '') + vvel.toFixed(1);
+
+      const deg = Math.round(normalizeAngle(lander.angle) * 180 / Math.PI);
+      document.getElementById('angleVal').textContent = deg + '°';
+
+      // Warning colors
+      const hvelRow = document.getElementById('hvelRow');
+      hvelRow.classList.remove('warn', 'danger');
+      if (Math.abs(hvel) > SAFE_VX) hvelRow.classList.add(Math.abs(hvel) > SAFE_VX * 1.5 ? 'danger' : 'warn');
+
+      const vvelRow = document.getElementById('vvelRow');
+      vvelRow.classList.remove('warn', 'danger');
+      if (vvel > SAFE_VY) vvelRow.classList.add(vvel > SAFE_VY * 1.5 ? 'danger' : 'warn');
+
+      const angleRow = document.getElementById('angleRow');
+      angleRow.classList.remove('warn', 'danger');
+      if (Math.abs(normalizeAngle(lander.angle)) > SAFE_ANGLE)
+        angleRow.classList.add(Math.abs(normalizeAngle(lander.angle)) > SAFE_ANGLE * 1.8 ? 'danger' : 'warn');
+    }
+  }
+
+  // Game loop
+  function loop() {
+    update();
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  // Input
+  window.addEventListener('keydown', (e) => {
+    if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' '].includes(e.key)) e.preventDefault();
+    keys[e.key] = true;
+    if (e.key === ' ' || e.key === 'Enter') {
+      if (state === 'menu') startGame();
+      else if (state === 'gameover') startGame();
+    }
+  });
+  window.addEventListener('keyup', (e) => { keys[e.key] = false; });
+
+  // Touch controls
+  document.querySelectorAll('.touch-btn').forEach(btn => {
+    const key = btn.dataset.key;
+    btn.addEventListener('touchstart', (e) => { e.preventDefault(); keys[key] = true; });
+    btn.addEventListener('touchend', (e) => { e.preventDefault(); keys[key] = false; });
+    btn.addEventListener('mousedown', () => { keys[key] = true; });
+    btn.addEventListener('mouseup', () => { keys[key] = false; });
+    btn.addEventListener('mouseleave', () => { keys[key] = false; });
+  });
+
+  if ('ontouchstart' in window) {
+    document.getElementById('touchControls').classList.add('show');
+  }
+
+  // ✅ Button click handlers — THIS WAS MISSING BEFORE
+  document.getElementById('startBtn').addEventListener('click', startGame);
+  document.getElementById('restartBtn').addEventListener('click', startGame);
+
+  // Init — defer first resize until after browser layout so clientWidth/Height are non-zero
+  window.addEventListener('resize', resize);
+  requestAnimationFrame(() => { resize(); loop(); });
+})();
+</script>
+</body>
+</html>

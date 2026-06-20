@@ -1,0 +1,29 @@
+{
+  "name": "asteroids",
+  "version": "1.0.0",
+  "description": "Asteroids arcade game",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.vibecoded.asteroids",
+    "productName": "Asteroids",
+    "directories": {
+      "output": "P:\\Apps\\VibeCoded\\Asteroids"
+    },
+    "files": [
+      "index.html",
+      "main.js"
+    ],
+    "win": {
+      "target": "portable",
+      "icon": null
+    }
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  }
+}
