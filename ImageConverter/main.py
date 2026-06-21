@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QCheckBox, QProgressBar,
     QListWidget, QListWidgetItem, QFileDialog, QComboBox, QSlider,
-    QGroupBox,
+    QGroupBox, QStackedWidget,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QIcon, QColor
@@ -133,9 +133,7 @@ QSlider::handle:horizontal {{
 }}
 QSlider::handle:horizontal:hover {{ background: {ACCENT_HOV}; }}
 QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 3px; }}
-QSlider:disabled::groove:horizontal {{ background: {BG_LIGHT}; border-color: {BG_MEDIUM}; }}
-QSlider:disabled::handle:horizontal {{ background: {FG_DIM}; border-color: {FG_DIM}; }}
-QSlider:disabled::sub-page:horizontal {{ background: {FG_DIM}; }}
+
 QProgressBar {{
     border: 1px solid {BORDER};
     border-radius: 3px;
@@ -349,27 +347,46 @@ class MainWindow(QMainWindow):
         self._fmt_combo = QComboBox()
         for name in FORMATS:
             self._fmt_combo.addItem(name)
-        self._fmt_combo.setCurrentText("PNG")
         self._fmt_combo.currentTextChanged.connect(self._on_fmt_changed)
+        self._fmt_combo.setCurrentText("PNG")
 
+        # Quality controls — slider shown for lossy, label for lossless
         self._quality_lbl = QLabel("Quality:")
-        self._quality_lbl.setEnabled(False)
+
+        self._quality_stack = QStackedWidget()
+        self._quality_stack.setFixedHeight(28)
+
+        # Page 0: slider row (lossy)
+        slider_page = QWidget()
+        slider_row = QHBoxLayout(slider_page)
+        slider_row.setContentsMargins(0, 0, 0, 0)
+        slider_row.setSpacing(6)
         self._quality_slider = QSlider(Qt.Orientation.Horizontal)
         self._quality_slider.setRange(1, 100)
         self._quality_slider.setValue(85)
         self._quality_slider.setFixedWidth(140)
-        self._quality_slider.setEnabled(False)
         self._quality_slider.valueChanged.connect(self._on_quality_changed)
         self._quality_val = QLabel("85")
         self._quality_val.setFixedWidth(28)
-        self._quality_val.setEnabled(False)
+        slider_row.addWidget(self._quality_slider)
+        slider_row.addWidget(self._quality_val)
+        self._quality_stack.addWidget(slider_page)
+
+        # Page 1: "Not available" label (lossless)
+        na_page = QWidget()
+        na_row = QHBoxLayout(na_page)
+        na_row.setContentsMargins(0, 0, 0, 0)
+        na_lbl = QLabel("Not available")
+        na_lbl.setStyleSheet(f"color: {FG_DIM}; font-style: italic;")
+        na_row.addWidget(na_lbl)
+        na_row.addStretch()
+        self._quality_stack.addWidget(na_page)
 
         fmt_lay.addWidget(fmt_lbl)
         fmt_lay.addWidget(self._fmt_combo)
         fmt_lay.addSpacing(24)
         fmt_lay.addWidget(self._quality_lbl)
-        fmt_lay.addWidget(self._quality_slider)
-        fmt_lay.addWidget(self._quality_val)
+        fmt_lay.addWidget(self._quality_stack)
         fmt_lay.addStretch()
         root.addWidget(fmt_grp)
 
@@ -415,6 +432,9 @@ class MainWindow(QMainWindow):
         self._log = QListWidget()
         root.addWidget(self._log, stretch=1)
 
+        # Initialize quality widget state to match default format
+        self._on_fmt_changed(self._fmt_combo.currentText())
+
     # ------------------------------------------------------------------
     def _browse_src(self):
         folder = QFileDialog.getExistingDirectory(
@@ -439,8 +459,7 @@ class MainWindow(QMainWindow):
     def _on_fmt_changed(self, name: str):
         lossy = FORMATS.get(name, {}).get("lossy", False)
         self._quality_lbl.setEnabled(lossy)
-        self._quality_slider.setEnabled(lossy)
-        self._quality_val.setEnabled(lossy)
+        self._quality_stack.setCurrentIndex(0 if lossy else 1)
 
     def _on_quality_changed(self, value: int):
         self._quality_val.setText(str(value))
