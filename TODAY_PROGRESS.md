@@ -1,6 +1,6 @@
 # VibeCoding — Daily Progress Tracker
 **Session Date:** 2026-06-21
-**Branch:** feature/style-randomizer-v1.2.1
+**Current Branch:** master (clean)
 
 ---
 
@@ -13,7 +13,7 @@ When starting a new context window, read this file first. It tells you exactly w
 
 ### 🔴 High Priority
 - [x] ~~Add PROJECT_SUMMARY.md to all projects~~ ✅ committed & pushed
-- [ ] **Delete `WinFolderMover/` duplicate** — keep `Win Folder Mover/` (v1.0.2), delete the old `WinFolderMover/` (v1.0.0) folder
+- [x] ~~Delete `WinFolderMover/` duplicate~~ ✅ commit `ed5bc3d` on master
 - [ ] **Build Desktop Video Browser** — full plan in `Desktop Video Browser/PROJECT_SUMMARY.md`, no code yet
 - [ ] **Implement ScreenSnap capture stubs** — WPF/.NET 10 project, capture logic is all stubs
 - [ ] **Build ImageConverter** — batch image format converter, plan in `ImageConverter/PROJECT_SUMMARY.md`
@@ -35,7 +35,8 @@ When starting a new context window, read this file first. It tells you exactly w
 ## Decisions Made This Session
 - `WinFolderMover/` (v1.0.0) confirmed for deletion — `Win Folder Mover/` (v1.0.2) is canonical
 - Each project task below should be done on its **own feature branch**, PR'd to master separately
-- File Copy Manager changes (preview_dialog.py + ui changes) are committed on `feature/style-randomizer-v1.2.1` — need to be PR'd
+- File Copy Manager changes (preview_dialog.py + ui changes) — merged to master via PR #7/8/9
+- All work from this session is now on master
 
 ---
 
