@@ -21,7 +21,7 @@ When starting a new context window, read this file first. It tells you exactly w
 
 ### 🟡 Medium Priority
 - [x] ~~**AI Image Studio**~~ ✅ v3.0.2 — Scene Composer + RunPod support + Library tab — EXE at `P:\Apps\VibeCoded\AI Image Studio\`
-- [ ] **Style Randomizer** — add Auto Run mode (port from Chain Automator)
+- [x] ~~**Style Randomizer**~~ ✅ v1.3.0 — Auto Run mode — EXE at `P:\Apps\VibeCoded\ComfyUI Style Randomizer\`
 - [ ] **File Rename Mover** — add progress bar + drag-and-drop folder selection
 - [ ] **FileFinder** — add wildcard/regex search, file type filter, date/size filter, export results
 - [ ] **FaceFinder** — add results export (CSV), add bulk copy-paths-to-clipboard
