@@ -5,7 +5,7 @@ def list_video_files(folder: str) -> list[str]:
     List video files in a given folder.
     Returns a sorted list of full file paths for .mp4, .mkv, .avi, and .mov files.
     """
-    allowed_extensions = {".mp4", ".mkv", ".avi", ".mov"}
+    allowed_extensions = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".wmv", ".flv", ".m4v", ".ts"}
     video_files = []
     
     try:
