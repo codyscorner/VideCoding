@@ -2,9 +2,9 @@
 
 A tool for searching matching faces in image collections using face recognition.
 
-## Version 1.2.0
+## Version 1.3.0
 
-**Dark Gold/Amber Theme** — PyQt6 UI with native drag-drop and thumbnail results viewer.
+**Export CSV + Bulk Copy** — Export match results to CSV with metadata; copy all paths to clipboard in one click.
 
 ## Features
 
@@ -17,6 +17,8 @@ A tool for searching matching faces in image collections using face recognition.
 - Real-time progress tracking
 - Results viewer with thumbnail grid
 - Double-click to open file location in Explorer
+- Export results to CSV (File Name, Full Path, File Size, Modified Date)
+- Copy all match paths to clipboard with one click
 - Persistent configuration
 - Dark theme UI with yellow accents
 
@@ -177,6 +179,11 @@ MIT License - See LICENSE file for details.
 Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
+
+### v1.3.0
+- Export CSV button in ResultsViewer — columns: File Name, Full Path, File Size (bytes), Modified Date
+- Copy All Paths button — joins all match paths with newlines and copies to system clipboard
+- Status label in ResultsViewer confirms action taken (exported N rows / copied N paths)
 
 ### v1.2.0
 - Migrated from tkinter to PyQt6

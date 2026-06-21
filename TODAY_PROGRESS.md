@@ -24,7 +24,7 @@ When starting a new context window, read this file first. It tells you exactly w
 - [x] ~~**Style Randomizer**~~ ✅ v1.3.0 — Auto Run mode — EXE at `P:\Apps\VibeCoded\ComfyUI Style Randomizer\`
 - [x] **File Rename Mover** — v3.3.0 — progress bar (QThread worker + cancel) + drag-and-drop folder selection — EXE at `P:\Apps\VibeCoded\File Rename Mover\`
 - [x] **FileFinder** — v1.1.0 — wildcard/regex search modes, file type filter, date range filter, max size filter, export CSV — EXE at `P:\Apps\VibeCoded\FileFinder\`
-- [ ] **FaceFinder** — add results export (CSV), add bulk copy-paths-to-clipboard
+- [x] **FaceFinder** — v1.3.0 — Export CSV + Copy All Paths — PR #19 (`feature/facefinder-export-bulkcopy`)
 
 ### 🟢 Low Priority
 - [ ] **JPG2PNG_Converter** — merge into ImageConverter when built
