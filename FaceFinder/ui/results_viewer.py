@@ -1,15 +1,20 @@
 """Results viewer dialog with thumbnail grid for FaceFinder"""
 
+import csv
+import os
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import List
 
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QLabel, QPushButton,
     QScrollArea, QGridLayout, QVBoxLayout, QHBoxLayout, QSizePolicy,
+    QFileDialog,
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QPixmap, QIcon
+from PyQt6.QtWidgets import QApplication
 
 from ui.styles import COLORS, STYLESHEET
 
@@ -69,6 +74,7 @@ class ThumbnailWidget(QWidget):
 class ResultsViewer(QDialog):
     def __init__(self, parent, matches: List[str]):
         super().__init__(parent)
+        self._matches = matches
         self.setWindowTitle(f"Match Results — {len(matches)} images found")
         self.setMinimumSize(800, 600)
         self.setStyleSheet(STYLESHEET)
@@ -100,6 +106,55 @@ class ResultsViewer(QDialog):
         scroll.setWidget(grid_widget)
         layout.addWidget(scroll, stretch=1)
 
+        self._status_label = QLabel("")
+        self._status_label.setStyleSheet(f"color: {COLORS['accent']}; font-size: 9pt;")
+        layout.addWidget(self._status_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+
+        has_matches = bool(matches)
+
+        export_btn = QPushButton("Export CSV")
+        export_btn.setEnabled(has_matches)
+        export_btn.clicked.connect(self._export_csv)
+        btn_row.addWidget(export_btn)
+
+        copy_btn = QPushButton("Copy All Paths")
+        copy_btn.setEnabled(has_matches)
+        copy_btn.clicked.connect(self._copy_paths)
+        btn_row.addWidget(copy_btn)
+
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
+        btn_row.addWidget(close_btn)
+
+        layout.addLayout(btn_row)
+
+    def _export_csv(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Results", "facefinder_results.csv",
+            "CSV Files (*.csv)"
+        )
+        if not path:
+            return
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["File Name", "Full Path", "File Size (bytes)", "Modified Date"])
+            for match in self._matches:
+                p = Path(match)
+                try:
+                    stat = p.stat()
+                    size = stat.st_size
+                    modified = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                except OSError:
+                    size = ""
+                    modified = ""
+                writer.writerow([p.name, str(p), size, modified])
+        self._status_label.setText(f"Exported {len(self._matches)} rows to {Path(path).name}")
+
+    def _copy_paths(self):
+        text = "\n".join(self._matches)
+        QApplication.clipboard().setText(text)
+        count = len(self._matches)
+        self._status_label.setText(f"Copied {count} path{'s' if count != 1 else ''} to clipboard")
