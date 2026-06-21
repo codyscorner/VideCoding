@@ -30,17 +30,19 @@ public partial class EditorWindow : Window
         KeyDown += OnEditorKeyDown;
     }
 
-    // Single-key tool shortcuts (Flameshot style): A=arrow R=rect T=text B=bubble
-    // Ctrl combos are handled by the toolbar bindings.
+    // Single-key tool shortcuts: A=arrow R=rect E=ellipse F=freehand H=highlight T=text B=bubble
     private void OnEditorKeyDown(object sender, KeyEventArgs e)
     {
         if (_vm is null || Keyboard.Modifiers != ModifierKeys.None) return;
         switch (e.Key)
         {
-            case Key.A: _vm.ActiveTool = "arrow";  break;
-            case Key.R: _vm.ActiveTool = "rect";   break;
-            case Key.T: _vm.ActiveTool = "text";   break;
-            case Key.B: _vm.ActiveTool = "bubble"; break;
+            case Key.A: _vm.ActiveTool = "arrow";     break;
+            case Key.R: _vm.ActiveTool = "rect";      break;
+            case Key.E: _vm.ActiveTool = "ellipse";   break;
+            case Key.F: _vm.ActiveTool = "freehand";  break;
+            case Key.H: _vm.ActiveTool = "highlight"; break;
+            case Key.T: _vm.ActiveTool = "text";      break;
+            case Key.B: _vm.ActiveTool = "bubble";    break;
             case Key.Z: if (_vm.CanUndo) _vm.UndoCommand.Execute(null); break;
             case Key.Y: if (_vm.CanRedo) _vm.RedoCommand.Execute(null); break;
         }

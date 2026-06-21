@@ -16,13 +16,16 @@ public class AnnotationCanvas : SKElement
     private SKBitmap? _source;
     private EditorViewModel? _vm;
 
-    // Drag state (arrow / rect / bubble phase-1)
+    // Drag state (arrow / rect / ellipse / highlight / bubble phase-1)
     private SKPoint _dragStart;
     private bool _isDragging;
 
     // Bubble two-phase state
     private bool _waitingForBubbleTail;
     private SKRect _pendingBubbleRect;
+
+    // Freehand accumulation
+    private FreehandLayer? _freehandInProgress;
 
     // Transient preview rendered during a drag — never committed to LayerManager
     private IAnnotationLayer? _preview;
@@ -105,6 +108,16 @@ public class AnnotationCanvas : SKElement
             return;
         }
 
+        if (_vm.ActiveTool == "freehand")
+        {
+            _freehandInProgress = new FreehandLayer();
+            _freehandInProgress.Points.Add(pt);
+            _isDragging = true;
+            CaptureMouse();
+            base.OnMouseLeftButtonDown(e);
+            return;
+        }
+
         _dragStart = pt;
         _isDragging = true;
         CaptureMouse();
@@ -116,11 +129,22 @@ public class AnnotationCanvas : SKElement
         if (!_isDragging || _vm is null) return;
         var pt = ToSk(e.GetPosition(this));
 
+        if (_vm.ActiveTool == "freehand" && _freehandInProgress is not null)
+        {
+            _freehandInProgress.Points.Add(pt);
+            _preview = _freehandInProgress;
+            InvalidateVisual();
+            base.OnMouseMove(e);
+            return;
+        }
+
         _preview = _vm.ActiveTool switch
         {
-            "arrow"  => new ArrowLayer   { Start = _dragStart, End = pt },
-            "rect"   => new RectangleLayer { Rect = MakeRect(_dragStart, pt), CornerRadius = 4f },
-            "bubble" => new RectangleLayer
+            "arrow"     => new ArrowLayer { Start = _dragStart, End = pt },
+            "rect"      => new RectangleLayer { Rect = MakeRect(_dragStart, pt), CornerRadius = 4f },
+            "ellipse"   => new EllipseLayer { Rect = MakeRect(_dragStart, pt) },
+            "highlight" => new HighlightLayer { Rect = MakeRect(_dragStart, pt) },
+            "bubble"    => new RectangleLayer
             {
                 Rect = MakeRect(_dragStart, pt),
                 StrokeColor = new SKColor(0, 120, 215),
@@ -153,6 +177,22 @@ public class AnnotationCanvas : SKElement
             case "rect":
                 if (rect.Width > 2 && rect.Height > 2)
                     Commit(new RectangleLayer { Rect = rect, CornerRadius = 4f });
+                break;
+
+            case "ellipse":
+                if (rect.Width > 2 && rect.Height > 2)
+                    Commit(new EllipseLayer { Rect = rect });
+                break;
+
+            case "highlight":
+                if (rect.Width > 2 && rect.Height > 2)
+                    Commit(new HighlightLayer { Rect = rect });
+                break;
+
+            case "freehand":
+                if (_freehandInProgress is not null && _freehandInProgress.Points.Count >= 2)
+                    Commit(_freehandInProgress);
+                _freehandInProgress = null;
                 break;
 
             case "bubble":
