@@ -9,6 +9,7 @@ from ui.main_window import MainWindow
 from ui.styles import STYLESHEET
 
 BASE_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+VERSION = "1.2.1"
 
 
 def main():
@@ -21,7 +22,7 @@ def main():
         app.setWindowIcon(QIcon(str(icon_path)))
 
     config = ConfigManager(BASE_DIR / "csr_config.json")
-    window = MainWindow(config, BASE_DIR)
+    window = MainWindow(config, BASE_DIR, VERSION)
     window.show()
     sys.exit(app.exec())
 

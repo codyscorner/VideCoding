@@ -488,10 +488,11 @@ class ThumbnailGrid(QListWidget):
 # ------------------------------------------------------------------ #
 
 class MainWindow(QMainWindow):
-    def __init__(self, config: ConfigManager, base_dir: Path):
+    def __init__(self, config: ConfigManager, base_dir: Path, version: str = ""):
         super().__init__()
         self._config   = config
         self._base_dir = base_dir
+        self._version  = version
         self._prompts: list[str] = []
         self._worker: BatchStyleWorker | None = None
         self._loader: ImageLoaderThread | None = None
@@ -507,7 +508,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _build_ui(self):
-        self.setWindowTitle("ComfyUI Style Randomizer")
+        title = f"ComfyUI Style Randomizer v{self._version}" if self._version else "ComfyUI Style Randomizer"
+        self.setWindowTitle(title)
         self.setMinimumSize(1100, 700)
 
         central = QWidget()
@@ -1000,6 +1002,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _start(self):
+        self._log_view.clear()
         images = self._thumb_grid.all_paths()
         if not images:
             self._append_log("No images found. Select an input folder.")

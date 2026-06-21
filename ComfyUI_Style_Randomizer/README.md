@@ -70,6 +70,10 @@ Your ComfyUI workflow must be exported in **API format** (enable Dev Mode in Com
 
 ## Changelog
 
+### v1.2.1
+- Version number now displayed in window title bar
+- Log window clears automatically on each new Start
+
 ### v1.2.0
 - **Thumbnail caching** — input folder and library both generate a `thumbnails/` cache on first load; subsequent loads are dramatically faster (especially for large folders)
 - **Processed filter** — already-processed images hidden by default; **Show all** checkbox reveals them with a green ✓ badge; status bar shows "Remaining: X | Done: Y"
