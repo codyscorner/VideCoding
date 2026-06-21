@@ -13,10 +13,13 @@
 
         <!-- Toolbar -->
         <ToolBar Grid.Row="0">
-            <Button Content="Arrow (A)" Command="{Binding ActivateToolCommand}" CommandParameter="arrow"/>
-            <Button Content="Rect (R)"  Command="{Binding ActivateToolCommand}" CommandParameter="rect"/>
-            <Button Content="Text (T)"  Command="{Binding ActivateToolCommand}" CommandParameter="text"/>
-            <Button Content="Bubble (B)" Command="{Binding ActivateToolCommand}" CommandParameter="bubble"/>
+            <Button Content="Arrow (A)"     Command="{Binding ActivateToolCommand}" CommandParameter="arrow"/>
+            <Button Content="Rect (R)"      Command="{Binding ActivateToolCommand}" CommandParameter="rect"/>
+            <Button Content="Ellipse (E)"   Command="{Binding ActivateToolCommand}" CommandParameter="ellipse"/>
+            <Button Content="Freehand (F)"  Command="{Binding ActivateToolCommand}" CommandParameter="freehand"/>
+            <Button Content="Highlight (H)" Command="{Binding ActivateToolCommand}" CommandParameter="highlight"/>
+            <Button Content="Text (T)"      Command="{Binding ActivateToolCommand}" CommandParameter="text"/>
+            <Button Content="Bubble (B)"    Command="{Binding ActivateToolCommand}" CommandParameter="bubble"/>
             <Separator/>
             <Button Content="Undo" Command="{Binding UndoCommand}" IsEnabled="{Binding CanUndo}"/>
             <Button Content="Redo" Command="{Binding RedoCommand}" IsEnabled="{Binding CanRedo}"/>
