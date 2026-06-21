@@ -20,7 +20,7 @@ When starting a new context window, read this file first. It tells you exactly w
 - [x] ~~**Build ImageConverter**~~ ✅ v1.0.0 — PR #12 (`feature/image-converter`)
 
 ### 🟡 Medium Priority
-- [x] ~~**AI Image Studio**~~ ✅ v3.0.0 — Scene Composer + RunPod support + Library tab — PR on `feature/ai-image-studio-p2`
+- [x] ~~**AI Image Studio**~~ ✅ v3.0.2 — Scene Composer + RunPod support + Library tab — EXE deployed to `P:\Apps\VibeCoded\AI Image Studio\`
 - [ ] **Style Randomizer** — add Auto Run mode (port from Chain Automator)
 - [ ] **File Rename Mover** — add progress bar + drag-and-drop folder selection
 - [ ] **FileFinder** — add wildcard/regex search, file type filter, date/size filter, export results
