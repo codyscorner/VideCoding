@@ -1,6 +1,6 @@
 # StopWatch
 
-**Version:** 1.0.0 | **Status:** Active | **Language:** Python
+**Version:** 1.1.1 | **Status:** Active | **Language:** Python
 
 A desktop stopwatch and countdown timer app with sound alerts, built with PyQt6 and pygame for audio.
 

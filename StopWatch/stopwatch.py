@@ -117,7 +117,7 @@ QLabel#spin_label {{
 class StopwatchTimerApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Stopwatch & Timer v1.1.0")
+        self.setWindowTitle("Stopwatch & Timer v1.1.1")
         self.setMinimumSize(400, 600)
         self.resize(450, 650)
         self.setStyleSheet(STYLESHEET)
@@ -133,10 +133,10 @@ class StopwatchTimerApp(QMainWindow):
         self.channel = None
         self.is_ringing = False
 
-        tabs = QTabWidget()
-        self.setCentralWidget(tabs)
-        tabs.addTab(self._build_stopwatch_tab(), "Stopwatch")
-        tabs.addTab(self._build_timer_tab(), "Timer")
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
+        self.tabs.addTab(self._build_stopwatch_tab(), "Stopwatch")
+        self.tabs.addTab(self._build_timer_tab(), "Timer")
 
         # Timers
         self._sw_timer = QTimer()
@@ -395,6 +395,34 @@ class StopwatchTimerApp(QMainWindow):
         self.tmr_btn_start.setText("Start")
         self.tmr_btn_start.setStyleSheet("")
         self.tmr_display.setStyleSheet("")
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        on_stopwatch = self.tabs.currentIndex() == 0
+        on_timer = self.tabs.currentIndex() == 1
+
+        if key == Qt.Key.Key_Space:
+            if on_stopwatch:
+                if self.sw_running:
+                    self.sw_stop()
+                else:
+                    self.sw_start()
+            elif on_timer:
+                if self.is_ringing:
+                    self.stop_ringing()
+                elif self.tmr_running:
+                    self.tmr_pause()
+                else:
+                    self.tmr_start()
+        elif key == Qt.Key.Key_L and on_stopwatch:
+            self.sw_lap()
+        elif key == Qt.Key.Key_R:
+            if on_stopwatch:
+                self.sw_reset()
+            elif on_timer:
+                self.tmr_reset()
+        else:
+            super().keyPressEvent(event)
 
     def fallback_alert(self):
         QApplication.beep()

@@ -1,4 +1,4 @@
-# VHS Metadata Parser  V-1.1.0
+# VHS Metadata Parser  V-1.1.1
 
 A desktop app for parsing and displaying ComfyUI workflow metadata embedded in MP4 files, JSON, or TXT files.
 

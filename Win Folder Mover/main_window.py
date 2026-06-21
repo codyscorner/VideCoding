@@ -16,6 +16,7 @@ from typing import Optional
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QColor, QPalette, QIcon
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -97,6 +98,11 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
         layout.addWidget(self._log)
+
+        # ── Dry-run toggle ────────────────────────────────────────────
+        self._dry_run_check = QCheckBox("Dry Run  (preview only — no files will be moved)")
+        self._dry_run_check.stateChanged.connect(self._on_dry_run_toggle)
+        layout.addWidget(self._dry_run_check)
 
         # ── Control buttons ───────────────────────────────────────────
         btn_row = QHBoxLayout()
@@ -214,11 +220,32 @@ class MainWindow(QMainWindow):
             }
             QScrollBar::add-line:vertical,
             QScrollBar::sub-line:vertical { height: 0; }
+            QCheckBox {
+                color: #f0d0d0;
+                spacing: 6px;
+            }
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+                border: 1px solid #7a2a2a;
+                border-radius: 3px;
+                background: #3d1a1a;
+            }
+            QCheckBox::indicator:checked {
+                background: #c0392b;
+                border-color: #c0392b;
+            }
         """)
 
     # ------------------------------------------------------------------
     # Browse handler
     # ------------------------------------------------------------------
+
+    def _on_dry_run_toggle(self) -> None:
+        if self._dry_run_check.isChecked():
+            self._btn_start.setText("▶  Start Dry Run")
+        else:
+            self._btn_start.setText("▶  Start Move")
 
     def _browse(self, target: QLineEdit) -> None:
         current = target.text().strip()
@@ -258,7 +285,8 @@ class MainWindow(QMainWindow):
         self._set_controls_busy(True)
 
         # ── Create and wire up the worker ─────────────────────────────
-        self._worker = MoveWorker(source, dest)
+        dry_run = self._dry_run_check.isChecked()
+        self._worker = MoveWorker(source, dest, dry_run=dry_run)
         self._worker.log_signal.connect(self._on_log)
         self._worker.progress_signal.connect(self._progress.setValue)
         self._worker.finished_signal.connect(self._on_finished)
@@ -295,7 +323,7 @@ class MainWindow(QMainWindow):
         """Called when the worker thread completes (success *or* cancel)."""
         self._records = records
         self._set_controls_busy(False)
-        if records:
+        if records and not self._dry_run_check.isChecked():
             self._btn_export.setEnabled(True)
 
     def _on_error(self, message: str) -> None:
