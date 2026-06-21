@@ -23,12 +23,14 @@ class BatchStyleWorker(QThread):
     all_done = pyqtSignal()
     error    = pyqtSignal(str)
 
-    def __init__(self, config: dict, prompts: list[str], image_paths: list[Path]):
+    def __init__(self, config: dict, prompts: list[str], image_paths: list[Path],
+                 fixed_prompt: str | None = None):
         super().__init__()
-        self._config      = config
-        self._prompts     = prompts
-        self._image_paths = image_paths
-        self._cancelled   = False
+        self._config        = config
+        self._prompts       = prompts
+        self._image_paths   = image_paths
+        self._fixed_prompt  = fixed_prompt
+        self._cancelled     = False
         self._client_id   = str(uuid.uuid4())
         runpod = config.get("mode", "local") == "runpod"
         self._url = (
@@ -75,10 +77,15 @@ class BatchStyleWorker(QThread):
                     self.progress.emit(i + 1, total)
                     continue
 
-                prompt_idx = random.randrange(len(self._prompts))
-                prompt     = self._prompts[prompt_idx]
-                preview    = prompt.replace("\n", " ")[:60]
-                self._log(f"[{i+1}/{total}] {img_path.name}  →  style #{prompt_idx+1}: {preview}…")
+                if self._fixed_prompt is not None:
+                    prompt  = self._fixed_prompt
+                    preview = prompt.replace("\n", " ")[:60]
+                    self._log(f"[{i+1}/{total}] {img_path.name}  →  {preview}…")
+                else:
+                    prompt_idx = random.randrange(len(self._prompts))
+                    prompt     = self._prompts[prompt_idx]
+                    preview    = prompt.replace("\n", " ")[:60]
+                    self._log(f"[{i+1}/{total}] {img_path.name}  →  style #{prompt_idx+1}: {preview}…")
 
                 try:
                     workflow = json.loads(json.dumps(base_workflow))
