@@ -1,4 +1,26 @@
-# File Finder App Plan
+# File Finder App
+
+## Version History
+
+### v1.1.0 (June 21, 2026)
+- Search mode selector: Contains (substring), Wildcard (*?), Regex
+- Regex validation with user-friendly error dialog before search starts
+- File type filter: space/comma-separated extensions (e.g. `.jpg .png .pdf`)
+- Max size filter (MB) alongside existing min size
+- Date modified filters: optional "After" and "Before" with calendar pickers
+- Export CSV button: saves results as CSV (File Name, Full Path, Size, Modified) or TXT
+- Export button only enabled after a search returns results
+- Window resized to 960×650 to accommodate filter row
+
+### v1.0.2 (Earlier)
+- Background QThread scanner across all drives
+- Min size filter
+- Click-to-copy path to clipboard
+- Dark green theme
+
+---
+
+# Original Plan
 
 ## Overview
 A desktop application built with Python and PyQt6 that allows users to search for files across all accessible local and network drives based on a file name search criteria.
