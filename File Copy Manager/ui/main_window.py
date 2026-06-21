@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QProgressBar, QListWidget,
     QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout,
     QScrollArea, QFrame, QFileDialog, QMessageBox, QDialog,
+    QTabWidget,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
@@ -21,6 +22,7 @@ from file_operations import FileCopier, FileScanner, FileValidator
 from folder_organization import FolderStructure, FolderOrganizer
 from ui.styles import STYLESHEET, COLORS
 from ui.preview_dialog import PreviewDialog
+from ui.multi_source_tab import MultiSourceTab
 
 
 class MainWindow(QMainWindow):
@@ -55,11 +57,17 @@ class MainWindow(QMainWindow):
         self._poll_timer.timeout.connect(self._poll_progress_queue)
 
     def _build_ui(self):
-        # Scrollable central area
+        tabs = QTabWidget()
+        self.setCentralWidget(tabs)
+        tabs.addTab(self._build_single_source_tab(), "Single Source")
+        self._multi_tab = MultiSourceTab(self.config, self._logger)
+        tabs.addTab(self._multi_tab, "Multi-Source  ⚡")
+
+    def _build_single_source_tab(self) -> QWidget:
+        # Scrollable single-source area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.setCentralWidget(scroll)
 
         container = QWidget()
         scroll.setWidget(container)
@@ -288,6 +296,8 @@ class MainWindow(QMainWindow):
         self.status_list.setMaximumHeight(120)
         layout.addWidget(self.status_list)
         self._add_status("Ready to copy files...")
+
+        return scroll
 
     def _load_config(self):
         self.size_check.setChecked(self.config.get("enable_size_filter", False))
