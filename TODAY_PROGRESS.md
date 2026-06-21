@@ -48,6 +48,15 @@ When starting a new context window, read this file first. It tells you exactly w
 - Created new PROJECT_SUMMARY.md from scratch for 8 projects with no docs
 - Committed: `adc2beb` — pushed to `feature/style-randomizer-v1.2.1`
 
+### ✅ DONE — Style Randomizer v1.3.0
+- Auto Run mode: batch size spinner (1–50), ▶▶ Auto Run + ⏹ Stop After Batch buttons
+- All images in a batch share one style; next batch guaranteed different style (no consecutive repeat, 2 prompts alternate)
+- Regular Start unchanged: random style per image
+- Processed images auto-removed from grid between auto batches
+- QSpinBox dark-theme text color fix; Start button lambda signal fix
+- EXE deployed to `P:\Apps\VibeCoded\ComfyUI Style Randomizer\`
+- PR #14 on `feature/style-randomizer-autorun`
+
 ### ✅ DONE — ImageConverter v1.0.0
 - Batch-converts images between PNG, JPG, WebP, BMP, TIFF
 - Quality slider for lossy formats (JPG/WebP)
