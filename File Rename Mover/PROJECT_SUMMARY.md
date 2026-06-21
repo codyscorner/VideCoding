@@ -2,9 +2,9 @@
 
 A powerful, object-oriented tool for batch renaming and moving files with sequential numbering.
 
-## Version 3.2.0
+## Version 3.3.0
 
-Enhanced version with advanced rename patterns, sorting options, folder organization features, template management, and improved security.
+Enhanced version with advanced rename patterns, sorting options, folder organization features, template management, threaded progress bar with cancel support, and drag-and-drop folder selection.
 
 ## Features
 
@@ -235,8 +235,8 @@ preview = file_renamer.generate_preview(
 - [ ] Preview mode showing all changes before execution
 - [ ] Undo functionality
 - [ ] File filtering by date range, size range
-- [ ] Drag-and-drop support
-- [ ] Progress bar for large operations
+- [x] Drag-and-drop folder selection
+- [x] Progress bar for large operations with cancel support
 - [ ] Export/import rename rules/presets
 - [ ] Command-line interface
 - [ ] Batch operation history/logging
@@ -298,6 +298,12 @@ MIT License - See [LICENSE](LICENSE) file for details.
 Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
+
+### v3.3.0 (June 21, 2026)
+- Progress bar wired to a QThread worker — UI stays responsive during operations
+- Cancel button aborts mid-operation after the current file completes
+- Source and Destination fields accept folders dragged from Windows Explorer (directories only, not files)
+- Move and Rename button disabled while operation runs; re-enabled on finish or cancel
 
 ### v3.2.0 (February 28, 2026)
 - Added template persistence (remembers last selected template across sessions)
