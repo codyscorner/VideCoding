@@ -23,7 +23,7 @@ When starting a new context window, read this file first. It tells you exactly w
 - [x] ~~**AI Image Studio**~~ ✅ v3.0.2 — Scene Composer + RunPod support + Library tab — EXE at `P:\Apps\VibeCoded\AI Image Studio\`
 - [x] ~~**Style Randomizer**~~ ✅ v1.3.0 — Auto Run mode — EXE at `P:\Apps\VibeCoded\ComfyUI Style Randomizer\`
 - [x] **File Rename Mover** — v3.3.0 — progress bar (QThread worker + cancel) + drag-and-drop folder selection — EXE at `P:\Apps\VibeCoded\File Rename Mover\`
-- [ ] **FileFinder** — add wildcard/regex search, file type filter, date/size filter, export results
+- [x] **FileFinder** — v1.1.0 — wildcard/regex search modes, file type filter, date range filter, max size filter, export CSV — EXE at `P:\Apps\VibeCoded\FileFinder\`
 - [ ] **FaceFinder** — add results export (CSV), add bulk copy-paths-to-clipboard
 
 ### 🟢 Low Priority
