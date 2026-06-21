@@ -5,6 +5,42 @@ All notable changes to File Copy Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.2] - 2026-06-21
+
+### Fixed
+- Preview → Proceed to Copy no longer re-scans the source folder; the file list determined during preview is passed directly to the copy engine, eliminating wasted iteration through files that were already known to be skippable
+
+---
+
+## [3.1.1] - 2026-06-21
+
+### Fixed
+- Preview window now respects Incremental backup mode — files already at the destination with matching size and mtime (±2 s) are excluded from the preview list, so only files that would actually be copied are shown
+
+---
+
+## [3.1.0] - 2026-06-21
+
+### Added
+- **Preview window** — "Preview" button scans files on a background thread and shows a sortable table (Filename / Size / Full Path) before any copy starts; user can cancel or proceed
+- **MD5 checksum verification** — optional "Verify copied files" checkbox computes MD5 hash of source and destination after each copy; mismatches are logged and counted as errors
+- **Incremental backup mode** — optional checkbox skips destination files that already match source by size and mtime (±2 s tolerance), avoiding redundant copies
+- **Network path retry logic** — copy operations automatically retry up to 3 times with a 1.5 s delay on `OSError`, supporting UNC paths and slow network shares transparently
+
+### Changed
+- Copy Options section now includes Incremental and Verify Checksum checkboxes
+- `incremental` and `verify_checksum` settings persisted to `config.json`
+- `_start_copy` refactored into `_build_copy_options` + `_execute_copy` so the Preview flow can reuse the same copy path
+- Status log now surfaces Retry attempts and CHECKSUM FAILED messages
+
+### Technical
+- Added `ui/preview_dialog.py` — `PreviewDialog(QDialog)` with sortable QTableWidget
+- Added `_compute_checksum()` to `FileCopier` — MD5 in 4 MB chunks
+- `FileOperationResult` extended with `checksum_verified: Optional[bool]`
+- Preview scan runs on a daemon thread using the existing queue/QTimer pattern
+
+---
+
 ## [2.0.1] - 2026-03-29
 
 ### Fixed

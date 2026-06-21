@@ -1,0 +1,85 @@
+# VibeCoding — Daily Progress Tracker
+**Session Date:** 2026-06-21
+**Branch:** feature/style-randomizer-v1.2.1
+
+---
+
+## Context Window Instructions
+When starting a new context window, read this file first. It tells you exactly what has been done, what's next, and any decisions already made. Update this file at the end of every task before switching context.
+
+---
+
+## Overall Priority List (from upgrade review session)
+
+### 🔴 High Priority
+- [x] ~~Add PROJECT_SUMMARY.md to all projects~~ ✅ committed & pushed
+- [ ] **Delete `WinFolderMover/` duplicate** — keep `Win Folder Mover/` (v1.0.2), delete the old `WinFolderMover/` (v1.0.0) folder
+- [ ] **Build Desktop Video Browser** — full plan in `Desktop Video Browser/PROJECT_SUMMARY.md`, no code yet
+- [ ] **Implement ScreenSnap capture stubs** — WPF/.NET 10 project, capture logic is all stubs
+- [ ] **Build ImageConverter** — batch image format converter, plan in `ImageConverter/PROJECT_SUMMARY.md`
+
+### 🟡 Medium Priority
+- [ ] **AI Image Studio** — complete Scene Composer tab + add RunPod support + Library tab
+- [ ] **Style Randomizer** — add Auto Run mode (port from Chain Automator)
+- [ ] **File Rename Mover** — add progress bar + drag-and-drop folder selection
+- [ ] **FileFinder** — add wildcard/regex search, file type filter, date/size filter, export results
+- [ ] **FaceFinder** — add results export (CSV), add bulk copy-paths-to-clipboard
+
+### 🟢 Low Priority
+- [ ] **JPG2PNG_Converter** — merge into ImageConverter when built
+- [ ] **IconMaker** — wrap script in small PyQt6 GUI
+- [ ] **Unzipper** — add 7z and tar.gz support alongside ZIP
+
+---
+
+## Decisions Made This Session
+- `WinFolderMover/` (v1.0.0) confirmed for deletion — `Win Folder Mover/` (v1.0.2) is canonical
+- Each project task below should be done on its **own feature branch**, PR'd to master separately
+- File Copy Manager changes (preview_dialog.py + ui changes) are committed on `feature/style-randomizer-v1.2.1` — need to be PR'd
+
+---
+
+## Task Log
+
+### ✅ DONE — PROJECT_SUMMARY.md for all projects
+- Renamed README/plan docs to PROJECT_SUMMARY.md across 25 projects
+- Created new PROJECT_SUMMARY.md from scratch for 8 projects with no docs
+- Committed: `adc2beb` — pushed to `feature/style-randomizer-v1.2.1`
+
+---
+
+## How to Pick Up in a New Context Window
+
+1. Read this file
+2. Check `git status` and `git log --oneline -5` to confirm current state
+3. Pick the next unchecked item from the priority list above
+4. Create a new branch: `git checkout -b feature/<project-name>-<description>`
+5. Do the work, commit, push, PR to master
+6. Check the item off in this file and save before switching context
+
+---
+
+## Per-Project Notes (add notes here as you work)
+
+### WinFolderMover cleanup
+- Delete entire `P:\AI\VideCoding\WinFolderMover\` folder (not `Win Folder Mover\`)
+- WinFolderMover v1.0.0 is strictly older — Win Folder Mover v1.0.2 has all the same features plus more
+- After delete: `git rm -r WinFolderMover/` + commit
+
+### Desktop Video Browser
+- Full plan in `Desktop Video Browser/PROJECT_SUMMARY.md`
+- Stack: Python + PySide6 + QtMultimedia
+- MVP: file list panel (left) + video player (right) + dark gray theme
+- EXE via PyInstaller
+- Output: `P:\Apps\VibeCoded\Desktop Video Browser\`
+
+### Style Randomizer — Auto Run mode
+- Reference: `ComfyUI_Chain_Automator/main.py` — Auto Run mode added in v3.1.0
+- Port the pattern: batch size spinner, Auto Run button, Stop After Batch button, auto-remove processed images from grid
+- Currently on branch `feature/style-randomizer-v1.2.1`
+
+### ImageConverter
+- Plan: batch convert images between formats (JPG, PNG, WebP, BMP, TIFF, AVIF)
+- Stack: Python + PyQt6 + Pillow
+- Key feature: format picker, quality slider per format, source/dest folders, progress bar
+- Consider merging JPG2PNG_Converter into this when done

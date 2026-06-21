@@ -1,7 +1,8 @@
 # File Copy Manager - Project Summary
 
 ## Created: December 8, 2025
-## Version: 1.0.0
+## Last Updated: June 21, 2026
+## Version: 3.1.2
 
 ---
 
@@ -63,11 +64,37 @@ File Copy Manager is a **companion application** to File Rename Mover, designed 
 - Only copies new files
 - Useful for incremental backups
 
-### 3. Yellow & Black Theme
-- **Background**: Black (#1a1a1a)
-- **Foreground**: Gold (#FFD700)
-- **Buttons**: Yellow with black text
+### 3. Multi-threaded Copying
+- Copy operations run on a dedicated daemon thread
+- Chunked I/O (4 MB chunks) for smooth transfer
+- Cancel button stops the operation mid-copy
+
+### 4. File Filtering
+- **File mask / exclude patterns**: wildcard support (`*.jpg`, `oct*.*`), comma-separated, with built-in presets (Images, Videos, Audio, Documents, Archives, Code, Data)
+- **File size filter**: min/max with configurable units (B, KB, MB, GB)
+- **Date range filter**: modified within last N days
+
+### 5. Progress Tracking
+- Overall progress bar (current file / total files)
+- Per-file progress bar for files ≥ 50 MB
+- Live counters: copied, skipped, errors
+- Status log list showing warnings, errors, and timing
+
+### 6. Persistent Configuration
+- Settings auto-saved to `config.json` on close
+- Restores source/dest folders, masks, filters, and organization mode on next launch
+
+### 7. Yellow & Black Theme (Dark Gold)
+- **Background**: Dark (#1a1a1a)
+- **Accents**: Gold (#FFD700)
+- **Framework**: PyQt6 stylesheet
 - **Immediately recognizable** as the copy tool
+
+### 8. Additional Quality-of-Life Features
+- **Long path handling**: auto-truncates paths exceeding Windows 260-char limit with `_tr_###` suffix
+- **Large file optimization**: chunked copying (120 MB threshold) for real-time progress on big files
+- **File sort order**: processed smallest-to-largest for predictable behaviour
+- **Recursive toggle**: search subfolders or root only
 
 ---
 
@@ -87,6 +114,7 @@ File Copy Manager/
 ├── ui/
 │   ├── __init__.py
 │   ├── main_window.py          # Main application window
+│   ├── preview_dialog.py       # Pre-copy file preview dialog
 │   └── styles.py               # Yellow/black theme
 ├── config.json                  # User settings (auto-generated)
 ├── README.md                    # User documentation
@@ -102,7 +130,8 @@ File Copy Manager/
 ### Architecture
 - **Object-Oriented Design**: Clean separation of concerns
 - **Configuration Management**: JSON-based with defaults
-- **Theme System**: Centralized color management
+- **Theme System**: Centralized PyQt6 stylesheet
+- **Threading**: Copy runs on daemon thread; UI stays responsive
 - **Error Handling**: Comprehensive validation and reporting
 
 ### Key Classes
@@ -119,14 +148,22 @@ File Copy Manager/
 - Handles relative path calculations
 
 **MainWindow** (ui/main_window.py)
-- 900x700 optimized layout
+- PyQt6 window with optimized layout
 - Scrollable interface
-- Real-time status updates
-- Yellow/black themed controls
+- Real-time status updates with live counters
+- Dark gold themed controls
+- Cancel button wired to copy thread
+- Preview button — scans files on a daemon thread, shows PreviewDialog before copy
+- Incremental and checksum checkboxes wired through to FileCopier
+
+**PreviewDialog** (ui/preview_dialog.py)
+- Sortable 3-column table: Filename / Size / Full Source Path
+- Displays total file count and cumulative size
+- "Cancel" and "Proceed to Copy" buttons; accepted result triggers copy immediately
 
 **YellowBlackTheme** (ui/styles.py)
-- Distinctive color palette
-- Consistent styling
+- Dark gold PyQt6 stylesheet
+- Consistent styling across all widgets
 - High contrast for readability
 
 ---
@@ -178,7 +215,9 @@ Persistent settings in `config.json`:
   "last_extension": ".jpg",
   "preserve_structure": true,
   "folder_structure": "flat",
-  "number_duplicates": true
+  "number_duplicates": true,
+  "incremental": false,
+  "verify_checksum": false
 }
 ```
 
@@ -208,30 +247,31 @@ Persistent settings in `config.json`:
 
 ## Files Created
 
-### Core Files (7)
+### Core Files (8)
 1. `main.py` - Entry point
 2. `config.py` - Configuration manager
 3. `file_operations.py` - Copy logic
 4. `folder_organization.py` - Folder management
 5. `ui/__init__.py` - UI package
 6. `ui/main_window.py` - Main window
-7. `ui/styles.py` - Yellow/black theme
+7. `ui/preview_dialog.py` - Pre-copy preview dialog
+8. `ui/styles.py` - Yellow/black theme
 
 ### Documentation Files (4)
-8. `README.md` - User guide
-9. `CHANGELOG.md` - Version history
-10. `FEATURES.md` - Feature details
-11. `PROJECT_SUMMARY.md` - This file
+9. `README.md` - User guide
+10. `CHANGELOG.md` - Version history
+11. `FEATURES.md` - Feature details
+12. `PROJECT_SUMMARY.md` - This file
 
-**Total**: 11 files created
+**Total**: 12 files created
 
 ---
 
 ## Code Statistics
 
-- **Lines of Code**: ~1,100
-- **Classes**: 8
-- **Functions/Methods**: 35+
+- **Lines of Code**: ~1,400
+- **Classes**: 9
+- **Functions/Methods**: 40+
 - **Type Hints**: Complete coverage
 - **Docstrings**: All classes and methods
 - **Comments**: Strategic placement
@@ -263,23 +303,27 @@ Persistent settings in `config.json`:
 
 ## Future Enhancements
 
-### High Priority
-1. Preview window (see all operations before copying)
-2. Progress bar for large operations
-3. File size filtering
-4. Date range filtering
+> Items marked ✓ have been completed since the original v1.0.0 plan.
 
-### Medium Priority
-5. Verify copied files (checksum)
-6. Incremental backup mode
-7. Exclude patterns
-8. Copy history log file
+### Originally Planned — Now Implemented ✓
+- ~~Progress bar for large operations~~ ✓ — overall + per-file bars, live counters
+- ~~File size filtering~~ ✓ — min/max with unit selector
+- ~~Date range filtering~~ ✓ — modified within last N days
+- ~~Exclude patterns~~ ✓ — wildcard masks with presets
+- ~~Copy history log file~~ ✓ — `FileCopyManager.log` with timestamps
+- ~~Batch profiles (save/load configurations)~~ ✓ — JSON config auto-saved/loaded
+- ~~Multi-threaded copying for speed~~ ✓ — daemon thread + chunked I/O + cancel
 
-### Low Priority
-9. Command-line interface
-10. Batch profiles (save/load configurations)
-11. Multi-threaded copying for speed
-12. Network path support
+### Originally Planned — Now Implemented (second wave) ✓
+- ~~Preview window~~ ✓ — "Preview" button scans and shows a sortable file list with sizes; user confirms before copy starts
+- ~~Verify copied files (checksum)~~ ✓ — MD5 hash comparison of source vs destination after each copy; checksum failures logged and counted as errors
+- ~~Incremental backup mode~~ ✓ — skips files where dest already exists with matching size and mtime (±2 s tolerance)
+- ~~Network path support~~ ✓ — automatic retry logic (3 attempts, 1.5 s delay) on `OSError` during copy; works transparently for UNC paths and slow connections
+
+### Still Planned
+
+#### Low Priority
+1. **Command-line interface** — headless mode for scripting / scheduled tasks
 
 ---
 
@@ -297,7 +341,7 @@ Persistent settings in `config.json`:
 
 ### First Time Setup
 - No installation required
-- No dependencies beyond Python 3.7+ and tkinter
+- Dependencies: Python 3.10+ and PyQt6 (`pip install PyQt6`)
 - Config file created automatically on first run
 
 ---
@@ -327,14 +371,23 @@ Persistent settings in `config.json`:
 ## Success Criteria Met
 
 ✓ Application fully functional
-✓ Yellow and black theme implemented
-✓ Copy operations working
+✓ Dark gold (yellow/black) theme implemented via PyQt6
+✓ Copy operations working with multi-threaded execution
 ✓ Preserve structure mode working
-✓ Custom organization modes working
+✓ Custom organization modes working (6 date-based options)
 ✓ Duplicate numbering working
 ✓ Configuration persistence working
+✓ File size and date range filtering working
+✓ Wildcard exclude patterns with presets working
+✓ Progress bars (overall + per-file) working
+✓ Copy log file working
+✓ Long path handling (Windows 260-char limit) working
+✓ Cancel operation working
+✓ Preview window working (scan + confirm before copy)
+✓ MD5 checksum verification working
+✓ Incremental backup mode working (size + mtime skip)
+✓ Network retry logic working (3 attempts, 1.5 s delay)
 ✓ All imports successful
-✓ No errors in testing
 ✓ Complete documentation
 ✓ Professional code quality
 
@@ -342,10 +395,11 @@ Persistent settings in `config.json`:
 
 ## Conclusion
 
-File Copy Manager is a **production-ready** application that perfectly complements File Rename Mover. The yellow theme makes it instantly recognizable, and the copy-focused functionality provides a safe alternative to moving files.
+File Copy Manager is a **production-ready** application that perfectly complements File Rename Mover. The dark gold theme makes it instantly recognizable, and the copy-focused functionality — with filtering, progress tracking, and multi-threaded execution — provides a robust and safe alternative to moving files.
 
-**Status**: ✓ Complete and Ready to Use
+**Status**: ✓ Active and Feature-Rich
 
-**Version**: 1.0.0
+**Version**: 3.1.2
 
-**Date**: December 8, 2025
+**Created**: December 8, 2025
+**Last Updated**: June 21, 2026

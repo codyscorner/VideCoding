@@ -133,6 +133,17 @@ QPushButton#cancel_btn {{
 QPushButton#cancel_btn:hover {{
     background-color: #a00000;
 }}
+QPushButton#preview_btn {{
+    background-color: {COLORS['bg_light']};
+    color: {COLORS['foreground']};
+}}
+QPushButton#preview_btn:hover {{
+    background-color: #555555;
+}}
+QPushButton#preview_btn:disabled {{
+    background-color: {COLORS['bg_mid']};
+    color: {COLORS['fg_dim']};
+}}
 QProgressBar {{
     border: 1px solid {COLORS['border']};
     border-radius: 3px;
@@ -188,5 +199,26 @@ QLabel#clear_label {{
 }}
 QLabel#clear_label:hover {{
     color: {COLORS['accent_hover']};
+}}
+QTableWidget {{
+    background-color: {COLORS['input_bg']};
+    color: {COLORS['foreground']};
+    border: 1px solid {COLORS['border']};
+    gridline-color: {COLORS['border']};
+    alternate-background-color: {COLORS['bg_mid']};
+}}
+QTableWidget::item {{
+    padding: 4px 8px;
+}}
+QTableWidget::item:selected {{
+    background-color: {COLORS['select_bg']};
+    color: {COLORS['select_fg']};
+}}
+QHeaderView::section {{
+    background-color: {COLORS['bg_light']};
+    color: {COLORS['foreground']};
+    border: 1px solid {COLORS['border']};
+    padding: 4px 8px;
+    font-weight: bold;
 }}
 """

@@ -4,12 +4,14 @@ Batch-process a folder of images through a single ComfyUI i2i workflow, randomly
 
 ## Features
 
-- Load thousands of images from an input folder with thumbnail preview
+- Load thousands of images from an input folder with fast thumbnail preview (cached on first load)
 - Maintain a prompt list of any size in a single `.txt` file — each prompt can span multiple lines
 - Randomly assigns one prompt per image on every run
 - Supports **Local** and **RunPod** ComfyUI endpoints
 - Skip already-processed images (resume interrupted runs)
-- **Library tab** — browse, view full-size, and delete output images
+- **Processed filter** — hides already-done images by default; toggle **Show all** to see them with a green ✓ badge; remaining/done count shown after load
+- **Library tab** — browse, view full-size, and delete output images; thumbnail cache makes reloads instant
+- **Image viewer** — full screen toggle, slideshow mode (4 s auto-advance, spacebar to skip), keyboard ← → navigation, ESC to stop/exit
 - Auto-detects workflow nodes: `LoadImage`, `PrimitiveStringMultiline`, `CLIPTextEncode`, `KSampler`
 - Dark theme UI consistent with the Chain Automator
 
@@ -67,6 +69,16 @@ Your ComfyUI workflow must be exported in **API format** (enable Dev Mode in Com
 | `KSampler` / any node with `seed` or `noise_seed` | Randomized each image |
 
 ## Changelog
+
+### v1.2.1
+- Version number now displayed in window title bar
+- Log window clears automatically on each new Start
+
+### v1.2.0
+- **Thumbnail caching** — input folder and library both generate a `thumbnails/` cache on first load; subsequent loads are dramatically faster (especially for large folders)
+- **Processed filter** — already-processed images hidden by default; **Show all** checkbox reveals them with a green ✓ badge; status bar shows "Remaining: X | Done: Y"
+- **Image viewer** — full screen toggle, 4-second slideshow mode, keyboard ← → navigation, spacebar to skip during slideshow, ESC to stop/exit, end-of-slideshow slide
+- Cancel now refreshes the input grid immediately
 
 ### v1.1.0
 - Added **Library tab** — output image browser with sort, multi-select, full-size viewer (keyboard navigable), and delete

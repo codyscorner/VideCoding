@@ -2,8 +2,8 @@ from datetime import datetime
 from pathlib import Path
 
 from PIL import Image, ImageOps
-from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
-from PyQt6.QtGui import QPixmap, QIcon, QPainter, QImage
+from PyQt6.QtCore import Qt, QSize, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QPixmap, QIcon, QPainter, QImage, QColor, QFont
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QPushButton, QLineEdit,
     QProgressBar, QListWidget, QListWidgetItem, QGroupBox,
@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 )
 
 from config import ConfigManager
-from worker import BatchStyleWorker, load_prompts, IMAGE_EXTS
+from worker import BatchStyleWorker, load_prompts, IMAGE_EXTS, OUTPUT_EXTS
 from ui.styles import COLORS
 from ui.settings_dialog import SettingsDialog
 from ui.prompt_editor import PromptEditorDialog
@@ -54,12 +54,17 @@ _MODE_BTN_STYLE = f"""
 # ------------------------------------------------------------------ #
 
 class ImageLoaderThread(QThread):
-    image_ready      = pyqtSignal(QImage, str, str)
-    finished_loading = pyqtSignal(int)
+    image_ready       = pyqtSignal(QImage, str, str, bool)  # img, key, label, is_processed
+    thumbnails_needed = pyqtSignal(int)                      # count before generation starts
+    gen_progress      = pyqtSignal(int, int)                 # current, total (generation phase)
+    progress          = pyqtSignal(int, int)                 # loaded, total (loading phase)
+    finished_loading  = pyqtSignal(int)
 
-    def __init__(self, input_dir: Path):
+    def __init__(self, input_dir: Path, processed_stems: set | None = None, show_all: bool = False):
         super().__init__()
         self._input_dir = input_dir
+        self._processed_stems = processed_stems or set()
+        self._show_all = show_all
         self._cancelled = False
 
     def cancel(self):
@@ -67,7 +72,7 @@ class ImageLoaderThread(QThread):
 
     def run(self):
         try:
-            images = sorted(
+            all_images = sorted(
                 (p for p in self._input_dir.iterdir() if p.suffix.lower() in IMAGE_EXTS),
                 key=lambda p: p.name.lower(),
             )
@@ -75,17 +80,44 @@ class ImageLoaderThread(QThread):
             self.finished_loading.emit(0)
             return
 
+        thumb_dir = self._input_dir / "thumbnails"
+        thumb_dir.mkdir(exist_ok=True)
+
+        # Phase 1: generate missing thumbnails for all images in folder
+        missing = [
+            (p, thumb_dir / (p.stem + ".jpg"))
+            for p in all_images
+            if not (thumb_dir / (p.stem + ".jpg")).exists()
+        ]
+        if missing:
+            self.thumbnails_needed.emit(len(missing))
+            for i, (img_path, thumb_path) in enumerate(missing, 1):
+                if self._cancelled:
+                    return
+                self._generate_thumb(img_path, thumb_path)
+                self.gen_progress.emit(i, len(missing))
+
+        # Phase 2: load filtered set from cache
+        images = [
+            p for p in all_images
+            if self._show_all or p.stem not in self._processed_stems
+        ]
+        total  = len(images)
         loaded = 0
         for img_path in images:
             if self._cancelled:
                 return
-            try:
-                pil = Image.open(img_path)
-                pil = ImageOps.exif_transpose(pil).convert("RGBA")
-                data = pil.tobytes("raw", "RGBA")
-                img  = QImage(data, pil.width, pil.height, QImage.Format.Format_RGBA8888)
-            except Exception:
-                img = QImage(str(img_path))
+            is_processed = img_path.stem in self._processed_stems
+            thumb_path = thumb_dir / (img_path.stem + ".jpg")
+            img = QImage(str(thumb_path))
+            if img.isNull():
+                try:
+                    pil = Image.open(img_path)
+                    pil = ImageOps.exif_transpose(pil).convert("RGBA")
+                    data = pil.tobytes("raw", "RGBA")
+                    img = QImage(data, pil.width, pil.height, QImage.Format.Format_RGBA8888)
+                except Exception:
+                    img = QImage(str(img_path))
             if img.isNull():
                 continue
             img = img.scaled(
@@ -93,15 +125,27 @@ class ImageLoaderThread(QThread):
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
-            self.image_ready.emit(img, str(img_path), img_path.name)
+            self.image_ready.emit(img, str(img_path), img_path.name, is_processed)
             loaded += 1
+            self.progress.emit(loaded, total)
 
         self.finished_loading.emit(loaded)
 
+    def _generate_thumb(self, img_path: Path, thumb_path: Path):
+        try:
+            pil = Image.open(img_path)
+            pil = ImageOps.exif_transpose(pil).convert("RGB")
+            pil.thumbnail((THUMB_SIZE, THUMB_SIZE), Image.LANCZOS)
+            pil.save(thumb_path, "JPEG", quality=85)
+        except Exception:
+            pass
+
 
 class LibraryLoaderThread(QThread):
-    image_ready      = pyqtSignal(QImage, str, str)
-    finished_loading = pyqtSignal(int)
+    image_ready       = pyqtSignal(QImage, str, str)
+    progress          = pyqtSignal(int, int)  # current, total (generation phase)
+    thumbnails_needed = pyqtSignal(int)        # count before generation starts
+    finished_loading  = pyqtSignal(int)
 
     def __init__(self, output_dir: Path, sort_idx: int = 0):
         super().__init__()
@@ -123,17 +167,39 @@ class LibraryLoaderThread(QThread):
             self.finished_loading.emit(0)
             return
 
+        thumb_dir = self._output_dir / "thumbnails"
+        thumb_dir.mkdir(exist_ok=True)
+
+        # Phase 1: generate missing thumbnails
+        missing = [
+            (p, thumb_dir / (p.stem + ".jpg"))
+            for p in images
+            if not (thumb_dir / (p.stem + ".jpg")).exists()
+        ]
+        if missing:
+            self.thumbnails_needed.emit(len(missing))
+            for i, (img_path, thumb_path) in enumerate(missing, 1):
+                if self._cancelled:
+                    return
+                self._generate_thumb(img_path, thumb_path)
+                self.progress.emit(i, len(missing))
+
+        # Phase 2: load all from cache
         loaded = 0
         for img_path in images:
             if self._cancelled:
                 return
-            try:
-                pil = Image.open(img_path)
-                pil = ImageOps.exif_transpose(pil).convert("RGBA")
-                data = pil.tobytes("raw", "RGBA")
-                img  = QImage(data, pil.width, pil.height, QImage.Format.Format_RGBA8888)
-            except Exception:
-                img = QImage(str(img_path))
+            thumb_path = thumb_dir / (img_path.stem + ".jpg")
+            img = QImage(str(thumb_path))
+            if img.isNull():
+                # fallback: decode source image directly
+                try:
+                    pil = Image.open(img_path)
+                    pil = ImageOps.exif_transpose(pil).convert("RGBA")
+                    data = pil.tobytes("raw", "RGBA")
+                    img = QImage(data, pil.width, pil.height, QImage.Format.Format_RGBA8888)
+                except Exception:
+                    img = QImage(str(img_path))
             if img.isNull():
                 continue
             img = img.scaled(
@@ -146,17 +212,31 @@ class LibraryLoaderThread(QThread):
 
         self.finished_loading.emit(loaded)
 
+    def _generate_thumb(self, img_path: Path, thumb_path: Path):
+        try:
+            pil = Image.open(img_path)
+            pil = ImageOps.exif_transpose(pil).convert("RGB")
+            pil.thumbnail((THUMB_SIZE, THUMB_SIZE), Image.LANCZOS)
+            pil.save(thumb_path, "JPEG", quality=85)
+        except Exception:
+            pass
+
 
 # ------------------------------------------------------------------ #
 # Full-size image viewer dialog
 # ------------------------------------------------------------------ #
 
 class ImageViewerDialog(QDialog):
+    _SLIDE_MS = 4000
+
     def __init__(self, paths: list[str], index: int = 0, parent=None):
         super().__init__(parent)
         self._paths = paths
         self._index = index
         self._orig_pix: QPixmap | None = None
+        self._timer = QTimer(self)
+        self._timer.setInterval(self._SLIDE_MS)
+        self._timer.timeout.connect(self._slideshow_tick)
         self.setWindowTitle("Image Viewer")
         self.setMinimumSize(960, 720)
         self.resize(1100, 800)
@@ -179,22 +259,44 @@ class ImageViewerDialog(QDialog):
         self._img_lbl.setMinimumSize(200, 200)
         layout.addWidget(self._img_lbl, stretch=1)
 
+        _BTN_H = 42
+
         nav_row = QHBoxLayout()
-        self._prev_btn = QPushButton("← Prev")
-        self._prev_btn.setFixedWidth(110)
+        self._prev_btn = QPushButton("←  Prev")
+        self._prev_btn.setMinimumWidth(130)
+        self._prev_btn.setFixedHeight(_BTN_H)
         self._prev_btn.clicked.connect(self._prev)
-        self._next_btn = QPushButton("Next →")
-        self._next_btn.setFixedWidth(110)
+
+        self._next_btn = QPushButton("Next  →")
+        self._next_btn.setMinimumWidth(130)
+        self._next_btn.setFixedHeight(_BTN_H)
         self._next_btn.clicked.connect(self._next)
-        close_btn = QPushButton("Close")
+
+        self._play_btn = QPushButton("▶  Slideshow")
+        self._play_btn.setMinimumWidth(160)
+        self._play_btn.setFixedHeight(_BTN_H)
+        self._play_btn.setToolTip("Auto-advance every 4s full-screen  (Space = skip ahead,  Esc = stop)")
+        self._play_btn.clicked.connect(self._toggle_slideshow)
+
+        self._fs_btn = QPushButton("⛶  Full Screen")
+        self._fs_btn.setMinimumWidth(170)
+        self._fs_btn.setFixedHeight(_BTN_H)
+        self._fs_btn.clicked.connect(self._toggle_fullscreen)
+
+        close_btn = QPushButton("✕  Close")
         close_btn.setObjectName("cancel_btn")
-        close_btn.setFixedWidth(90)
+        close_btn.setMinimumWidth(110)
+        close_btn.setFixedHeight(_BTN_H)
         close_btn.clicked.connect(self.accept)
+
         nav_row.addWidget(self._prev_btn)
+        nav_row.addWidget(self._next_btn)
+        nav_row.addStretch()
+        nav_row.addWidget(self._play_btn)
+        nav_row.addSpacing(8)
+        nav_row.addWidget(self._fs_btn)
         nav_row.addStretch()
         nav_row.addWidget(close_btn)
-        nav_row.addStretch()
-        nav_row.addWidget(self._next_btn)
         layout.addLayout(nav_row)
 
     def _load_current(self):
@@ -231,15 +333,97 @@ class ImageViewerDialog(QDialog):
             self._index += 1
             self._load_current()
 
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Left:
-            self._prev()
-        elif event.key() == Qt.Key.Key_Right:
+    # ------------------------------------------------------------------ #
+    # Full screen
+    # ------------------------------------------------------------------ #
+
+    def _toggle_fullscreen(self):
+        if self.isFullScreen():
+            self.showNormal()
+            self._fs_btn.setText("⛶  Full Screen")
+        else:
+            self.showFullScreen()
+            self._fs_btn.setText("↙  Exit Full Screen")
+
+    # ------------------------------------------------------------------ #
+    # Slideshow
+    # ------------------------------------------------------------------ #
+
+    def _toggle_slideshow(self):
+        if self._timer.isActive():
+            self._stop_slideshow()
+        else:
+            self._start_slideshow()
+
+    def _start_slideshow(self):
+        if not self.isFullScreen():
+            self.showFullScreen()
+            self._fs_btn.setText("↙  Exit Full Screen")
+        self._play_btn.setText("⏹  Stop")
+        self._timer.start()
+
+    def _stop_slideshow(self):
+        self._timer.stop()
+        self._play_btn.setText("▶  Slideshow")
+
+    def _slideshow_tick(self):
+        if self._index < len(self._paths) - 1:
             self._next()
-        elif event.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Return):
+        else:
+            self._timer.stop()
+            self._show_end_slide()
+            QTimer.singleShot(3000, self._stop_slideshow)
+
+    def _show_end_slide(self):
+        self._title_lbl.setText("End of Slideshow")
+        w = max(self._img_lbl.width(), 400)
+        h = max(self._img_lbl.height(), 300)
+        pix = QPixmap(w, h)
+        pix.fill(Qt.GlobalColor.black)
+        painter = QPainter(pix)
+        painter.setPen(QColor(200, 200, 200))
+        f = QFont("Arial", 36, QFont.Weight.Bold)
+        painter.setFont(f)
+        painter.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "✓   End of Slideshow")
+        painter.end()
+        self._img_lbl.setPixmap(pix)
+
+    # ------------------------------------------------------------------ #
+    # Keyboard
+    # ------------------------------------------------------------------ #
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key == Qt.Key.Key_Left:
+            self._prev()
+        elif key == Qt.Key.Key_Right:
+            self._next()
+        elif key == Qt.Key.Key_Space:
+            if self._timer.isActive():
+                # Skip ahead immediately and reset the 4s countdown
+                self._timer.stop()
+                if self._index < len(self._paths) - 1:
+                    self._next()
+                    self._timer.start()
+                else:
+                    self._show_end_slide()
+                    QTimer.singleShot(3000, self._stop_slideshow)
+        elif key == Qt.Key.Key_Escape:
+            if self._timer.isActive():
+                self._stop_slideshow()
+            elif self.isFullScreen():
+                self.showNormal()
+                self._fs_btn.setText("⛶  Full Screen")
+            else:
+                self.accept()
+        elif key == Qt.Key.Key_Return:
             self.accept()
         else:
             super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        self._timer.stop()
+        super().closeEvent(event)
 
 
 # ------------------------------------------------------------------ #
@@ -265,13 +449,26 @@ class ThumbnailGrid(QListWidget):
             f"background-color: rgba(94,75,219,0.25); }}"
         )
 
-    def add_item(self, img: QImage, key: str, label: str):
+    def add_item(self, img: QImage, key: str, label: str, is_processed: bool = False):
         pix    = QPixmap.fromImage(img)
         canvas = QPixmap(THUMB_SIZE, THUMB_SIZE)
         canvas.fill(Qt.GlobalColor.black)
         painter = QPainter(canvas)
         painter.drawPixmap((THUMB_SIZE - pix.width()) // 2,
                            (THUMB_SIZE - pix.height()) // 2, pix)
+        if is_processed:
+            badge = 26
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setBrush(QColor(30, 190, 60, 230))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(THUMB_SIZE - badge - 3, 3, badge, badge)
+            painter.setPen(QColor(255, 255, 255))
+            f = QFont("Arial", 13, QFont.Weight.Bold)
+            painter.setFont(f)
+            painter.drawText(
+                THUMB_SIZE - badge - 3, 3, badge, badge,
+                Qt.AlignmentFlag.AlignCenter, "✓"
+            )
         painter.end()
         item = QListWidgetItem(QIcon(canvas), label)
         item.setData(Qt.ItemDataRole.UserRole, key)
@@ -291,15 +488,17 @@ class ThumbnailGrid(QListWidget):
 # ------------------------------------------------------------------ #
 
 class MainWindow(QMainWindow):
-    def __init__(self, config: ConfigManager, base_dir: Path):
+    def __init__(self, config: ConfigManager, base_dir: Path, version: str = ""):
         super().__init__()
         self._config   = config
         self._base_dir = base_dir
+        self._version  = version
         self._prompts: list[str] = []
         self._worker: BatchStyleWorker | None = None
         self._loader: ImageLoaderThread | None = None
         self._lib_loader: LibraryLoaderThread | None = None
         self._last_lib_dir: str = ""
+        self._processed_count: int = 0
 
         self._build_ui()
         self._load_initial_state()
@@ -309,7 +508,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _build_ui(self):
-        self.setWindowTitle("ComfyUI Style Randomizer")
+        title = f"ComfyUI Style Randomizer v{self._version}" if self._version else "ComfyUI Style Randomizer"
+        self.setWindowTitle(title)
         self.setMinimumSize(1100, 700)
 
         central = QWidget()
@@ -386,11 +586,18 @@ class MainWindow(QMainWindow):
         input_browse.clicked.connect(self._browse_input)
         self._img_count_lbl = QLabel("Images: 0")
         self._img_count_lbl.setObjectName("subtitle")
+        self._show_all_chk = QCheckBox("Show all")
+        self._show_all_chk.setToolTip("Include already-processed images (shown with ✓ badge)")
+        self._show_all_chk.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
+        self._show_all_chk.setChecked(False)
+        self._show_all_chk.stateChanged.connect(lambda _: self._reload_images())
         input_row.addWidget(input_lbl)
         input_row.addWidget(self._input_edit, stretch=1)
         input_row.addWidget(input_browse)
         input_row.addSpacing(10)
         input_row.addWidget(self._img_count_lbl)
+        input_row.addSpacing(10)
+        input_row.addWidget(self._show_all_chk)
         layout.addLayout(input_row)
 
         # Splitter: thumbnails | prompts+log
@@ -521,6 +728,14 @@ class MainWindow(QMainWindow):
         lg_v.addWidget(self._lib_grid)
         layout.addWidget(lib_group, stretch=1)
 
+        # Progress bar (thumbnail generation)
+        self._lib_progress = QProgressBar()
+        self._lib_progress.setFixedHeight(6)
+        self._lib_progress.setTextVisible(False)
+        self._lib_progress.setValue(0)
+        self._lib_progress.hide()
+        layout.addWidget(self._lib_progress)
+
         # Status
         self._lib_status_lbl = QLabel("Switch to the Randomizer tab to set an output folder")
         self._lib_status_lbl.setObjectName("subtitle")
@@ -564,6 +779,12 @@ class MainWindow(QMainWindow):
         self._update_mode_label()
         self._update_status()
 
+    def _existing_output_stems(self) -> set:
+        output_dir = Path(self._config.get("output_dir", ""))
+        if not output_dir.is_dir():
+            return set()
+        return {p.stem for p in output_dir.iterdir() if p.suffix.lower() in OUTPUT_EXTS}
+
     def _reload_images(self):
         input_dir = Path(self._config.get("input_dir", ""))
         if not input_dir.is_dir():
@@ -573,16 +794,39 @@ class MainWindow(QMainWindow):
             self._loader.wait()
         self._thumb_grid.clear()
         self._img_count_lbl.setText("Loading…")
-        self._loader = ImageLoaderThread(input_dir)
-        self._loader.image_ready.connect(
-            lambda img, key, lbl: self._thumb_grid.add_item(img, key, lbl)
-        )
+        show_all = self._show_all_chk.isChecked()
+        processed = self._existing_output_stems()
+        self._processed_count = len(processed)
+        self._loader = ImageLoaderThread(input_dir, processed_stems=processed, show_all=show_all)
+        self._loader.image_ready.connect(self._thumb_grid.add_item)
+        self._loader.thumbnails_needed.connect(self._on_img_thumbs_needed)
+        self._loader.gen_progress.connect(self._on_img_gen_progress)
+        self._loader.progress.connect(self._on_img_load_progress)
         self._loader.finished_loading.connect(self._on_images_loaded)
         self._loader.start()
 
+    def _on_img_thumbs_needed(self, count: int):
+        self._progress.setMaximum(count)
+        self._progress.setValue(0)
+        self._img_count_lbl.setText(f"Generating thumbnails… 0 / {count}")
+
+    def _on_img_gen_progress(self, current: int, total: int):
+        self._progress.setValue(current)
+        self._img_count_lbl.setText(f"Generating thumbnails… {current} / {total}")
+
+    def _on_img_load_progress(self, current: int, total: int):
+        self._progress.setMaximum(total)
+        self._progress.setValue(current)
+        self._img_count_lbl.setText(f"Loading… {current} / {total}")
+
     def _on_images_loaded(self, count: int):
-        self._img_count_lbl.setText(f"Images: {count}")
+        self._progress.setValue(0)
         self._progress.setMaximum(max(count, 1))
+        done = self._processed_count
+        if done > 0:
+            self._img_count_lbl.setText(f"Remaining: {count}  |  Done: {done}")
+        else:
+            self._img_count_lbl.setText(f"Remaining: {count}")
 
     def _reload_prompts(self):
         prompts_file = Path(self._config.get("prompts_file", ""))
@@ -627,15 +871,31 @@ class MainWindow(QMainWindow):
             return
 
         self._lib_status_lbl.setText("Loading…")
+        self._lib_progress.hide()
+        self._lib_progress.setValue(0)
         sort_idx = self._lib_sort_combo.currentIndex()
         self._lib_loader = LibraryLoaderThread(output_dir, sort_idx)
         self._lib_loader.image_ready.connect(
             lambda img, key, lbl: self._lib_grid.add_item(img, key, lbl)
         )
+        self._lib_loader.thumbnails_needed.connect(self._on_lib_thumbs_needed)
+        self._lib_loader.progress.connect(self._on_lib_gen_progress)
         self._lib_loader.finished_loading.connect(self._on_lib_loaded)
         self._lib_loader.start()
 
+    def _on_lib_thumbs_needed(self, count: int):
+        self._lib_progress.setMaximum(count)
+        self._lib_progress.setValue(0)
+        self._lib_progress.show()
+        self._lib_status_lbl.setText(f"Generating thumbnails… 0 / {count}")
+
+    def _on_lib_gen_progress(self, current: int, total: int):
+        self._lib_progress.setValue(current)
+        self._lib_status_lbl.setText(f"Generating thumbnails… {current} / {total}")
+
     def _on_lib_loaded(self, count: int):
+        self._lib_progress.hide()
+        self._lib_progress.setValue(0)
         if count == 0:
             self._lib_status_lbl.setText("No images in output folder")
         else:
@@ -697,7 +957,11 @@ class MainWindow(QMainWindow):
         errors = []
         for key in keys:
             try:
-                Path(key).unlink()
+                p = Path(key)
+                p.unlink()
+                thumb = p.parent / "thumbnails" / (p.stem + ".jpg")
+                if thumb.exists():
+                    thumb.unlink()
             except OSError as e:
                 errors.append(f"{Path(key).name}: {e}")
         if errors:
@@ -731,12 +995,14 @@ class MainWindow(QMainWindow):
             self._reload_prompts()
             self._update_mode_label()
             self._update_status()
+            self._reload_images()  # output_dir may have changed; refresh processed stems
 
     # ------------------------------------------------------------------ #
     # Worker control
     # ------------------------------------------------------------------ #
 
     def _start(self):
+        self._log_view.clear()
         images = self._thumb_grid.all_paths()
         if not images:
             self._append_log("No images found. Select an input folder.")
@@ -772,11 +1038,13 @@ class MainWindow(QMainWindow):
         if self._worker:
             self._worker.cancel()
         self._cancel_btn.setEnabled(False)
+        # _on_done will fire from the worker after cancellation and refresh the grid
 
     def _on_done(self):
         self._start_btn.setEnabled(True)
         self._cancel_btn.setEnabled(False)
         self._last_lib_dir = ""  # force library to reload next time it's opened
+        self._reload_images()
 
     def _on_error(self, msg: str):
         self._append_log(f"ERROR: {msg}")

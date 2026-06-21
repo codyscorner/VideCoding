@@ -11,15 +11,16 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
     QCheckBox, QComboBox, QProgressBar, QListWidget,
     QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QScrollArea, QFrame, QFileDialog, QMessageBox,
+    QScrollArea, QFrame, QFileDialog, QMessageBox, QDialog,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
 
 from config import ConfigManager
-from file_operations import FileCopier
+from file_operations import FileCopier, FileScanner, FileValidator
 from folder_organization import FolderStructure, FolderOrganizer
 from ui.styles import STYLESHEET, COLORS
+from ui.preview_dialog import PreviewDialog
 
 
 class MainWindow(QMainWindow):
@@ -138,13 +139,19 @@ class MainWindow(QMainWindow):
         self.recursive_check = QCheckBox("Search subfolders recursively (include all files from nested folders)")
         self.preserve_check = QCheckBox("Preserve original folder structure")
         self.number_check = QCheckBox("Number duplicate files (e.g., file_001.jpg, file_002.jpg)")
+        self.incremental_check = QCheckBox("Incremental backup — skip files that already exist unchanged at destination (size + date match)")
+        self.verify_check = QCheckBox("Verify copied files with checksum (MD5) — slower but confirms file integrity")
         self.recursive_check.setChecked(self.config.get("recursive_search", True))
         self.preserve_check.setChecked(self.config.get("preserve_structure", True))
         self.number_check.setChecked(self.config.get("number_duplicates", True))
+        self.incremental_check.setChecked(self.config.get("incremental", False))
+        self.verify_check.setChecked(self.config.get("verify_checksum", False))
         self.preserve_check.stateChanged.connect(self._on_preserve_changed)
         layout.addWidget(self.recursive_check)
         layout.addWidget(self.preserve_check)
         layout.addWidget(self.number_check)
+        layout.addWidget(self.incremental_check)
+        layout.addWidget(self.verify_check)
 
         # File filters
         filter_section = QLabel("File Filters")
@@ -215,11 +222,15 @@ class MainWindow(QMainWindow):
         btn_row = QHBoxLayout()
         self.copy_btn = QPushButton("Copy Files")
         self.copy_btn.clicked.connect(self._start_copy)
+        self.preview_btn = QPushButton("Preview")
+        self.preview_btn.setObjectName("preview_btn")
+        self.preview_btn.clicked.connect(self._start_preview)
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setObjectName("cancel_btn")
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self._cancel_copy)
         btn_row.addWidget(self.copy_btn)
+        btn_row.addWidget(self.preview_btn)
         btn_row.addWidget(self.cancel_btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)
@@ -332,23 +343,24 @@ class MainWindow(QMainWindow):
         self.status_list.addItem(message)
         self.status_list.scrollToBottom()
 
-    def _start_copy(self):
+    def _build_copy_options(self) -> dict | None:
+        """Validate inputs and build options dict. Returns None if validation fails."""
         source = self.source_edit.text().strip()
         dest = self.dest_edit.text().strip()
         extension = self.ext_edit.text().strip()
 
         if not source:
             QMessageBox.critical(self, "Error", "Please select a source folder")
-            return
+            return None
         if not dest:
             QMessageBox.critical(self, "Error", "Please select a destination folder")
-            return
+            return None
         if not extension:
             QMessageBox.critical(self, "Error", "Please enter a file extension")
-            return
+            return None
         if source == dest:
             QMessageBox.critical(self, "Error", "Source and destination folders cannot be the same")
-            return
+            return None
 
         min_size_bytes = max_size_bytes = max_days_old = None
 
@@ -364,7 +376,7 @@ class MainWindow(QMainWindow):
                     max_size_bytes = float(max_val) * multiplier
             except ValueError:
                 QMessageBox.critical(self, "Error", "Invalid size filter values")
-                return
+                return None
 
         if self.date_check.isChecked():
             try:
@@ -373,11 +385,26 @@ class MainWindow(QMainWindow):
                     max_days_old = int(days_val)
             except ValueError:
                 QMessageBox.critical(self, "Error", "Invalid date filter value")
-                return
+                return None
 
+        return {
+            'source_folder': source, 'dest_folder': dest, 'extension': extension,
+            'preserve_structure': self.preserve_check.isChecked(),
+            'number_duplicates': self.number_check.isChecked(),
+            'recursive_search': self.recursive_check.isChecked(),
+            'folder_structure': self.folder_combo.currentText(),
+            'min_size_bytes': min_size_bytes, 'max_size_bytes': max_size_bytes,
+            'max_days_old': max_days_old,
+            'verify_checksum': self.verify_check.isChecked(),
+            'incremental': self.incremental_check.isChecked(),
+        }
+
+    def _execute_copy(self, options: dict):
+        """Start the copy thread with the given options dict."""
         self._is_copying = True
         self._cancel_requested = False
         self.copy_btn.setEnabled(False)
+        self.preview_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.overall_progress.setValue(0)
         self.overall_count_label.setText("")
@@ -387,21 +414,81 @@ class MainWindow(QMainWindow):
         self.skipped_label.setText("0")
         self.errors_label.setText("0")
 
-        copy_options = {
-            'source_folder': source, 'dest_folder': dest, 'extension': extension,
-            'preserve_structure': self.preserve_check.isChecked(),
-            'number_duplicates': self.number_check.isChecked(),
-            'recursive_search': self.recursive_check.isChecked(),
-            'folder_structure': self.folder_combo.currentText(),
-            'min_size_bytes': min_size_bytes, 'max_size_bytes': max_size_bytes,
-            'max_days_old': max_days_old,
-        }
-
         self._copy_thread = threading.Thread(
-            target=self._copy_worker, args=(copy_options,), daemon=True
+            target=self._copy_worker, args=(options,), daemon=True
         )
         self._copy_thread.start()
         self._poll_timer.start()
+
+    def _start_copy(self):
+        self.status_list.clear()
+        options = self._build_copy_options()
+        if options is not None:
+            self._execute_copy(options)
+
+    def _start_preview(self):
+        options = self._build_copy_options()
+        if options is None:
+            return
+        self._is_copying = True
+        self._cancel_requested = False
+        self.copy_btn.setEnabled(False)
+        self.preview_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self._add_status("Scanning files for preview...")
+        threading.Thread(target=self._preview_worker, args=(options,), daemon=True).start()
+        self._poll_timer.start()
+
+    def _preview_worker(self, options: dict):
+        try:
+            patterns = FileValidator.validate_file_mask(options['extension'])
+            files = FileScanner.get_files_with_patterns(
+                options['source_folder'], patterns, options['recursive_search'],
+                min_size_bytes=options.get('min_size_bytes'),
+                max_size_bytes=options.get('max_size_bytes'),
+                max_days_old=options.get('max_days_old'),
+            )
+            if options.get('incremental') and files:
+                files = self._filter_incremental(files, options)
+            self._queue_msg('preview_ready', {'files': files, 'options': options})
+        except Exception as e:
+            self._queue_msg('error', {'type': 'validation', 'message': str(e)})
+
+    def _filter_incremental(self, files: list, options: dict) -> list:
+        """Return only files that would actually be copied (not skipped by incremental check)."""
+        dest_folder = options['dest_folder']
+        source_folder = options['source_folder']
+        preserve = options['preserve_structure']
+        organizer = FolderOrganizer()
+        try:
+            folder_structure = FolderStructure(options['folder_structure'])
+        except ValueError:
+            folder_structure = FolderStructure.FLAT
+
+        result = []
+        for full_path, rel_path, size in files:
+            filename = os.path.basename(full_path)
+            if preserve:
+                rel_dir = os.path.dirname(rel_path)
+                final_dest_folder = os.path.join(dest_folder, rel_dir) if rel_dir else dest_folder
+            else:
+                subfolder = organizer.get_destination_subfolder(
+                    full_path, folder_structure, source_folder, use_file_date=True
+                )
+                final_dest_folder = os.path.join(dest_folder, subfolder) if subfolder else dest_folder
+
+            dest_path = os.path.join(final_dest_folder, filename)
+            if os.path.exists(dest_path):
+                try:
+                    src_stat = os.stat(full_path)
+                    dst_stat = os.stat(dest_path)
+                    if (src_stat.st_size == dst_stat.st_size and
+                            abs(src_stat.st_mtime - dst_stat.st_mtime) <= 2.0):
+                        continue  # would be skipped — exclude from preview
+                except OSError:
+                    pass
+            result.append((full_path, rel_path, size))
+        return result
 
     def _copy_worker(self, options: dict):
         try:
@@ -410,11 +497,15 @@ class MainWindow(QMainWindow):
             start_str = _dt.datetime.fromtimestamp(start_time).strftime("%H:%M:%S.") + f"{int(start_time % 1 * 100):02d}"
             self._queue_msg('status', f"Start: {start_str}")
             folder_structure = FolderStructure(options['folder_structure'])
+            _SHOW_PREFIXES = (
+                "Error", "Copied (large):", "Path too long", "Found ", "Scanning",
+                "Reading", "Gathering", "Checking", "Starting", "Sorting",
+                "Duplicate found:", "Operation cancelled", "Start:",
+                "Retry ", "CHECKSUM",
+            )
+
             def _status_cb(msg):
-                if msg.startswith("Error"):
-                    self._queue_msg('status', msg)
-                    return
-                elif msg.startswith("Copied (large):") or msg.startswith("Path too long") or msg.startswith("Found ") or msg.startswith("Scanning") or msg.startswith("Reading") or msg.startswith("Gathering") or msg.startswith("Checking") or msg.startswith("Starting") or msg.startswith("Sorting") or msg.startswith("Duplicate found:") or msg.startswith("Operation cancelled") or msg.startswith("Start:"):
+                if any(msg.startswith(p) for p in _SHOW_PREFIXES):
                     self._queue_msg('status', msg)
 
             copier = FileCopier(
@@ -428,13 +519,16 @@ class MainWindow(QMainWindow):
                 counters_callback=lambda c, s, e: self._queue_msg(
                     'counters', {'copied': c, 'skipped': s, 'errors': e}
                 ),
+                verify_checksum=options.get('verify_checksum', False),
+                incremental=options.get('incremental', False),
             )
             results = copier.copy_files(
                 options['source_folder'], options['dest_folder'], options['extension'],
                 options['preserve_structure'], options['recursive_search'],
                 min_size_bytes=options['min_size_bytes'],
                 max_size_bytes=options['max_size_bytes'],
-                max_days_old=options['max_days_old']
+                max_days_old=options['max_days_old'],
+                pre_scanned_files=options.get('pre_scanned_files'),
             )
 
             if self._cancel_requested:
@@ -483,6 +577,10 @@ class MainWindow(QMainWindow):
                         self.copied_label.setText(str(data['copied']))
                         self.skipped_label.setText(str(data['skipped']))
                         self.errors_label.setText(str(data['errors']))
+                    elif msg_type == 'preview_ready':
+                        self._poll_timer.stop()
+                        self._on_preview_ready(data)
+                        return
                     elif msg_type == 'complete':
                         self._poll_timer.stop()
                         self._on_copy_complete(data)
@@ -500,6 +598,24 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Error in progress queue polling: {e}")
 
+    def _on_preview_ready(self, data: dict):
+        self._is_copying = False
+        self.copy_btn.setEnabled(True)
+        self.preview_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+
+        files = data['files']
+        options = data['options']
+
+        if not files:
+            QMessageBox.information(self, "Preview", "No files found matching the current filters.")
+            return
+
+        dialog = PreviewDialog(files, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            options['pre_scanned_files'] = files  # skip re-scan — list already filtered
+            self._execute_copy(options)
+
     @staticmethod
     def _format_elapsed(seconds: float) -> str:
         ms = int((seconds % 1) * 100)
@@ -512,6 +628,7 @@ class MainWindow(QMainWindow):
     def _on_copy_complete(self, data: dict):
         self._is_copying = False
         self.copy_btn.setEnabled(True)
+        self.preview_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         opts = data['options']
         copied, skipped, errors = data['copied_count'], data['skipped_count'], data['error_count']
@@ -531,6 +648,8 @@ class MainWindow(QMainWindow):
         self.config.set("size_unit", self.unit_combo.currentText())
         self.config.set("enable_date_filter", self.date_check.isChecked())
         self.config.set("days_old", self.days_edit.text())
+        self.config.set("incremental", self.incremental_check.isChecked())
+        self.config.set("verify_checksum", self.verify_check.isChecked())
         self.config.save()
 
         self.copied_label.setText(str(copied))
@@ -554,6 +673,7 @@ class MainWindow(QMainWindow):
     def _on_copy_cancelled(self):
         self._is_copying = False
         self.copy_btn.setEnabled(True)
+        self.preview_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.progress_label.setText("Cancelled")
         self._add_status("Operation cancelled by user")
@@ -562,6 +682,7 @@ class MainWindow(QMainWindow):
     def _on_copy_error(self, data: dict):
         self._is_copying = False
         self.copy_btn.setEnabled(True)
+        self.preview_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.progress_label.setText("Error")
         msg = data['message']
