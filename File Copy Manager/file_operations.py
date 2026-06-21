@@ -4,9 +4,10 @@ import os
 import shutil
 import time
 import fnmatch
+import hashlib
 from pathlib import Path
 from typing import List, Optional, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from folder_organization import FolderOrganizer, FolderStructure
 
@@ -20,6 +21,7 @@ class FileOperationResult:
     error_message: Optional[str] = None
     file_size: int = 0
     copy_time: float = 0.0
+    checksum_verified: Optional[bool] = None
 
 
 class FileValidator:
@@ -164,17 +166,9 @@ class FileCopier:
         progress_callback: Optional[Callable[[int, int, str, int], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
         counters_callback: Optional[Callable[[int, int, int], None]] = None,
+        verify_checksum: bool = False,
+        incremental: bool = False,
     ):
-        """
-        Initialize the file copier
-
-        Args:
-            status_callback: Optional callback function for status updates
-            folder_structure: Folder organization structure
-            number_duplicates: If True, number duplicate files; if False, skip duplicates
-            progress_callback: Optional callback for progress updates (current, total, filename, file_progress)
-            cancel_check: Optional callback that returns True if operation should be cancelled
-        """
         self.status_callback = status_callback
         self.progress_callback = progress_callback
         self.cancel_check = cancel_check
@@ -184,11 +178,24 @@ class FileCopier:
         self.folder_structure = folder_structure
         self.number_duplicates = number_duplicates
         self.organizer = FolderOrganizer()
+        self.verify_checksum = verify_checksum
+        self.incremental = incremental
 
     def _log_status(self, message: str) -> None:
         """Log status message if callback is set"""
         if self.status_callback:
             self.status_callback(message)
+
+    def _compute_checksum(self, path: str) -> str:
+        """Compute MD5 checksum of a file in 4 MB chunks."""
+        h = hashlib.md5()
+        with open(path, 'rb') as f:
+            while True:
+                chunk = f.read(4 * 1024 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
 
     def _truncate_path(self, folder: str, filename: str, max_len: int = 245) -> str:
         """
@@ -235,7 +242,8 @@ class FileCopier:
         recursive: bool = True,
         min_size_bytes: Optional[float] = None,
         max_size_bytes: Optional[float] = None,
-        max_days_old: Optional[int] = None
+        max_days_old: Optional[int] = None,
+        pre_scanned_files: Optional[List[tuple]] = None,
     ) -> List[FileOperationResult]:
         """
         Copy files from source to destination
@@ -268,23 +276,32 @@ class FileCopier:
         # Determine if we should use preserve mode
         structure = FolderStructure.PRESERVE if preserve_structure else self.folder_structure
 
-        # Scan, filter, and sort in one pass (smallest first)
-        search_mode = "recursively through all subfolders" if recursive else "in root folder only"
-        patterns_str = ", ".join(patterns)
-        self._log_status(f"Reading directories {search_mode}...")
-        self._log_status(f"Gathering file list — matching: {patterns_str}")
-        filtered_files = self.scanner.get_files_with_patterns(
-            source_folder, patterns, recursive,
-            min_size_bytes=min_size_bytes,
-            max_size_bytes=max_size_bytes,
-            max_days_old=max_days_old,
-        )
+        if pre_scanned_files is not None:
+            # File list already determined by preview — skip re-scan
+            filtered_files = pre_scanned_files
+            self._log_status(f"Using {len(filtered_files)} file(s) from preview scan...")
+            if not filtered_files:
+                self._log_status("No files to copy (all up-to-date per preview scan)")
+                return []
+        else:
+            # Scan, filter, and sort in one pass (smallest first)
+            search_mode = "recursively through all subfolders" if recursive else "in root folder only"
+            patterns_str = ", ".join(patterns)
+            self._log_status(f"Reading directories {search_mode}...")
+            self._log_status(f"Gathering file list — matching: {patterns_str}")
+            filtered_files = self.scanner.get_files_with_patterns(
+                source_folder, patterns, recursive,
+                min_size_bytes=min_size_bytes,
+                max_size_bytes=max_size_bytes,
+                max_days_old=max_days_old,
+            )
 
-        if not filtered_files:
-            self._log_status(f"No files found matching '{patterns_str}'")
-            return []
+            if not filtered_files:
+                self._log_status(f"No files found matching '{patterns_str}'")
+                return []
 
-        self._log_status(f"Found {len(filtered_files)} files — sorting smallest to largest...")
+            self._log_status(f"Found {len(filtered_files)} files — sorting smallest to largest...")
+
         self._log_status(f"Starting copy operations...")
 
         # Process each file (already sorted smallest-first)
@@ -388,6 +405,8 @@ class FileCopier:
         LARGE_FILE_THRESHOLD = 120 * 1024 * 1024  # 120 MB — use chunked I/O above this
         MIN_FILE_PROGRESS_SIZE = 50 * 1024 * 1024  # 50 MB — skip per-file bar below this
         CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB
+        MAX_RETRIES = 3
+        RETRY_DELAY = 1.5
 
         try:
             # Determine final filename (handle duplicates)
@@ -395,6 +414,22 @@ class FileCopier:
             dest_path = os.path.join(final_dest_folder, final_filename)
 
             if os.path.exists(dest_path):
+                # Incremental mode: skip if dest file is identical (size + mtime)
+                if self.incremental:
+                    try:
+                        src_stat = os.stat(source_path)
+                        dst_stat = os.stat(dest_path)
+                        if (src_stat.st_size == dst_stat.st_size and
+                                abs(src_stat.st_mtime - dst_stat.st_mtime) <= 2.0):
+                            return FileOperationResult(
+                                success=True,
+                                source_file=filename,
+                                destination_file=None,
+                                error_message="Skipped (unchanged)"
+                            )
+                    except OSError:
+                        pass
+
                 if self.number_duplicates:
                     # Add number to filename
                     base_name, ext = os.path.splitext(filename)
@@ -413,44 +448,73 @@ class FileCopier:
                         destination_file=None,
                         error_message="Skipped (duplicate)"
                     )
+
             # Get file size
             file_size = os.path.getsize(source_path)
 
-            # Copy the file and measure time
+            # Copy with retry loop (handles transient network errors)
             start_time = time.time()
-            if file_size >= LARGE_FILE_THRESHOLD and self.progress_callback and total > 0:
-                copied = 0
-                with open(source_path, 'rb') as src, open(dest_path, 'wb') as dst:
-                    while True:
-                        if self.cancel_check and self.cancel_check():
-                            break
-                        chunk = src.read(CHUNK_SIZE)
-                        if not chunk:
-                            break
-                        dst.write(chunk)
-                        copied += len(chunk)
-                        pct = int(copied / file_size * 100)
-                        self.progress_callback(idx, total, os.path.basename(source_path), pct)
-                shutil.copystat(source_path, dest_path)
-            else:
-                shutil.copy2(source_path, dest_path)
+            for attempt in range(MAX_RETRIES):
+                try:
+                    if file_size >= LARGE_FILE_THRESHOLD and self.progress_callback and total > 0:
+                        copied = 0
+                        with open(source_path, 'rb') as src, open(dest_path, 'wb') as dst:
+                            while True:
+                                if self.cancel_check and self.cancel_check():
+                                    break
+                                chunk = src.read(CHUNK_SIZE)
+                                if not chunk:
+                                    break
+                                dst.write(chunk)
+                                copied += len(chunk)
+                                pct = int(copied / file_size * 100)
+                                self.progress_callback(idx, total, os.path.basename(source_path), pct)
+                        shutil.copystat(source_path, dest_path)
+                    else:
+                        shutil.copy2(source_path, dest_path)
+                    break  # copy succeeded
+                except OSError as copy_err:
+                    if self.cancel_check and self.cancel_check():
+                        break
+                    if attempt < MAX_RETRIES - 1:
+                        self._log_status(f"Retry {attempt + 1}/{MAX_RETRIES - 1}: {filename} — {copy_err}")
+                        time.sleep(RETRY_DELAY)
+                    else:
+                        raise
             copy_time = time.time() - start_time
 
-            # Format file size
-            size_str = self._format_file_size(file_size)
-            time_str = f"{copy_time:.2f}s"
+            # Checksum verification
+            checksum_ok: Optional[bool] = None
+            if self.verify_checksum and not (self.cancel_check and self.cancel_check()):
+                src_hash = self._compute_checksum(source_path)
+                dst_hash = self._compute_checksum(dest_path)
+                checksum_ok = (src_hash == dst_hash)
+                if not checksum_ok:
+                    self._log_status(f"CHECKSUM FAILED: {filename}")
+                    return FileOperationResult(
+                        success=False,
+                        source_file=filename,
+                        destination_file=final_filename,
+                        error_message="Checksum mismatch — file may be corrupted",
+                        file_size=file_size,
+                        copy_time=copy_time,
+                        checksum_verified=False
+                    )
 
             # Only log large files individually; small files are counted silently
             if file_size >= LARGE_FILE_THRESHOLD:
                 size_str = self._format_file_size(file_size)
-                self._log_status(f"Copied (large): {filename} ({size_str}, {time_str})")
+                time_str = f"{copy_time:.2f}s"
+                verified_tag = " ✓" if checksum_ok else ""
+                self._log_status(f"Copied (large): {filename} ({size_str}, {time_str}){verified_tag}")
 
             return FileOperationResult(
                 success=True,
                 source_file=filename,
                 destination_file=final_filename,
                 file_size=file_size,
-                copy_time=copy_time
+                copy_time=copy_time,
+                checksum_verified=checksum_ok
             )
         except Exception as e:
             error_msg = f"Error copying {filename}: {e}"
