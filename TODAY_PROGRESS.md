@@ -12,8 +12,9 @@ When starting a new context window, read this file first. It tells you exactly w
 ## Overall Priority List (from upgrade review session)
 
 ### 🔴 High Priority
-- [x] ~~Add PROJECT_SUMMARY.md to all projects~~ ✅ committed & pushed
-- [x] ~~Delete `WinFolderMover/` duplicate~~ ✅ commit `ed5bc3d` on master
+- [x] ~~Add PROJECT_SUMMARY.md to all projects~~ ✅ commit `adc2beb`
+- [x] ~~Delete `WinFolderMover/` duplicate~~ ✅ commit `ed5bc3d`
+- [x] ~~Rewrite main README.md as centralized project index~~ ✅ commit `304842d`
 - [ ] **Build Desktop Video Browser** — full plan in `Desktop Video Browser/PROJECT_SUMMARY.md`, no code yet
 - [ ] **Implement ScreenSnap capture stubs** — WPF/.NET 10 project, capture logic is all stubs
 - [ ] **Build ImageConverter** — batch image format converter, plan in `ImageConverter/PROJECT_SUMMARY.md`
