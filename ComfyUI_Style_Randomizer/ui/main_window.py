@@ -666,7 +666,7 @@ class MainWindow(QMainWindow):
 
         self._start_btn = QPushButton("Start")
         self._start_btn.setFixedWidth(100)
-        self._start_btn.clicked.connect(self._start)
+        self._start_btn.clicked.connect(lambda: self._start())
         bottom_row.addWidget(self._start_btn)
 
         self._cancel_btn = QPushButton("Cancel")
