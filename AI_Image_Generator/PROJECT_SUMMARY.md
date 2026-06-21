@@ -1,6 +1,6 @@
 # AI Image Studio
 
-**Version:** 3.0.1 | **Status:** Active | **Language:** Python
+**Version:** 3.0.2 | **Status:** Active | **Language:** Python
 
 A three-tab PyQt6 desktop application for AI image generation via ComfyUI (local or RunPod serverless).
 
@@ -60,6 +60,11 @@ pyinstaller --onefile --windowed ai_image_generator.py
 Output: `P:\Apps\VibeCoded\AI Image Studio\AI Image Studio.exe`
 
 ## Changelog
+
+### v3.0.2
+- Fix preview panel cut off: lower left scroll area minimum width (370→280) so stretch ratio (1:2) can give preview adequate space
+- Lower preview label minimum size (400×400→200×200) so it doesn't resist shrinking
+- Lower window minimum size (1200×820→800×600) so Qt layout engine can apply stretch factors correctly at smaller sizes
 
 ### v3.0.1
 - Fix Connection widget gap: replaced `QStackedWidget` with show/hide widgets so Local mode doesn't reserve RunPod's extra height

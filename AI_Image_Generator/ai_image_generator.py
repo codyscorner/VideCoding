@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent
 
-VERSION = "3.0.1"
+VERSION = "3.0.2"
 
 SETTINGS_FILE = Path(__file__).parent / "settings.json"
 API_KEYS_FILE = Path(__file__).parent / "api_keys.json"
@@ -779,7 +779,7 @@ class PreviewPanel(QWidget):
         self._preview.setStyleSheet(
             f"color: {FG_DIM}; background-color: {BG_MED}; border-radius: 4px;"
         )
-        self._preview.setMinimumSize(400, 400)
+        self._preview.setMinimumSize(200, 200)
         self._preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         preview_layout.addWidget(self._preview)
         layout.addWidget(preview_group, stretch=1)
@@ -1064,7 +1064,7 @@ class TextToImageTab(QWidget):
         left_scroll.setWidget(left_widget)
         left_scroll.setWidgetResizable(True)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        left_scroll.setMinimumWidth(370)
+        left_scroll.setMinimumWidth(280)
         left_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
         # Connection (Local / RunPod)
@@ -1293,7 +1293,7 @@ class SceneComposerTab(QWidget):
         left_scroll.setWidget(left_widget)
         left_scroll.setWidgetResizable(True)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        left_scroll.setMinimumWidth(370)
+        left_scroll.setMinimumWidth(280)
         left_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
         # Connection (Local / RunPod)
@@ -1753,8 +1753,8 @@ class MainWindow(QMainWindow):
         self._api_keys = load_api_keys()
 
         self.setWindowTitle(f"AI Image Studio  v{VERSION}")
-        self.setMinimumSize(1200, 820)
-        self.resize(1500, 940)
+        self.setMinimumSize(800, 600)
+        self.resize(1400, 900)
         self.setStyleSheet(STYLESHEET)
 
         central = QWidget()
