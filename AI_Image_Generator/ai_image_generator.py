@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent
 
-VERSION = "3.0.0"
+VERSION = "3.0.1"
 
 SETTINGS_FILE = Path(__file__).parent / "settings.json"
 API_KEYS_FILE = Path(__file__).parent / "api_keys.json"

@@ -1,6 +1,6 @@
 # AI Image Studio
 
-**Version:** 3.0.0 | **Status:** Active | **Language:** Python
+**Version:** 3.0.1 | **Status:** Active | **Language:** Python
 
 A three-tab PyQt6 desktop application for AI image generation via ComfyUI (local or RunPod serverless).
 
@@ -60,6 +60,12 @@ pyinstaller --onefile --windowed ai_image_generator.py
 Output: `P:\Apps\VibeCoded\AI Image Studio\AI Image Studio.exe`
 
 ## Changelog
+
+### v3.0.1
+- Fix Connection widget gap: replaced `QStackedWidget` with show/hide widgets so Local mode doesn't reserve RunPod's extra height
+- Fix left panel clipping: wrap both tab left columns in `QScrollArea`
+- Fix URL field: replaced `QTextEdit` (height-clipping) with `QLineEdit`
+- Fix Scene Composer image slots: changed from 4-wide row to 2×2 grid to fit the narrower left panel
 
 ### v3.0.0
 - Renamed "Image Editor" tab to "Scene Composer"
