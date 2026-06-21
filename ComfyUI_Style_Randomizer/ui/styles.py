@@ -96,6 +96,25 @@ QLineEdit {{
 QLineEdit:focus {{
     border: 1px solid {COLORS['accent']};
 }}
+QSpinBox {{
+    background-color: {COLORS['bg_light']};
+    color: {COLORS['fg_primary']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 3px;
+    padding: 2px 4px;
+    font-size: 10pt;
+}}
+QSpinBox:focus {{
+    border: 1px solid {COLORS['accent']};
+}}
+QSpinBox::up-button, QSpinBox::down-button {{
+    background-color: {COLORS['bg_medium']};
+    border: none;
+    width: 16px;
+}}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
+    background-color: {COLORS['accent']};
+}}
 QPushButton {{
     background-color: {COLORS['accent']};
     color: white;

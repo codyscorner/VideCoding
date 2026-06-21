@@ -1,3 +1,4 @@
+import random
 from datetime import datetime
 from pathlib import Path
 
@@ -510,6 +511,7 @@ class MainWindow(QMainWindow):
         self._auto_mode = False
         self._auto_stop_requested = False
         self._auto_current_batch: list[Path] = []
+        self._last_auto_prompt_idx: int = -1
 
         self._build_ui()
         self._load_initial_state()
@@ -664,7 +666,7 @@ class MainWindow(QMainWindow):
 
         self._start_btn = QPushButton("Start")
         self._start_btn.setFixedWidth(100)
-        self._start_btn.clicked.connect(self._start)
+        self._start_btn.clicked.connect(lambda: self._start())
         bottom_row.addWidget(self._start_btn)
 
         self._cancel_btn = QPushButton("Cancel")
@@ -1066,6 +1068,15 @@ class MainWindow(QMainWindow):
         return [Path(self._thumb_grid.item(i).data(Qt.ItemDataRole.UserRole))
                 for i in range(batch_size)]
 
+    def _pick_next_auto_prompt(self) -> str:
+        n = len(self._prompts)
+        if n == 1:
+            self._last_auto_prompt_idx = 0
+        else:
+            available = [i for i in range(n) if i != self._last_auto_prompt_idx]
+            self._last_auto_prompt_idx = random.choice(available)
+        return self._prompts[self._last_auto_prompt_idx]
+
     def _start_auto(self):
         batch = self._get_next_auto_batch()
         if not batch:
@@ -1075,7 +1086,7 @@ class MainWindow(QMainWindow):
         self._auto_stop_requested = False
         self._auto_current_batch = batch
         self._update_auto_buttons()
-        self._start(batch, clear_log=True)
+        self._start(batch, clear_log=True, fixed_prompt=self._pick_next_auto_prompt())
 
     def _stop_auto_after_batch(self):
         self._auto_stop_requested = True
@@ -1096,7 +1107,8 @@ class MainWindow(QMainWindow):
     # Worker control
     # ------------------------------------------------------------------ #
 
-    def _start(self, images: list[Path] | None = None, clear_log: bool = True):
+    def _start(self, images: list[Path] | None = None, clear_log: bool = True,
+               fixed_prompt: str | None = None):
         if clear_log:
             self._log_view.clear()
         if images is None:
@@ -1124,6 +1136,7 @@ class MainWindow(QMainWindow):
             config=self._config.get_all(),
             prompts=self._prompts,
             image_paths=images,
+            fixed_prompt=fixed_prompt,
         )
         self._worker.progress.connect(lambda cur, _: self._progress.setValue(cur))
         self._worker.log.connect(self._append_log)
@@ -1136,6 +1149,7 @@ class MainWindow(QMainWindow):
             self._auto_mode = False
             self._auto_stop_requested = False
             self._auto_current_batch = []
+            self._last_auto_prompt_idx = -1
             self._update_auto_buttons()
         if self._worker:
             self._worker.cancel()
@@ -1157,7 +1171,8 @@ class MainWindow(QMainWindow):
                 next_batch = self._get_next_auto_batch()
                 if next_batch:
                     self._auto_current_batch = next_batch
-                    self._start(next_batch, clear_log=False)
+                    self._start(next_batch, clear_log=False,
+                                fixed_prompt=self._pick_next_auto_prompt())
                     return
                 # Grid exhausted
                 self._append_log("Auto mode complete — no images remaining.")
@@ -1167,6 +1182,7 @@ class MainWindow(QMainWindow):
             self._auto_mode = False
             self._auto_stop_requested = False
             self._auto_current_batch = []
+            self._last_auto_prompt_idx = -1
             self._update_auto_buttons()
             self._reload_images()
             return
@@ -1178,6 +1194,7 @@ class MainWindow(QMainWindow):
         self._auto_mode = False
         self._auto_stop_requested = False
         self._auto_current_batch = []
+        self._last_auto_prompt_idx = -1
         self._update_auto_buttons()
         self._start_btn.setEnabled(True)
         self._cancel_btn.setEnabled(False)

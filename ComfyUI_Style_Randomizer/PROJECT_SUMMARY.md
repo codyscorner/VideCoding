@@ -73,6 +73,8 @@ Your ComfyUI workflow must be exported in **API format** (enable Dev Mode in Com
 ### v1.3.0
 - **Auto Run mode** — process all images unattended N at a time: set batch size (1–50), click **▶▶ Auto Run**, and the app automatically selects the next batch and starts it when each batch finishes; processed images are removed from the grid between batches; **⏹ Stop After Batch** lets you halt after the current batch completes
 - Auto Run is disabled when "Show all" is checked (no unprocessed images to iterate)
+- **No-consecutive-repeat prompt selection** — in Auto Run mode, all images in a batch share one randomly chosen style; the next batch is guaranteed to pick a different style (with 2 prompts they strictly alternate; with N prompts the previous style is excluded from the next draw)
+- Regular Start still randomizes a different style per image as before
 
 ### v1.2.1
 - Version number now displayed in window title bar
