@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QFrame, QFileDialog, QMessageBox, QSizePolicy,
     QProgressBar, QApplication
 )
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import Qt, Slot, QThread, Signal
 from PySide6.QtGui import QFont, QIcon, QCloseEvent
 from pathlib import Path
 from typing import Optional, Callable
@@ -18,6 +18,102 @@ from sorting import SortBy, SortOrder
 from rename_patterns import PatternType, DateTimeFormat, PatternFactory
 from folder_organization import FolderStructure, FolderOrganizer
 from templates import TemplateManager
+
+
+class FolderDropLineEdit(QLineEdit):
+    """QLineEdit that accepts folder drag-and-drop from Windows Explorer."""
+
+    folder_dropped = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+    def _accepts(self, event) -> bool:
+        if not event.mimeData().hasUrls():
+            return False
+        urls = event.mimeData().urls()
+        return len(urls) == 1 and Path(urls[0].toLocalFile()).is_dir()
+
+    def dragEnterEvent(self, event):
+        if self._accepts(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if self._accepts(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if self._accepts(event):
+            path = str(Path(event.mimeData().urls()[0].toLocalFile()))
+            self.setText(path)
+            self.folder_dropped.emit(path)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+
+class RenameWorker(QThread):
+    """Worker thread for file rename/move operations."""
+
+    status_updated = Signal(str)
+    progress_updated = Signal(int, int, str)
+    operation_finished = Signal(list)
+
+    def __init__(
+        self,
+        source_folder: str,
+        dest_folder: str,
+        extension: str,
+        base_name: str,
+        rename_pattern,
+        sort_by,
+        sort_order,
+        folder_structure,
+        verify_hash: bool,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._source_folder = source_folder
+        self._dest_folder = dest_folder
+        self._extension = extension
+        self._base_name = base_name
+        self._rename_pattern = rename_pattern
+        self._sort_by = sort_by
+        self._sort_order = sort_order
+        self._folder_structure = folder_structure
+        self._verify_hash = verify_hash
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        file_renamer = FileRenamer(
+            status_callback=lambda msg: self.status_updated.emit(msg),
+            progress_callback=lambda c, t, f: self.progress_updated.emit(c, t, f),
+            cancel_check=lambda: self._cancelled,
+            rename_pattern=self._rename_pattern,
+            sort_by=self._sort_by,
+            sort_order=self._sort_order,
+            folder_structure=self._folder_structure,
+            verify_hash=self._verify_hash,
+        )
+        try:
+            results = file_renamer.move_and_rename(
+                self._source_folder,
+                self._dest_folder,
+                self._extension,
+                self._base_name,
+            )
+            self.operation_finished.emit(results or [])
+        except Exception as e:
+            self.status_updated.emit(f"Error: {e}")
+            self.operation_finished.emit([])
 
 
 class MainWindowQt(QMainWindow):
@@ -42,6 +138,9 @@ class MainWindowQt(QMainWindow):
         self.theme = ThemeManager('dark_red')
         self.colors = self.theme.get_all_colors()
         self.fonts = self.theme.get_all_fonts()
+
+        self._worker: Optional[RenameWorker] = None
+        self._pending_config: dict = {}
 
         # Set up window
         self.setWindowTitle(f"File Rename Mover (V-{self.version})")
@@ -173,7 +272,8 @@ class MainWindowQt(QMainWindow):
         # Source Folder
         parent_layout.addWidget(QLabel("Source Folder:"))
         source_layout = QHBoxLayout()
-        self.source_entry = QLineEdit()
+        self.source_entry = FolderDropLineEdit()
+        self.source_entry.folder_dropped.connect(self._on_source_dropped)
         source_layout.addWidget(self.source_entry)
         self.source_browse_btn = QPushButton("...")
         self.source_browse_btn.setProperty("cssClass", "browse")
@@ -185,7 +285,8 @@ class MainWindowQt(QMainWindow):
         # Destination Folder
         parent_layout.addWidget(QLabel("Destination Folder:"))
         dest_layout = QHBoxLayout()
-        self.dest_entry = QLineEdit()
+        self.dest_entry = FolderDropLineEdit()
+        self.dest_entry.folder_dropped.connect(self._on_dest_dropped)
         dest_layout.addWidget(self.dest_entry)
         self.dest_browse_btn = QPushButton("...")
         self.dest_browse_btn.setProperty("cssClass", "browse")
@@ -304,12 +405,15 @@ class MainWindowQt(QMainWindow):
         """Create action buttons"""
         button_layout = QHBoxLayout()
 
-        # Move and Rename button
         self.move_button = QPushButton("Move and Rename")
         self.move_button.clicked.connect(self._move_and_rename)
         button_layout.addWidget(self.move_button)
 
-        # Settings button
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.clicked.connect(self._cancel_operation)
+        button_layout.addWidget(self.cancel_button)
+
         self.settings_button = QPushButton("Settings")
         self.settings_button.clicked.connect(self._open_settings)
         button_layout.addWidget(self.settings_button)
@@ -533,137 +637,154 @@ class MainWindowQt(QMainWindow):
 
     @Slot()
     def _move_and_rename(self) -> None:
-        """Handle move and rename operation"""
-        # Get values
+        """Handle move and rename operation — starts a background worker thread."""
         source_folder = self.source_entry.text().strip()
         dest_folder = self.dest_entry.text().strip()
         extension = self.ext_entry.text().strip()
         base_name = self.rename_entry.text().strip()
 
-        # Validate inputs
         if not source_folder:
             QMessageBox.critical(self, "Error", "Please select a source folder")
             return
-
         if not dest_folder:
             QMessageBox.critical(self, "Error", "Please select a destination folder")
             return
-
         if not extension:
             QMessageBox.critical(self, "Error", "Please enter a file extension")
             return
-
         if not base_name:
             QMessageBox.critical(self, "Error", "Please enter a base name")
             return
 
-        self.add_status("Starting move and rename operation...")
-
-        # Show progress bar
-        self.progress_bar.setValue(0)
-        self.progress_bar.setVisible(True)
-        self.progress_label.setVisible(True)
-        self.move_button.setEnabled(False)
-        QApplication.processEvents()
-
+        # Pre-validate before spinning up the thread so errors surface as dialogs
+        from file_operations import FileValidator
         try:
-            # Create pattern
-            pattern_type = PatternType(self.pattern_type_combo.currentText())
-            pattern = self._create_pattern(pattern_type)
-
-            # Get sorting options
-            sort_by_value = self.sort_by_combo.currentText()
-            if sort_by_value == "name":
-                sort_by = SortBy.NAME
-            elif sort_by_value == "date_modified":
-                sort_by = SortBy.DATE_MODIFIED
-            elif sort_by_value == "date_created":
-                sort_by = SortBy.DATE_CREATED
-            elif sort_by_value == "size":
-                sort_by = SortBy.SIZE
-            else:
-                sort_by = SortBy.NAME
-
-            sort_order = SortOrder.ASCENDING if self.sort_order_combo.currentText() == "asc" else SortOrder.DESCENDING
-
-            # Get folder structure
-            folder_structure = FolderStructure(self.folder_structure_combo.currentText())
-
-            # Get verify_hash setting
-            verify_hash = self.config.get("verify_hash", False)
-
-            # Create file renamer with progress callback
-            file_renamer = FileRenamer(
-                status_callback=self.add_status,
-                progress_callback=self._on_progress,
-                rename_pattern=pattern,
-                sort_by=sort_by,
-                sort_order=sort_order,
-                folder_structure=folder_structure,
-                verify_hash=verify_hash
-            )
-
-            # Perform operation
-            results = file_renamer.move_and_rename(
-                source_folder,
-                dest_folder,
-                extension,
-                base_name
-            )
-
-            # Count results
-            success_count = sum(1 for r in results if r.success)
-            error_count = sum(1 for r in results if not r.success)
-
-            # Save configuration
-            self.config.set("last_extension", extension)
-            self.config.set("last_rename_to", base_name)
-            self.config.set("sort_by", self.sort_by_combo.currentText())
-            self.config.set("sort_order", self.sort_order_combo.currentText())
-            self.config.set("pattern_type", self.pattern_type_combo.currentText())
-            self.config.set("datetime_format", self.datetime_format_combo.currentText())
-            self.config.set("include_counter", self.include_counter_check.isChecked())
-            self.config.set("folder_structure", self.folder_structure_combo.currentText())
-            self.config.set("custom_pattern", self.custom_pattern_entry.text())
-            self.config.save()
-
-            # Show result
-            if error_count == 0 and success_count > 0:
-                QMessageBox.information(self, "Success", f"Successfully moved and renamed {success_count} files")
-            elif success_count > 0:
-                QMessageBox.warning(
-                    self,
-                    "Completed with errors",
-                    f"Moved {success_count} files with {error_count} errors. Check status for details."
-                )
-            elif error_count == 0:
-                # No files found
-                QMessageBox.information(self, "No Files", "No files were found to process")
-
+            FileValidator.validate_folder_exists(source_folder)
+            FileValidator.validate_extension(extension)
+            FileValidator.validate_rename_pattern(base_name)
         except ValueError as e:
             QMessageBox.critical(self, "Validation Error", str(e))
-        except OSError as e:
-            QMessageBox.critical(self, "File System Error", str(e))
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"An unexpected error occurred: {e}")
-        finally:
-            # Hide progress bar and re-enable button
-            self.progress_bar.setVisible(False)
-            self.progress_label.setVisible(False)
-            self.move_button.setEnabled(True)
+            return
+
+        try:
+            pattern_type = PatternType(self.pattern_type_combo.currentText())
+            pattern = self._create_pattern(pattern_type)
+            sort_by_value = self.sort_by_combo.currentText()
+            sort_by = {
+                "name": SortBy.NAME,
+                "date_modified": SortBy.DATE_MODIFIED,
+                "date_created": SortBy.DATE_CREATED,
+                "size": SortBy.SIZE,
+            }.get(sort_by_value, SortBy.NAME)
+            sort_order = (
+                SortOrder.ASCENDING if self.sort_order_combo.currentText() == "asc"
+                else SortOrder.DESCENDING
+            )
+            folder_structure = FolderStructure(self.folder_structure_combo.currentText())
+        except ValueError as e:
+            QMessageBox.critical(self, "Validation Error", str(e))
+            return
+
+        verify_hash = self.config.get("verify_hash", False)
+
+        # Snapshot config values to save when the worker finishes
+        self._pending_config = {
+            "last_extension": extension,
+            "last_rename_to": base_name,
+            "sort_by": self.sort_by_combo.currentText(),
+            "sort_order": self.sort_order_combo.currentText(),
+            "pattern_type": self.pattern_type_combo.currentText(),
+            "datetime_format": self.datetime_format_combo.currentText(),
+            "include_counter": self.include_counter_check.isChecked(),
+            "folder_structure": self.folder_structure_combo.currentText(),
+            "custom_pattern": self.custom_pattern_entry.text(),
+        }
+
+        self.add_status("Starting move and rename operation...")
+        self.progress_bar.setMaximum(0)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+        self.progress_label.setText("")
+        self.progress_label.setVisible(True)
+        self.move_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+
+        self._worker = RenameWorker(
+            source_folder=source_folder,
+            dest_folder=dest_folder,
+            extension=extension,
+            base_name=base_name,
+            rename_pattern=pattern,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            folder_structure=folder_structure,
+            verify_hash=verify_hash,
+        )
+        self._worker.status_updated.connect(self.add_status)
+        self._worker.progress_updated.connect(self._on_worker_progress)
+        self._worker.operation_finished.connect(self._on_worker_finished)
+        self._worker.start()
 
     def add_status(self, message: str) -> None:
         """Add a status message to the listbox"""
         self.status_listbox.addItem(message)
         self.status_listbox.scrollToBottom()
 
-    def _on_progress(self, current: int, total: int, filename: str) -> None:
-        """Handle progress updates from file operations"""
+    @Slot(int, int, str)
+    def _on_worker_progress(self, current: int, total: int, filename: str) -> None:
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
         self.progress_label.setText(f"Processing: {filename}")
-        # Process events to keep UI responsive
-        QApplication.processEvents()
+
+    @Slot()
+    def _cancel_operation(self) -> None:
+        if self._worker:
+            self._worker.cancel()
+            self.cancel_button.setEnabled(False)
+            self.add_status("Cancelling operation...")
+
+    @Slot(list)
+    def _on_worker_finished(self, results: list) -> None:
+        cancelled = bool(self._worker and self._worker._cancelled)
+
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+        self.move_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+
+        if cancelled:
+            self.add_status("Operation cancelled.")
+        else:
+            success_count = sum(1 for r in results if r.success)
+            error_count = sum(1 for r in results if not r.success)
+            if error_count == 0 and success_count > 0:
+                QMessageBox.information(self, "Success", f"Successfully moved and renamed {success_count} files")
+            elif success_count > 0:
+                QMessageBox.warning(
+                    self,
+                    "Completed with errors",
+                    f"Moved {success_count} files with {error_count} errors. Check status for details.",
+                )
+            elif error_count == 0:
+                QMessageBox.information(self, "No Files", "No files were found to process")
+
+        for key, value in self._pending_config.items():
+            self.config.set(key, value)
+        self.config.save()
+
+        self._worker = None
+
+    @Slot(str)
+    def _on_source_dropped(self, folder: str) -> None:
+        self.config.set("default_source_folder", folder)
+        self.config.save()
+        self.add_status(f"Source folder selected: {folder}")
+
+    @Slot(str)
+    def _on_dest_dropped(self, folder: str) -> None:
+        self.config.set("default_destination_folder", folder)
+        self.config.save()
+        self.add_status(f"Destination folder selected: {folder}")
 
     def update_from_config(self) -> None:
         """Update UI fields from configuration"""

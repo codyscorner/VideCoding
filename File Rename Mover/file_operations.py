@@ -179,7 +179,8 @@ class FileRenamer:
         sort_by: SortBy = SortBy.NAME,
         sort_order: SortOrder = SortOrder.ASCENDING,
         folder_structure: FolderStructure = FolderStructure.FLAT,
-        verify_hash: bool = False
+        verify_hash: bool = False,
+        cancel_check: Optional[Callable[[], bool]] = None
     ):
         """
         Initialize the file renamer
@@ -192,9 +193,11 @@ class FileRenamer:
             sort_order: Sort order (ascending or descending)
             folder_structure: Folder organization structure
             verify_hash: Whether to verify file integrity with hash after copy
+            cancel_check: Optional callable returning True when operation should abort
         """
         self.status_callback = status_callback
         self.progress_callback = progress_callback
+        self.cancel_check = cancel_check
         self.validator = FileValidator()
         self.scanner = FileScanner()
         self.rename_pattern = rename_pattern or NumberingPattern()
@@ -342,7 +345,10 @@ class FileRenamer:
         results = []
         total_files = len(sorted_files)
         for index, filename in enumerate(sorted_files, 1):
-            # Report progress before processing
+            if self.cancel_check and self.cancel_check():
+                self._log_status("Operation cancelled by user")
+                break
+
             self._report_progress(index, total_files, filename)
 
             result = self._process_single_file(
