@@ -879,13 +879,15 @@ class ConnectionWidget(QGroupBox):
 
         # Page 0 — Local ComfyUI
         local_page = QWidget()
-        ll = QVBoxLayout(local_page)
+        ll = QHBoxLayout(local_page)
         ll.setContentsMargins(0, 0, 0, 0)
-        ll.setSpacing(4)
-        ll.addWidget(QLabel("Server URL:"))
+        ll.setSpacing(6)
+        url_lbl = QLabel("URL:")
+        url_lbl.setFixedWidth(30)
         self._url_edit = QLineEdit(self._settings.get(f"{self._prefix}_url",
                                                        "http://127.0.0.1:8188"))
         self._url_edit.textChanged.connect(self._on_change)
+        ll.addWidget(url_lbl)
         ll.addWidget(self._url_edit)
         self._stack.addWidget(local_page)
 
@@ -1319,23 +1321,23 @@ class SceneComposerTab(QWidget):
         size_layout.addWidget(self._size_combo)
         left.addWidget(size_group)
 
-        # Image slots
+        # Image slots — 2×2 grid so each slot stays 160px wide
         refs_group = QGroupBox("Reference Images  (drag & drop or click)")
         refs_layout = QVBoxLayout(refs_group)
-        refs_layout.setContentsMargins(6, 10, 6, 16)
-        slot_row = QHBoxLayout()
-        slot_row.setSpacing(8)
+        refs_layout.setContentsMargins(6, 10, 6, 10)
+        slot_grid = QGridLayout()
+        slot_grid.setSpacing(8)
         self._slots: list[ImageSlot] = []
         saved_images = self._settings.get("edit_images", [None, None, None, None])
         for i, lbl in enumerate(["Image 1", "Image 2", "Image 3", "Image 4"]):
             slot = ImageSlot(lbl)
             slot.image_changed.connect(self._save_state)
             self._slots.append(slot)
-            slot_row.addWidget(slot)
+            slot_grid.addWidget(slot, i // 2, i % 2)
             saved = saved_images[i] if i < len(saved_images) else None
             if saved and Path(saved).exists():
                 slot.set_image(saved, copy=False)
-        refs_layout.addLayout(slot_row)
+        refs_layout.addLayout(slot_grid)
         left.addWidget(refs_group)
 
         clear_row = QHBoxLayout()
