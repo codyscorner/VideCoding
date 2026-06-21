@@ -1,14 +1,18 @@
-# Unzipper  V-1.1.0
+# Unzipper  V-1.2.0
 
-A lightweight Windows desktop app for batch-extracting ZIP files, built with Python and PyQt6.
+A lightweight Windows desktop app for batch-extracting ZIP, 7Z, and TAR.GZ archives, built with Python and PyQt6.
 
 ---
 
 ## Features
 
-- **Flat Unzip** — extracts every file from all ZIPs in a folder into a single destination folder, renaming files sequentially (`Filename_000001.mp4`, `_000002.mp4`, …)
-- **Structured Unzip** — extracts each ZIP into its own subfolder (named after the ZIP), preserving the internal folder structure. Duplicate folder names are automatically suffixed (`FolderName_000001`, etc.)
-- **Color-coded status log** — green for success, red for errors, blue for progress info
+- **Flat Unzip** — extracts every file from all archives in a folder into a single destination folder, renaming files sequentially (`Filename_000001.mp4`, `_000002.mp4`, …)
+- **Structured Unzip** — extracts each archive into its own subfolder, preserving the internal folder structure. Duplicate folder names are automatically suffixed (`FolderName_000001`, etc.)
+- **ZIP support** — stdlib `zipfile`
+- **7Z support** — `py7zr` (optional; skips with a warning if not installed)
+- **TAR.GZ / TGZ support** — stdlib `tarfile`
+- **Archive type prefix in log** — `[ZIP]`, `[7Z]`, `[TAR.GZ]`
+- **Color-coded status log** — green for success, red for errors, yellow for warnings
 - **Dark forest green UI** — clean modern PyQt6 theme
 
 ---
@@ -52,10 +56,24 @@ pyinstaller --onefile --windowed --name "Unzipper" unzipper.py
 
 - Python 3.10+
 - `PyQt6`
+- `py7zr` (optional — required for `.7z` support)
 
 ```bash
-pip install PyQt6
+pip install PyQt6 py7zr
 ```
+
+## Version History
+
+### v1.2.0
+- Added 7Z support via `py7zr` (graceful skip with warning if not installed)
+- Added TAR.GZ / TGZ support via stdlib `tarfile`
+- Both flat and structured modes now scan for `.zip`, `.7z`, `.tar.gz`, `.tgz`
+- Log lines show archive type prefix: `[ZIP]`, `[7Z]`, `[TAR.GZ]`
+
+### v1.1.0
+- Initial release: ZIP-only batch extraction
+- Flat mode and Keep Structure mode
+- Sequential renaming, duplicate folder suffixing
 
 ---
 

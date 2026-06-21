@@ -1,6 +1,7 @@
 import os
 import sys
 import shutil
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -11,6 +12,12 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QIcon, QColor, QTextCharFormat
 from PyQt6.QtCore import Qt
+
+try:
+    import py7zr
+    HAS_7Z = True
+except ImportError:
+    HAS_7Z = False
 
 BG_DARK      = "#0d1f0d"
 BG_MID       = "#122112"
@@ -23,6 +30,7 @@ TEXT_DIM     = "#7aaa7a"
 BORDER       = "#2d5a2d"
 SUCCESS      = "#39d353"
 ERROR_COL    = "#e05c5c"
+WARNING_COL  = "#e0a020"
 
 STYLESHEET = f"""
 QMainWindow, QWidget {{
@@ -90,10 +98,32 @@ QFrame#titlebar {{
 """
 
 
+def _archive_type(filename: str) -> str:
+    """Return archive type tag or empty string if not a supported archive."""
+    lower = filename.lower()
+    if lower.endswith(".zip"):
+        return "ZIP"
+    if lower.endswith(".7z"):
+        return "7Z"
+    if lower.endswith(".tar.gz") or lower.endswith(".tgz"):
+        return "TAR.GZ"
+    return ""
+
+
+def _list_archives(folder: str) -> list[tuple[str, str]]:
+    """Return (filename, type_tag) for all supported archives in folder."""
+    results = []
+    for f in os.listdir(folder):
+        tag = _archive_type(f)
+        if tag:
+            results.append((f, tag))
+    return results
+
+
 class UnzipperApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Unzipper  V-1.1.0")
+        self.setWindowTitle("Unzipper  V-1.2.0")
         self.setFixedSize(660, 480)
         self.setStyleSheet(STYLESHEET)
 
@@ -111,7 +141,7 @@ class UnzipperApp(QMainWindow):
         tb_layout.setContentsMargins(16, 0, 16, 0)
         lbl_title = QLabel("⚡  Unzipper")
         lbl_title.setObjectName("title")
-        lbl_ver = QLabel("V-1.1.0")
+        lbl_ver = QLabel("V-1.2.0")
         lbl_ver.setObjectName("version")
         tb_layout.addWidget(lbl_title)
         tb_layout.addWidget(lbl_ver)
@@ -219,28 +249,67 @@ class UnzipperApp(QMainWindow):
         if not self._validate_folders(source, dest):
             return
 
-        zip_files = [f for f in os.listdir(source) if f.lower().endswith(".zip")]
-        if not zip_files:
-            self._log("No ZIP files found in source folder.", ERROR_COL)
+        archives = _list_archives(source)
+        if not archives:
+            self._log("No ZIP / 7Z / TAR.GZ files found in source folder.", ERROR_COL)
             return
 
-        self._log(f"Starting flat unzip — {len(zip_files)} ZIP(s) found…", ACCENT)
+        self._log(f"Starting flat unzip — {len(archives)} archive(s) found…", ACCENT)
         counter = 1
-        for zip_file in zip_files:
-            zip_path = os.path.join(source, zip_file)
-            try:
-                with zipfile.ZipFile(zip_path, "r") as zf:
-                    for file_info in zf.filelist:
-                        if not file_info.is_dir():
-                            ext = os.path.splitext(file_info.filename)[1]
-                            new_name = f"{filename}_{counter:06d}{ext}"
-                            new_path = os.path.join(dest, new_name)
-                            with zf.open(file_info) as src, open(new_path, "wb") as dst:
-                                shutil.copyfileobj(src, dst)
-                            self._log(f"  Extracted: {new_name}", SUCCESS)
-                            counter += 1
-            except Exception as e:
-                self._log(f"  Error extracting {zip_file}: {e}", ERROR_COL)
+
+        for archive_file, tag in archives:
+            archive_path = os.path.join(source, archive_file)
+
+            if tag == "ZIP":
+                try:
+                    with zipfile.ZipFile(archive_path, "r") as zf:
+                        for file_info in zf.filelist:
+                            if not file_info.is_dir():
+                                ext = os.path.splitext(file_info.filename)[1]
+                                new_name = f"{filename}_{counter:06d}{ext}"
+                                new_path = os.path.join(dest, new_name)
+                                with zf.open(file_info) as src, open(new_path, "wb") as dst:
+                                    shutil.copyfileobj(src, dst)
+                                self._log(f"  [ZIP] Extracted: {new_name}", SUCCESS)
+                                counter += 1
+                except Exception as e:
+                    self._log(f"  [ZIP] Error extracting {archive_file}: {e}", ERROR_COL)
+
+            elif tag == "7Z":
+                if not HAS_7Z:
+                    self._log("  [7Z] py7zr not installed — skipping .7z files", WARNING_COL)
+                    continue
+                try:
+                    with py7zr.SevenZipFile(archive_path, mode="r") as zf:
+                        for info in zf.list():
+                            if not info.is_directory:
+                                ext = os.path.splitext(info.filename)[1]
+                                new_name = f"{filename}_{counter:06d}{ext}"
+                                new_path = os.path.join(dest, new_name)
+                                zf.extract(targets=[info.filename], path=dest)
+                                extracted = os.path.join(dest, info.filename)
+                                os.rename(extracted, new_path)
+                                self._log(f"  [7Z] Extracted: {new_name}", SUCCESS)
+                                counter += 1
+                except Exception as e:
+                    self._log(f"  [7Z] Error extracting {archive_file}: {e}", ERROR_COL)
+
+            elif tag == "TAR.GZ":
+                try:
+                    with tarfile.open(archive_path, "r:*") as tf:
+                        for member in tf.getmembers():
+                            if member.isfile():
+                                ext = os.path.splitext(member.name)[1]
+                                new_name = f"{filename}_{counter:06d}{ext}"
+                                new_path = os.path.join(dest, new_name)
+                                src = tf.extractfile(member)
+                                if src:
+                                    with open(new_path, "wb") as dst:
+                                        shutil.copyfileobj(src, dst)
+                                    self._log(f"  [TAR.GZ] Extracted: {new_name}", SUCCESS)
+                                    counter += 1
+                except Exception as e:
+                    self._log(f"  [TAR.GZ] Error extracting {archive_file}: {e}", ERROR_COL)
 
         self._log("Flat unzip completed.", ACCENT)
 
@@ -250,27 +319,54 @@ class UnzipperApp(QMainWindow):
         if not self._validate_folders(source, dest):
             return
 
-        zip_files = [f for f in os.listdir(source) if f.lower().endswith(".zip")]
-        if not zip_files:
-            self._log("No ZIP files found in source folder.", ERROR_COL)
+        archives = _list_archives(source)
+        if not archives:
+            self._log("No ZIP / 7Z / TAR.GZ files found in source folder.", ERROR_COL)
             return
 
-        self._log(f"Starting structured unzip — {len(zip_files)} ZIP(s) found…", ACCENT)
-        for zip_file in zip_files:
-            zip_name = os.path.splitext(zip_file)[0]
-            folder_name = zip_name
+        self._log(f"Starting structured unzip — {len(archives)} archive(s) found…", ACCENT)
+
+        for archive_file, tag in archives:
+            # Strip all archive extensions to get base name
+            base = archive_file
+            for ext in (".tar.gz", ".tgz", ".7z", ".zip"):
+                if base.lower().endswith(ext):
+                    base = base[: len(base) - len(ext)]
+                    break
+            folder_name = base
             counter = 0
             while os.path.exists(os.path.join(dest, folder_name)):
                 counter += 1
-                folder_name = f"{zip_name}_{counter:06d}"
+                folder_name = f"{base}_{counter:06d}"
             folder_path = os.path.join(dest, folder_name)
-            zip_path = os.path.join(source, zip_file)
-            try:
-                with zipfile.ZipFile(zip_path, "r") as zf:
-                    zf.extractall(folder_path)
-                self._log(f"  Extracted  {zip_file}  →  {folder_name}", SUCCESS)
-            except Exception as e:
-                self._log(f"  Error extracting {zip_file}: {e}", ERROR_COL)
+            archive_path = os.path.join(source, archive_file)
+
+            if tag == "ZIP":
+                try:
+                    with zipfile.ZipFile(archive_path, "r") as zf:
+                        zf.extractall(folder_path)
+                    self._log(f"  [ZIP] Extracted  {archive_file}  →  {folder_name}", SUCCESS)
+                except Exception as e:
+                    self._log(f"  [ZIP] Error extracting {archive_file}: {e}", ERROR_COL)
+
+            elif tag == "7Z":
+                if not HAS_7Z:
+                    self._log("  [7Z] py7zr not installed — skipping .7z files", WARNING_COL)
+                    continue
+                try:
+                    with py7zr.SevenZipFile(archive_path, mode="r") as zf:
+                        zf.extractall(path=folder_path)
+                    self._log(f"  [7Z] Extracted  {archive_file}  →  {folder_name}", SUCCESS)
+                except Exception as e:
+                    self._log(f"  [7Z] Error extracting {archive_file}: {e}", ERROR_COL)
+
+            elif tag == "TAR.GZ":
+                try:
+                    with tarfile.open(archive_path, "r:*") as tf:
+                        tf.extractall(folder_path)
+                    self._log(f"  [TAR.GZ] Extracted  {archive_file}  →  {folder_name}", SUCCESS)
+                except Exception as e:
+                    self._log(f"  [TAR.GZ] Error extracting {archive_file}: {e}", ERROR_COL)
 
         self._log("Structured unzip completed.", ACCENT)
 

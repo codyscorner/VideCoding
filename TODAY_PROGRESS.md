@@ -27,9 +27,9 @@ When starting a new context window, read this file first. It tells you exactly w
 - [x] **FaceFinder** — v1.3.0 — Export CSV + Copy All Paths — PR #19 (`feature/facefinder-export-bulkcopy`)
 
 ### 🟢 Low Priority
-- [ ] **JPG2PNG_Converter** — merge into ImageConverter when built
-- [ ] **IconMaker** — wrap script in small PyQt6 GUI
-- [ ] **Unzipper** — add 7z and tar.gz support alongside ZIP
+- [x] **JPG2PNG_Converter** — deleted; superseded by ImageConverter v1.0.0
+- [x] **IconMaker** — v1.0.0 — PyQt6 GUI wrapper with app selector, config, progress, log
+- [x] **Unzipper** — v1.2.0 — 7z + tar.gz support — EXE at P:\Apps\VibeCoded\Unzipper\
 
 ---
 
