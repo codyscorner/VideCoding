@@ -17,7 +17,7 @@ When starting a new context window, read this file first. It tells you exactly w
 - [x] ~~Rewrite main README.md as centralized project index~~ ✅ commit `304842d`
 - [x] ~~**Build Desktop Video Browser**~~ ✅ v1.1.0 — PR #10 (`feature/desktop-video-browser`)
 - [x] ~~**ScreenSnap P1 tools**~~ ✅ Ellipse, Freehand, Highlight — PR #11 (`feature/screensnap-p1`)
-- [ ] **Build ImageConverter** — batch image format converter, plan in `ImageConverter/PROJECT_SUMMARY.md`
+- [x] ~~**Build ImageConverter**~~ ✅ v1.0.0 — PR #12 (`feature/image-converter`)
 
 ### 🟡 Medium Priority
 - [ ] **AI Image Studio** — complete Scene Composer tab + add RunPod support + Library tab
@@ -47,6 +47,16 @@ When starting a new context window, read this file first. It tells you exactly w
 - Renamed README/plan docs to PROJECT_SUMMARY.md across 25 projects
 - Created new PROJECT_SUMMARY.md from scratch for 8 projects with no docs
 - Committed: `adc2beb` — pushed to `feature/style-randomizer-v1.2.1`
+
+### ✅ DONE — ImageConverter v1.0.0
+- Batch-converts images between PNG, JPG, WebP, BMP, TIFF
+- Quality slider for lossy formats (JPG/WebP)
+- Output folder picker with "same as source" default
+- Skip same-format files, recursive subfolders, delete originals options
+- JPEG alpha-flattening (RGBA → white-background RGB)
+- EXE built + deployed to `P:\Apps\VibeCoded\Image Converter\`
+- Supersedes JPG2PNG_Converter
+- PR #12 on `feature/image-converter`
 
 ### ✅ DONE — ScreenSnap P1 tools
 - Added EllipseLayer (drag-to-draw ellipse, proper ellipse hit-test)
