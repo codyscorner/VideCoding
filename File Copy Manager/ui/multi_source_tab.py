@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QLineEdit, QPushButton, QCheckBox, QComboBox,
-    QProgressBar, QListWidget, QVBoxLayout, QHBoxLayout,
+    QProgressBar, QListWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QScrollArea, QFrame, QFileDialog, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QTimer
@@ -71,17 +71,14 @@ class MultiSourceTab(QWidget):
         src_lbl.setObjectName("section_label")
         src_hdr.addWidget(src_lbl)
         src_hdr.addStretch()
-        btn_add = QPushButton("＋ Add Folder")
+        btn_add = QPushButton("+ Add Folder")
         btn_add.setObjectName("preview_btn")
-        btn_add.setFixedWidth(130)
         btn_add.clicked.connect(self._add_source)
         btn_remove = QPushButton("Remove")
         btn_remove.setObjectName("preview_btn")
-        btn_remove.setFixedWidth(90)
         btn_remove.clicked.connect(self._remove_source)
         btn_clear = QPushButton("Clear All")
         btn_clear.setObjectName("preview_btn")
-        btn_clear.setFixedWidth(90)
         btn_clear.clicked.connect(self._clear_sources)
         src_hdr.addWidget(btn_add)
         src_hdr.addWidget(btn_remove)
@@ -89,8 +86,8 @@ class MultiSourceTab(QWidget):
         layout.addLayout(src_hdr)
 
         self.source_list = QListWidget()
-        self.source_list.setMinimumHeight(130)
-        self.source_list.setMaximumHeight(170)
+        self.source_list.setMinimumHeight(68)
+        self.source_list.setMaximumHeight(90)
         layout.addWidget(self.source_list)
 
         hint_src = QLabel("Add each drive or folder you want to scan. The same template runs across all of them in order.")
@@ -139,31 +136,37 @@ class MultiSourceTab(QWidget):
         hint_mask.setObjectName("dim_label")
         layout.addWidget(hint_mask)
 
-        # ── Copy Options ─────────────────────────────────────────────────────
+        # ── Copy Options + File Filters (2-column grid) ──────────────────────
         opts_lbl = QLabel("Copy Options")
         opts_lbl.setObjectName("section_label")
         layout.addWidget(opts_lbl)
 
-        self.recursive_check = QCheckBox("Search subfolders recursively (include all files from nested folders)")
-        self.preserve_check = QCheckBox("Preserve original folder structure")
-        self.number_check = QCheckBox("Number duplicate files (e.g., file_001.jpg, file_002.jpg)")
-        self.incremental_check = QCheckBox("Incremental backup — skip files that already exist unchanged at destination (size + date match)")
-        self.verify_check = QCheckBox("Verify copied files with checksum (MD5) — slower but confirms file integrity")
+        self.recursive_check    = QCheckBox("Search subfolders recursively")
+        self.preserve_check     = QCheckBox("Preserve original folder structure")
+        self.number_check       = QCheckBox("Number duplicate files  (file_001.jpg, file_002.jpg)")
+        self.incremental_check  = QCheckBox("Incremental — skip files already at destination (size + date match)")
+        self.verify_check       = QCheckBox("Verify copies with MD5 checksum  (slower)")
+        self.size_check         = QCheckBox("Filter by file size")
+        self.date_check         = QCheckBox("Filter by file age")
         self.preserve_check.stateChanged.connect(self._on_preserve_changed)
-        layout.addWidget(self.recursive_check)
-        layout.addWidget(self.preserve_check)
-        layout.addWidget(self.number_check)
-        layout.addWidget(self.incremental_check)
-        layout.addWidget(self.verify_check)
-
-        # ── File Filters ─────────────────────────────────────────────────────
-        filter_lbl = QLabel("File Filters")
-        filter_lbl.setObjectName("section_label")
-        layout.addWidget(filter_lbl)
-
-        self.size_check = QCheckBox("Filter by file size:")
         self.size_check.stateChanged.connect(self._on_size_filter_changed)
-        layout.addWidget(self.size_check)
+        self.date_check.stateChanged.connect(self._on_date_filter_changed)
+
+        opts_grid = QGridLayout()
+        opts_grid.setHorizontalSpacing(30)
+        opts_grid.setVerticalSpacing(4)
+        opts_grid.addWidget(self.recursive_check,   0, 0)
+        opts_grid.addWidget(self.incremental_check, 0, 1)
+        opts_grid.addWidget(self.preserve_check,    1, 0)
+        opts_grid.addWidget(self.verify_check,      1, 1)
+        opts_grid.addWidget(self.number_check,      2, 0)
+        opts_grid.addWidget(self.size_check,        2, 1)
+        opts_grid.addWidget(self.date_check,        3, 1)
+        opts_grid.setColumnStretch(0, 1)
+        opts_grid.setColumnStretch(1, 1)
+        layout.addLayout(opts_grid)
+
+        # ── Size / Date filter sub-rows (hidden until checked) ───────────────
         self.size_widget = QWidget()
         size_row = QHBoxLayout(self.size_widget)
         size_row.setContentsMargins(20, 0, 0, 0)
@@ -184,9 +187,6 @@ class MultiSourceTab(QWidget):
         layout.addWidget(self.size_widget)
         self.size_widget.setVisible(False)
 
-        self.date_check = QCheckBox("Filter by file age:")
-        self.date_check.stateChanged.connect(self._on_date_filter_changed)
-        layout.addWidget(self.date_check)
         self.date_widget = QWidget()
         date_row = QHBoxLayout(self.date_widget)
         date_row.setContentsMargins(20, 0, 0, 0)
@@ -233,6 +233,7 @@ class MultiSourceTab(QWidget):
         layout.addLayout(btn_row)
 
         # ── Progress ─────────────────────────────────────────────────────────
+        # Bar 1 — which source we're on
         self.source_progress_label = QLabel("Ready — add source folders and click Run All Sources")
         self.source_progress_label.setObjectName("dim_label")
         layout.addWidget(self.source_progress_label)
@@ -241,6 +242,19 @@ class MultiSourceTab(QWidget):
         self.source_progress.setRange(0, 100)
         layout.addWidget(self.source_progress)
 
+        # Bar 2 — files processed within the current source
+        src_file_row = QHBoxLayout()
+        src_file_row.addWidget(QLabel("Current Source:"))
+        self.src_file_label = QLabel("")
+        self.src_file_label.setObjectName("dim_label")
+        src_file_row.addWidget(self.src_file_label, stretch=1)
+        layout.addLayout(src_file_row)
+
+        self.src_file_progress = QProgressBar()
+        self.src_file_progress.setRange(0, 100)
+        layout.addWidget(self.src_file_progress)
+
+        # Bar 3 — large-file byte-level progress
         file_row = QHBoxLayout()
         file_row.addWidget(QLabel("Current File:"))
         self.file_label = QLabel("")
@@ -482,6 +496,8 @@ class MultiSourceTab(QWidget):
         self.run_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.source_progress.setValue(0)
+        self.src_file_progress.setValue(0)
+        self.src_file_label.setText("")
         self.file_progress.setValue(0)
         self.file_label.setText("")
         self.copied_label.setText("0")
@@ -623,6 +639,8 @@ class MultiSourceTab(QWidget):
                         self.source_progress_label.setText(
                             f"Source  {idx} / {total}  —  {path}"
                         )
+                        self.src_file_label.setText("")
+                        self.src_file_progress.setValue(0)
                         self.file_label.setText("")
                         self.file_progress.setValue(0)
                         self._add_status(f"── [{idx}/{total}] {path}")
@@ -637,10 +655,10 @@ class MultiSourceTab(QWidget):
                         if data['file_progress'] >= 0:
                             self.file_progress.setValue(data['file_progress'])
                         cur, tot = data['current'], data['total']
-                        label = data['filename']
+                        self.file_label.setText(data['filename'])
                         if tot > 0:
-                            label = f"{cur} / {tot}  —  {label}"
-                        self.file_label.setText(label)
+                            self.src_file_label.setText(f"File  {cur} / {tot}")
+                            self.src_file_progress.setValue(int(cur / tot * 100))
 
                     elif msg_type == 'source_complete':
                         idx, total = data['index'], data['total']

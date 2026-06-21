@@ -6,6 +6,8 @@ Supports drag-and-drop and file browser import.
 Version: 1.1.0
 """
 
+import csv
+import io
 import sys
 import json
 from pathlib import Path
@@ -388,7 +390,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.parser = MetadataParser()
-        self.setWindowTitle("VHS Metadata Parser v1.1.0")
+        self.setWindowTitle("VHS Metadata Parser v1.1.1")
         self.setMinimumSize(900, 700)
         self.setStyleSheet(STYLESHEET)
         self.setAcceptDrops(True)
@@ -438,6 +440,11 @@ class MainWindow(QMainWindow):
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self._open_file_dialog)
         file_menu.addAction(open_action)
+
+        export_csv_action = QAction("Export Models & Sampler (CSV)…", self)
+        export_csv_action.setShortcut("Ctrl+E")
+        export_csv_action.triggered.connect(self._export_models_sampler_csv)
+        file_menu.addAction(export_csv_action)
 
         file_menu.addSeparator()
 
@@ -538,6 +545,10 @@ class MainWindow(QMainWindow):
         lora_layout.addWidget(self.lora_table)
         layout.addWidget(lora_group)
 
+        export_btn = QPushButton("Export Models CSV…")
+        export_btn.clicked.connect(self._export_models_sampler_csv)
+        layout.addWidget(export_btn)
+
         self.tab_widget.addTab(tab, "Models")
 
     def _make_table(self, headers: List[str]) -> QTableWidget:
@@ -574,6 +585,10 @@ class MainWindow(QMainWindow):
         self.model_sampling_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         ms_layout.addWidget(self.model_sampling_table)
         layout.addWidget(ms_group)
+
+        export_btn = QPushButton("Export Sampler CSV…")
+        export_btn.clicked.connect(self._export_models_sampler_csv)
+        layout.addWidget(export_btn)
 
         self.tab_widget.addTab(tab, "Sampler")
 
@@ -699,6 +714,69 @@ class MainWindow(QMainWindow):
             self.raw_json_edit.setPlainText(json.dumps(self.parser.raw_data, indent=2, ensure_ascii=False))
         except Exception as e:
             self.raw_json_edit.setPlainText(f"Error formatting JSON: {e}")
+
+    def _export_models_sampler_csv(self):
+        if not self.parser.raw_data:
+            QMessageBox.warning(self, "No Data", "Please load a metadata file first.")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Models & Sampler CSV",
+            Path(self.file_path_edit.text()).stem + "_models_sampler.csv" if self.file_path_edit.text() else "models_sampler.csv",
+            "CSV Files (*.csv);;All Files (*.*)"
+        )
+        if not path:
+            return
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+
+        # Models
+        models = self.parser.get_models()
+        writer.writerow(["=== CLIP Models ==="])
+        writer.writerow(["Name", "Type", "Device"])
+        for m in models['clip']:
+            writer.writerow([m['name'], m['type'], m['device']])
+        writer.writerow([])
+
+        writer.writerow(["=== VAE Models ==="])
+        writer.writerow(["Name"])
+        for m in models['vae']:
+            writer.writerow([m['name']])
+        writer.writerow([])
+
+        writer.writerow(["=== Diffusion Models (UNET) ==="])
+        writer.writerow(["Name", "Weight Dtype"])
+        for m in models['unet']:
+            writer.writerow([m['name'], m['weight_dtype']])
+        writer.writerow([])
+
+        writer.writerow(["=== LoRA Models ==="])
+        writer.writerow(["Name", "Strength"])
+        for m in models['lora']:
+            writer.writerow([m['name'], m['strength']])
+        writer.writerow([])
+
+        # Sampler
+        writer.writerow(["=== KSampler Settings ==="])
+        writer.writerow(["Title", "Steps", "CFG", "Sampler", "Scheduler", "Seed", "Add Noise", "Start Step", "End Step"])
+        for s in self.parser.get_sampler_settings():
+            writer.writerow([s['title'], s['steps'], s['cfg'], s['sampler_name'],
+                             s['scheduler'], s['noise_seed'], s['add_noise'],
+                             s['start_at_step'], s['end_at_step']])
+        writer.writerow([])
+
+        writer.writerow(["=== Model Sampling (Shift) ==="])
+        writer.writerow(["Title", "Shift"])
+        for s in self.parser.get_model_sampling_settings():
+            writer.writerow([s['title'], s['shift']])
+
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                f.write(buf.getvalue())
+            QMessageBox.information(self, "Exported", f"CSV saved to:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Failed", str(e))
 
     def _copy_workflow(self):
         text = self.workflow_json_edit.toPlainText()

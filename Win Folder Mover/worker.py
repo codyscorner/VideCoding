@@ -133,10 +133,11 @@ class MoveWorker(QThread):
     finished_signal = pyqtSignal(list)   # list[FileRecord]
     error_signal    = pyqtSignal(str)
 
-    def __init__(self, source: str, dest: str, parent=None) -> None:
+    def __init__(self, source: str, dest: str, dry_run: bool = False, parent=None) -> None:
         super().__init__(parent)
-        self.source = source
-        self.dest   = dest
+        self.source  = source
+        self.dest    = dest
+        self.dry_run = dry_run
         self._cancel = False            # checked between every file
 
     # ------------------------------------------------------------------
@@ -175,6 +176,8 @@ class MoveWorker(QThread):
         records: list[FileRecord] = []
 
         # ---- Phase 1: scan -----------------------------------------------
+        mode_label = "DRY RUN — no files will be moved" if self.dry_run else "Move"
+        self.log_signal.emit(f"Mode:        {mode_label}")
         self.log_signal.emit(f"Source:      {self.source}")
         self.log_signal.emit(f"Destination: {self.dest}")
         self.log_signal.emit("Scanning source directory…")
@@ -189,7 +192,8 @@ class MoveWorker(QThread):
             self.log_signal.emit("No files found in the source directory.")
             return records
 
-        self.log_signal.emit(f"Found {total:,} file(s). Starting move…")
+        action_word = "Previewing" if self.dry_run else "Starting move of"
+        self.log_signal.emit(f"Found {total:,} file(s). {action_word} {total:,} file(s)…")
         self.progress_signal.emit(0)
 
         # ---- Phase 2: move -----------------------------------------------
@@ -216,67 +220,71 @@ class MoveWorker(QThread):
             error_detail: Optional[str] = None
             t_start = time.perf_counter()
 
-            # ── Duplicate check ───────────────────────────────────────
-            # If the destination already exists and is the same size,
-            # skip the move entirely — source is left untouched.
-            if os.path.exists(dst_path) and _safe_size(dst_path) == size_bytes:
-                status       = "Skipped"
-                error_detail = "Duplicate — same size at destination, source left intact"
-                self.log_signal.emit(f"  ↷ Skipped — already exists at destination")
-                elapsed_ms = (time.perf_counter() - t_start) * 1_000
-                records.append(FileRecord(
-                    source_path    = src_path,
-                    dest_path      = dst_path,
-                    file_size_bytes= size_bytes,
-                    file_size_human= size_human,
-                    time_taken_ms  = elapsed_ms,
-                    status         = status,
-                    error_detail   = error_detail,
-                ))
-                self.progress_signal.emit(round(idx / total * 100))
-                continue
+            if self.dry_run:
+                # Preview only — report what would happen without touching files.
+                if os.path.exists(dst_path) and _safe_size(dst_path) == size_bytes:
+                    status       = "Skipped"
+                    error_detail = "Dry run — duplicate at destination (same size)"
+                    self.log_signal.emit(f"  [DRY] Would skip — already exists at destination")
+                else:
+                    status       = "Would Move"
+                    error_detail = None
+                    self.log_signal.emit(f"  [DRY] Would move  →  {dst_path}")
+            else:
+                # ── Duplicate check ───────────────────────────────────────
+                # If the destination already exists and is the same size,
+                # skip the move entirely — source is left untouched.
+                if os.path.exists(dst_path) and _safe_size(dst_path) == size_bytes:
+                    status       = "Skipped"
+                    error_detail = "Duplicate — same size at destination, source left intact"
+                    self.log_signal.emit(f"  ↷ Skipped — already exists at destination")
+                    elapsed_ms = (time.perf_counter() - t_start) * 1_000
+                    records.append(FileRecord(
+                        source_path    = src_path,
+                        dest_path      = dst_path,
+                        file_size_bytes= size_bytes,
+                        file_size_human= size_human,
+                        time_taken_ms  = elapsed_ms,
+                        status         = status,
+                        error_detail   = error_detail,
+                    ))
+                    self.progress_signal.emit(round(idx / total * 100))
+                    continue
 
-            try:
-                _move_file(src_path, dst_path)
-
-            except PermissionError as exc:
-                # Move was denied — attempt a copy-only fallback so the
-                # data still reaches the destination even if the source
-                # file cannot be deleted (e.g. locked by another process).
-                self.log_signal.emit(
-                    f"  ⚠ Permission denied — attempting copy fallback…"
-                )
                 try:
-                    _copy_file(src_path, dst_path)
-                    status       = "Copied"
-                    error_detail = f"Moved denied, copied only — {exc}"
+                    _move_file(src_path, dst_path)
+
+                except PermissionError as exc:
                     self.log_signal.emit(
-                        f"  ✓ Copied (source not deleted)"
+                        f"  ⚠ Permission denied — attempting copy fallback…"
                     )
-                except Exception as copy_exc:
+                    try:
+                        _copy_file(src_path, dst_path)
+                        status       = "Copied"
+                        error_detail = f"Moved denied, copied only — {exc}"
+                        self.log_signal.emit(
+                            f"  ✓ Copied (source not deleted)"
+                        )
+                    except Exception as copy_exc:
+                        status       = "Failed"
+                        error_detail = f"PermissionError: {exc} | Copy also failed: {copy_exc}"
+                        self.log_signal.emit(
+                            f"  ✗ Copy fallback also failed — {copy_exc}"
+                        )
+
+                except FileNotFoundError as exc:
                     status       = "Failed"
-                    error_detail = f"PermissionError: {exc} | Copy also failed: {copy_exc}"
+                    error_detail = f"FileNotFoundError: {exc}"
                     self.log_signal.emit(
-                        f"  ✗ Copy fallback also failed — {copy_exc}"
+                        f"  ✗ File not found — {exc}"
                     )
 
-            except FileNotFoundError as exc:
-                # Source vanished mid-run, or an extremely long path slipped
-                # through the long-path guard.
-                status       = "Failed"
-                error_detail = f"FileNotFoundError: {exc}"
-                self.log_signal.emit(
-                    f"  ✗ File not found — {exc}"
-                )
-
-            except OSError as exc:
-                # Catch-all for other OS-level failures (disk full, bad
-                # sectors, cross-device rename edge cases, …).
-                status       = "Failed"
-                error_detail = f"OSError [{exc.errno}]: {exc.strerror}"
-                self.log_signal.emit(
-                    f"  ✗ OS error {exc.errno} — {exc.strerror}"
-                )
+                except OSError as exc:
+                    status       = "Failed"
+                    error_detail = f"OSError [{exc.errno}]: {exc.strerror}"
+                    self.log_signal.emit(
+                        f"  ✗ OS error {exc.errno} — {exc.strerror}"
+                    )
 
             elapsed_ms = (time.perf_counter() - t_start) * 1_000
 
@@ -294,17 +302,28 @@ class MoveWorker(QThread):
             self.progress_signal.emit(round(idx / total * 100))
 
         # ---- Summary line -----------------------------------------------
-        moved   = sum(1 for r in records if r.status == "Success")
-        copied  = sum(1 for r in records if r.status == "Copied")
-        skipped = sum(1 for r in records if r.status == "Skipped")
-        failed  = sum(1 for r in records if r.status == "Failed")
-        self.log_signal.emit(
-            f"\n── Finished ──\n"
-            f"  Moved:   {moved:,}\n"
-            f"  Copied:  {copied:,}\n"
-            f"  Skipped: {skipped:,}\n"
-            f"  Failed:  {failed:,}\n"
-            f"  Total:   {len(records):,}"
-        )
+        if self.dry_run:
+            would_move = sum(1 for r in records if r.status == "Would Move")
+            skipped    = sum(1 for r in records if r.status == "Skipped")
+            self.log_signal.emit(
+                f"\n── Dry Run Complete ──\n"
+                f"  Would move:  {would_move:,}\n"
+                f"  Would skip:  {skipped:,}\n"
+                f"  Total:       {len(records):,}\n"
+                f"\nNo files were moved. Uncheck Dry Run and click Start Move to proceed."
+            )
+        else:
+            moved   = sum(1 for r in records if r.status == "Success")
+            copied  = sum(1 for r in records if r.status == "Copied")
+            skipped = sum(1 for r in records if r.status == "Skipped")
+            failed  = sum(1 for r in records if r.status == "Failed")
+            self.log_signal.emit(
+                f"\n── Finished ──\n"
+                f"  Moved:   {moved:,}\n"
+                f"  Copied:  {copied:,}\n"
+                f"  Skipped: {skipped:,}\n"
+                f"  Failed:  {failed:,}\n"
+                f"  Total:   {len(records):,}"
+            )
 
         return records

@@ -220,7 +220,8 @@ class ImageViewer(QLabel):
 class VideoDropPlayer(QMainWindow):
     """Main window for the video drop player application."""
 
-    VERSION = "1.3.1"
+    VERSION = "1.3.2"
+    PLAYBACK_SPEEDS = [0.5, 1.0, 1.25, 1.5, 2.0]
     SUPPORTED_FORMATS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm'}
     SUPPORTED_IMAGE_FORMATS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif'}
 
@@ -244,6 +245,12 @@ class VideoDropPlayer(QMainWindow):
         self.image_list = []
         self.image_index = 0
         self._mode = 'drop'  # 'drop', 'video', 'image'
+
+        # Fullscreen state
+        self._is_fullscreen = False
+
+        # Playback speed
+        self._speed_index = 1  # default 1.0x
 
         # Double-tap left arrow detection for previous video
         self._left_tap_timer = QTimer()
@@ -320,6 +327,31 @@ class VideoDropPlayer(QMainWindow):
         # Apply dark blue title bar on Windows
         if sys.platform == 'win32':
             self._apply_title_bar_color()
+
+    def _toggle_fullscreen(self):
+        if self._is_fullscreen:
+            self.showNormal()
+            self._is_fullscreen = False
+        else:
+            self.showFullScreen()
+            self._is_fullscreen = True
+
+    def _cycle_speed(self):
+        self._speed_index = (self._speed_index + 1) % len(self.PLAYBACK_SPEEDS)
+        speed = self.PLAYBACK_SPEEDS[self._speed_index]
+        self.media_player.setPlaybackRate(speed)
+        label = f"{speed:g}x"
+        if len(self.playlist) > 1:
+            file_path, _ = self.playlist[self.current_index]
+            filename = os.path.basename(file_path)
+            self.setWindowTitle(
+                f"Video Drop Player v{self.VERSION} - "
+                f"[{label}] Playing {self.current_index + 1}/{len(self.playlist)} - {filename}"
+            )
+        elif self.playlist:
+            file_path, _ = self.playlist[self.current_index]
+            filename = os.path.basename(file_path)
+            self.setWindowTitle(f"Video Drop Player v{self.VERSION} - [{label}] {filename}")
 
     def _apply_title_bar_color(self):
         """Apply dark blue color to Windows title bar."""
@@ -539,6 +571,7 @@ class VideoDropPlayer(QMainWindow):
         self._show_video_screen()
 
         self.media_player.setSource(QUrl.fromLocalFile(file_path))
+        self.media_player.setPlaybackRate(self.PLAYBACK_SPEEDS[self._speed_index])
         self.media_player.play()
 
         filename = os.path.basename(file_path)
@@ -583,6 +616,7 @@ class VideoDropPlayer(QMainWindow):
         self.current_index = 0
         self.image_list = []
         self.image_index = 0
+        self._speed_index = 1  # reset to 1.0x
         self.drop_label.setText("Drag and drop a video or image file here")
         self._show_drop_screen()
         self.setWindowTitle(f"Video Drop Player v{self.VERSION}")
@@ -605,7 +639,17 @@ class VideoDropPlayer(QMainWindow):
         key = event.key()
 
         if key == Qt.Key.Key_Escape:
-            self.release_video()
+            if self._is_fullscreen:
+                self._toggle_fullscreen()
+            else:
+                self.release_video()
+
+        elif key == Qt.Key.Key_F:
+            self._toggle_fullscreen()
+            return
+
+        elif self._mode == 'video' and key == Qt.Key.Key_S:
+            self._cycle_speed()
 
         elif self._mode == 'image':
             if key == Qt.Key.Key_Right and self.image_index < len(self.image_list) - 1:

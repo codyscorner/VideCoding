@@ -303,10 +303,17 @@ class MainWindow(QMainWindow):
     # ── Keyboard ──────────────────────────────────────────────────────────────
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if event.key() == Qt.Key.Key_Left:
+        key = event.key()
+        mods = event.modifiers()
+        if key == Qt.Key.Key_Left:
             self._navigate(-1)
-        elif event.key() == Qt.Key.Key_Right:
+        elif key == Qt.Key.Key_Right:
             self._navigate(1)
+        elif key == Qt.Key.Key_R:
+            if mods & Qt.KeyboardModifier.ShiftModifier:
+                self._viewer.rotate(-90)   # rotate left
+            else:
+                self._viewer.rotate(90)    # rotate right
         else:
             super().keyPressEvent(event)
 
