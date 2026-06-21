@@ -883,10 +883,8 @@ class ConnectionWidget(QGroupBox):
         ll.setContentsMargins(0, 0, 0, 0)
         ll.setSpacing(4)
         ll.addWidget(QLabel("Server URL:"))
-        self._url_edit = QTextEdit(self._settings.get(f"{self._prefix}_url",
+        self._url_edit = QLineEdit(self._settings.get(f"{self._prefix}_url",
                                                        "http://127.0.0.1:8188"))
-        self._url_edit.setFixedHeight(32)
-        self._url_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self._url_edit.textChanged.connect(self._on_change)
         ll.addWidget(self._url_edit)
         self._stack.addWidget(local_page)
@@ -921,7 +919,7 @@ class ConnectionWidget(QGroupBox):
     def _on_change(self):
         mode = self._mode_combo.currentData()
         self._settings[f"{self._prefix}_conn_mode"] = mode
-        self._settings[f"{self._prefix}_url"] = self._url_edit.toPlainText().strip()
+        self._settings[f"{self._prefix}_url"] = self._url_edit.text().strip()
         self._settings[f"{self._prefix}_runpod_endpoint"] = self._ep_edit.text().strip()
         key = self._key_edit.text().strip()
         if key:
@@ -936,7 +934,7 @@ class ConnectionWidget(QGroupBox):
 
     @property
     def local_url(self) -> str:
-        return self._url_edit.toPlainText().strip()
+        return self._url_edit.text().strip()
 
     @property
     def runpod_api_key(self) -> str:
@@ -1048,8 +1046,17 @@ class TextToImageTab(QWidget):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(12)
 
-        left = QVBoxLayout()
+        left_widget = QWidget()
+        left = QVBoxLayout(left_widget)
         left.setSpacing(10)
+        left.setContentsMargins(4, 4, 4, 4)
+
+        left_scroll = QScrollArea()
+        left_scroll.setWidget(left_widget)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setMinimumWidth(370)
+        left_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
         # Connection (Local / RunPod)
         self._conn = ConnectionWidget(self._settings, self._api_keys, "t2i")
@@ -1158,7 +1165,7 @@ class TextToImageTab(QWidget):
         self._status.setWordWrap(True)
         left.addWidget(self._status)
 
-        root.addLayout(left, stretch=1)
+        root.addWidget(left_scroll, stretch=1)
 
         self._preview_panel = PreviewPanel()
         root.addWidget(self._preview_panel, stretch=2)
@@ -1268,8 +1275,17 @@ class SceneComposerTab(QWidget):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(12)
 
-        left = QVBoxLayout()
+        left_widget = QWidget()
+        left = QVBoxLayout(left_widget)
         left.setSpacing(10)
+        left.setContentsMargins(4, 4, 4, 4)
+
+        left_scroll = QScrollArea()
+        left_scroll.setWidget(left_widget)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setMinimumWidth(370)
+        left_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
         # Connection (Local / RunPod)
         self._conn = ConnectionWidget(self._settings, self._api_keys, "edit")
@@ -1409,7 +1425,7 @@ class SceneComposerTab(QWidget):
         self._status.setWordWrap(True)
         left.addWidget(self._status)
 
-        root.addLayout(left, stretch=1)
+        root.addWidget(left_scroll, stretch=1)
 
         self._preview_panel = PreviewPanel()
         root.addWidget(self._preview_panel, stretch=2)
