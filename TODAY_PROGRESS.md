@@ -15,7 +15,7 @@ When starting a new context window, read this file first. It tells you exactly w
 - [x] ~~Add PROJECT_SUMMARY.md to all projects~~ ✅ commit `adc2beb`
 - [x] ~~Delete `WinFolderMover/` duplicate~~ ✅ commit `ed5bc3d`
 - [x] ~~Rewrite main README.md as centralized project index~~ ✅ commit `304842d`
-- [ ] **Build Desktop Video Browser** — full plan in `Desktop Video Browser/PROJECT_SUMMARY.md`, no code yet
+- [x] ~~**Build Desktop Video Browser**~~ ✅ v1.1.0 — PR #10 (`feature/desktop-video-browser`)
 - [ ] **Implement ScreenSnap capture stubs** — WPF/.NET 10 project, capture logic is all stubs
 - [ ] **Build ImageConverter** — batch image format converter, plan in `ImageConverter/PROJECT_SUMMARY.md`
 
