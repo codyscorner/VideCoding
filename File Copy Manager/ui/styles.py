@@ -200,6 +200,28 @@ QLabel#clear_label {{
 QLabel#clear_label:hover {{
     color: {COLORS['accent_hover']};
 }}
+QTabWidget::pane {{
+    border: 1px solid {COLORS['border']};
+    background-color: {COLORS['background']};
+}}
+QTabBar::tab {{
+    background-color: {COLORS['bg_mid']};
+    color: {COLORS['foreground']};
+    padding: 8px 22px;
+    font-size: 11pt;
+    font-weight: bold;
+    border: 1px solid {COLORS['border']};
+    border-bottom: none;
+    margin-right: 2px;
+}}
+QTabBar::tab:selected {{
+    background-color: {COLORS['accent']};
+    color: {COLORS['button_fg']};
+    border-color: {COLORS['accent']};
+}}
+QTabBar::tab:hover:!selected {{
+    background-color: {COLORS['bg_light']};
+}}
 QTableWidget {{
     background-color: {COLORS['input_bg']};
     color: {COLORS['foreground']};
