@@ -46,5 +46,12 @@ Deploy to: `P:\Apps\VibeCoded\Image Converter\`
 
 ## Notes
 
-- JPG2PNG_Converter (v1.0.0) is the predecessor — this app covers all its functionality and more
 - AVIF not included: requires optional pillow-avif-plugin; add later if needed
+
+## Version History
+
+### v1.0.0
+- Initial release: batch image conversion between PNG, JPG, WebP, BMP, TIFF
+- Quality slider for lossy formats, recursive subfolders, delete originals option
+- JPEG alpha-flattening (RGBA → white-background RGB)
+- Supersedes JPG2PNG_Converter (v1.0.0) — all JPG2PNG functionality is covered and extended
