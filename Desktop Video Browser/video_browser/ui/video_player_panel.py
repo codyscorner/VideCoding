@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSlider
 from PySide6.QtCore import Qt, QUrl, QEvent, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -30,6 +30,35 @@ class VideoPlayerPanel(QWidget):
         self.video_widget.installEventFilter(self)
         layout.addWidget(self.video_widget)
 
+        # --- Seek slider ---
+        self.seek_slider = QSlider(Qt.Horizontal)
+        self.seek_slider.setRange(0, 0)
+        self.seek_slider.setFixedHeight(16)
+        self.seek_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                background: #444;
+                height: 4px;
+                border-radius: 2px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #3d6aff;
+                height: 4px;
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background: #fff;
+                width: 12px;
+                height: 12px;
+                margin: -4px 0;
+                border-radius: 6px;
+            }
+        """)
+        self.seek_slider.sliderPressed.connect(self._on_seek_pressed)
+        self.seek_slider.sliderReleased.connect(self._on_seek_released)
+        self.seek_slider.sliderMoved.connect(self._on_seek_moved)
+        self._seeking = False
+        layout.addWidget(self.seek_slider)
+
         # --- Toolbar ---
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(6, 4, 6, 4)
@@ -56,6 +85,25 @@ class VideoPlayerPanel(QWidget):
         self.time_label.setStyleSheet("color: #ccc; font-size: 12px;")
         toolbar.addWidget(self.time_label)
 
+        toolbar.addSpacing(12)
+
+        # Volume icon + slider
+        vol_label = QLabel("🔊")
+        vol_label.setStyleSheet("color: #ccc; font-size: 12px;")
+        toolbar.addWidget(vol_label)
+
+        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(80)
+        self.volume_slider.setFixedWidth(80)
+        self.volume_slider.setStyleSheet("""
+            QSlider::groove:horizontal { background: #444; height: 4px; border-radius: 2px; }
+            QSlider::sub-page:horizontal { background: #888; height: 4px; border-radius: 2px; }
+            QSlider::handle:horizontal { background: #ccc; width: 10px; height: 10px; margin: -3px 0; border-radius: 5px; }
+        """)
+        self.volume_slider.valueChanged.connect(self._on_volume_changed)
+        toolbar.addWidget(self.volume_slider)
+
         toolbar_widget = QWidget()
         toolbar_widget.setLayout(toolbar)
         toolbar_widget.setStyleSheet("background-color: #1e1e1e;")
@@ -70,6 +118,7 @@ class VideoPlayerPanel(QWidget):
 
         # --- Player ---
         self.audio_output = QAudioOutput()
+        self.audio_output.setVolume(self.volume_slider.value() / 100.0)
         self.player = QMediaPlayer()
         self.player.setAudioOutput(self.audio_output)
         self.player.setVideoOutput(self.video_widget)
@@ -83,6 +132,9 @@ class VideoPlayerPanel(QWidget):
         # --- Keyboard shortcuts ---
         QShortcut(QKeySequence(Qt.Key_Space), self, self.toggle_play_pause)
         QShortcut(QKeySequence(Qt.Key_F), self, self.toggle_fullscreen)
+        QShortcut(QKeySequence(Qt.Key_Right), self, self._seek_forward)
+        QShortcut(QKeySequence(Qt.Key_Left), self, self._seek_backward)
+        QShortcut(QKeySequence(Qt.Key_M), self, self._toggle_mute)
 
     # ------------------------------------------------------------------
     # Public API
@@ -92,6 +144,7 @@ class VideoPlayerPanel(QWidget):
         self.player.stop()
         self.player.setSource(QUrl())
         self._duration_ms = 0
+        self.seek_slider.setRange(0, 0)
         self.time_label.setText("0:00 / 0:00")
 
     def load_video(self, path: str) -> None:
@@ -112,7 +165,7 @@ class VideoPlayerPanel(QWidget):
     def eventFilter(self, obj, event) -> bool:
         if obj is self.video_widget and event.type() == QEvent.Type.KeyPress:
             key = event.key()
-            if key == Qt.Key_Escape or key == Qt.Key_F:
+            if key in (Qt.Key_Escape, Qt.Key_F):
                 if self.video_widget.isFullScreen():
                     self.video_widget.setFullScreen(False)
                     return True
@@ -128,6 +181,40 @@ class VideoPlayerPanel(QWidget):
         return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------------
+    # Seek slider
+    # ------------------------------------------------------------------
+
+    def _on_seek_pressed(self) -> None:
+        self._seeking = True
+
+    def _on_seek_released(self) -> None:
+        self._seeking = False
+        self.player.setPosition(self.seek_slider.value())
+
+    def _on_seek_moved(self, value: int) -> None:
+        self.time_label.setText(f"{_ms_to_str(value)} / {_ms_to_str(self._duration_ms)}")
+
+    # ------------------------------------------------------------------
+    # Volume
+    # ------------------------------------------------------------------
+
+    def _on_volume_changed(self, value: int) -> None:
+        self.audio_output.setVolume(value / 100.0)
+
+    def _toggle_mute(self) -> None:
+        self.audio_output.setMuted(not self.audio_output.isMuted())
+
+    # ------------------------------------------------------------------
+    # Seek shortcuts (±10 s)
+    # ------------------------------------------------------------------
+
+    def _seek_forward(self) -> None:
+        self.player.setPosition(min(self._duration_ms, self.player.position() + 10_000))
+
+    def _seek_backward(self) -> None:
+        self.player.setPosition(max(0, self.player.position() - 10_000))
+
+    # ------------------------------------------------------------------
     # Private slots
     # ------------------------------------------------------------------
 
@@ -135,16 +222,16 @@ class VideoPlayerPanel(QWidget):
         self.player.stop()
 
     def _on_playback_state_changed(self, state) -> None:
-        if state == QMediaPlayer.PlaybackState.PlayingState:
-            self.play_pause_btn.setText("⏸")
-        else:
-            self.play_pause_btn.setText("▶")
+        self.play_pause_btn.setText("⏸" if state == QMediaPlayer.PlaybackState.PlayingState else "▶")
 
     def _on_position_changed(self, position_ms: int) -> None:
+        if not self._seeking:
+            self.seek_slider.setValue(position_ms)
         self.time_label.setText(f"{_ms_to_str(position_ms)} / {_ms_to_str(self._duration_ms)}")
 
     def _on_duration_changed(self, duration_ms: int) -> None:
         self._duration_ms = duration_ms
+        self.seek_slider.setRange(0, duration_ms)
         self.time_label.setText(f"0:00 / {_ms_to_str(duration_ms)}")
 
     def _on_error(self, error, error_string: str) -> None:
