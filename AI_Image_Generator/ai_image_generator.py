@@ -1,5 +1,6 @@
-"""AI Image Studio v2.0.0"""
+"""AI Image Studio v3.0.0"""
 
+import base64
 import json
 import shutil
 import subprocess
@@ -11,20 +12,22 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTextEdit, QComboBox, QSlider, QSpinBox,
     QGroupBox, QFileDialog, QProgressBar, QSizePolicy, QTabWidget,
+    QScrollArea, QFrame, QMessageBox, QLineEdit, QStackedWidget,
+    QGridLayout,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent
 
-VERSION = "2.0.0"
+VERSION = "3.0.2"
 
 SETTINGS_FILE = Path(__file__).parent / "settings.json"
+API_KEYS_FILE = Path(__file__).parent / "api_keys.json"
 WORKFLOWS_DIR = Path(__file__).parent / "Comfy_Workflows"
 DROPPED_DIR   = Path(__file__).parent / "dropped_images"
 UPLOAD_DIR    = Path(__file__).parent / "upload_temp"
 
-WORKFLOWS_DIR.mkdir(exist_ok=True)
-DROPPED_DIR.mkdir(exist_ok=True)
-UPLOAD_DIR.mkdir(exist_ok=True)
+for _d in (WORKFLOWS_DIR, DROPPED_DIR, UPLOAD_DIR):
+    _d.mkdir(exist_ok=True)
 
 # ------------------------------------------------------------------ #
 # Size presets
@@ -118,6 +121,15 @@ STYLESHEET = f"""
         font-size: 10pt;
     }}
     QTextEdit:focus {{ border: 1px solid {ACCENT}; }}
+    QLineEdit {{
+        background-color: {BG_LT};
+        color: {FG};
+        border: 1px solid {BORDER};
+        border-radius: 4px;
+        padding: 5px 8px;
+        font-size: 10pt;
+    }}
+    QLineEdit:focus {{ border: 1px solid {ACCENT}; }}
     QComboBox {{
         background-color: {BG_LT};
         color: {FG};
@@ -185,6 +197,17 @@ STYLESHEET = f"""
     }}
     QProgressBar::chunk {{ background-color: {ACCENT}; border-radius: 3px; }}
     QScrollArea {{ border: none; background: transparent; }}
+    QScrollBar:vertical {{
+        background: {BG_LT};
+        width: 8px;
+        border-radius: 4px;
+    }}
+    QScrollBar::handle:vertical {{
+        background: {BORDER};
+        border-radius: 4px;
+        min-height: 24px;
+    }}
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 """
 
 # ------------------------------------------------------------------ #
@@ -205,6 +228,20 @@ def save_settings(s: dict):
     except Exception:
         pass
 
+def load_api_keys() -> dict:
+    if API_KEYS_FILE.exists():
+        try:
+            return json.loads(API_KEYS_FILE.read_text())
+        except Exception:
+            pass
+    return {}
+
+def save_api_keys(keys: dict):
+    try:
+        API_KEYS_FILE.write_text(json.dumps(keys, indent=2))
+    except Exception:
+        pass
+
 # ------------------------------------------------------------------ #
 # Workflow introspection helpers
 # ------------------------------------------------------------------ #
@@ -217,18 +254,15 @@ def _find_node_by_class(workflow: dict, class_type: str) -> tuple[str, dict] | N
 
 def _patch_workflow_t2i(workflow: dict, prompt: str, width: int, height: int,
                          seed: int, steps: int) -> dict:
-    """Patch a text-to-image workflow with prompt, size, seed, steps."""
     import random
     if seed < 0:
         seed = random.randint(0, 2**31)
 
-    # Patch prompt — PrimitiveStringMultiline or CLIPTextEncode positive
     for _, v in workflow.items():
         if v.get("class_type") == "PrimitiveStringMultiline":
             v["inputs"]["value"] = prompt
             break
     else:
-        # fallback: find positive CLIPTextEncode (not negative)
         for _, v in workflow.items():
             if v.get("class_type") == "CLIPTextEncode":
                 meta = v.get("_meta", {}).get("title", "").lower()
@@ -236,7 +270,6 @@ def _patch_workflow_t2i(workflow: dict, prompt: str, width: int, height: int,
                     v["inputs"]["text"] = prompt
                     break
 
-    # Patch size — EmptySD3LatentImage or EmptyLatentImage
     for cls in ("EmptySD3LatentImage", "EmptyLatentImage"):
         result = _find_node_by_class(workflow, cls)
         if result:
@@ -245,14 +278,12 @@ def _patch_workflow_t2i(workflow: dict, prompt: str, width: int, height: int,
             node["inputs"]["height"] = height
             break
 
-    # Patch KSampler seed + steps
     result = _find_node_by_class(workflow, "KSampler")
     if result:
         _, node = result
         node["inputs"]["seed"] = seed
         node["inputs"]["steps"] = steps
 
-    # Bust cache on any other seed fields
     for v in workflow.values():
         inp = v.get("inputs", {})
         if "noise_seed" in inp:
@@ -262,25 +293,21 @@ def _patch_workflow_t2i(workflow: dict, prompt: str, width: int, height: int,
 
 
 def _patch_workflow_edit(workflow: dict, prompt: str, seed: int, steps: int) -> dict:
-    """Patch an image-edit workflow with prompt, seed, steps."""
     import random
     if seed < 0:
         seed = random.randint(0, 2**31)
 
-    # Patch prompt node
     for _, v in workflow.items():
         if v.get("class_type") == "PrimitiveStringMultiline":
             v["inputs"]["value"] = prompt
             break
 
-    # Patch KSampler
     result = _find_node_by_class(workflow, "KSampler")
     if result:
         _, node = result
         node["inputs"]["seed"] = seed
         node["inputs"]["steps"] = steps
 
-    # Bust noise_seed fields
     for v in workflow.values():
         inp = v.get("inputs", {})
         if "noise_seed" in inp:
@@ -291,7 +318,7 @@ def _patch_workflow_edit(workflow: dict, prompt: str, seed: int, steps: int) -> 
     return workflow
 
 # ------------------------------------------------------------------ #
-# Shared ComfyUI worker
+# Local ComfyUI workers
 # ------------------------------------------------------------------ #
 
 class ComfyWorker(QThread):
@@ -350,7 +377,7 @@ class ComfyWorker(QThread):
                         hist = h
                         break
 
-                except Exception as e:
+                except Exception:
                     self.status.emit(f"Polling... ({elapsed}s)")
                     continue
 
@@ -405,10 +432,6 @@ class ComfyWorker(QThread):
         return resp.json()["name"]
 
 
-# ------------------------------------------------------------------ #
-# Image Editor worker (uploads images then runs ComfyWorker logic)
-# ------------------------------------------------------------------ #
-
 class EditorWorker(ComfyWorker):
     def __init__(self, comfy_url: str, workflow: dict, output_dir: Path,
                  ref_images: list[str], target_size: tuple[int, int]):
@@ -421,14 +444,12 @@ class EditorWorker(ComfyWorker):
             import requests, random, string
             from PIL import Image as PILImage
 
-            # Clear upload temp
             for f in UPLOAD_DIR.iterdir():
                 try:
                     f.unlink()
                 except Exception:
                     pass
 
-            # Find LoadImage nodes in order
             load_nodes = [
                 (k, v) for k, v in self._workflow.items()
                 if v.get("class_type") == "LoadImage"
@@ -447,10 +468,8 @@ class EditorWorker(ComfyWorker):
                 upload_path = UPLOAD_DIR / upload_name
 
                 img = PILImage.open(img_path).convert("RGB")
-                # Resize first image to drive output dimensions
                 if i == 0:
                     img = img.resize((target_w, target_h), PILImage.LANCZOS)
-                # 1-pixel tweak busts ComfyUI content cache
                 px = img.load()
                 r, g, b = px[0, 0]
                 px[0, 0] = ((r + 1) % 256, g, b)
@@ -459,8 +478,176 @@ class EditorWorker(ComfyWorker):
                 uploaded_name = self._upload_image(str(upload_path), requests, upload_name)
                 self._workflow[node_id]["inputs"]["image"] = uploaded_name
 
-            # Now run the base ComfyWorker poll loop
             super().run()
+
+        except Exception as e:
+            import traceback
+            self.error.emit(f"{e}\n\n{traceback.format_exc()}")
+
+
+# ------------------------------------------------------------------ #
+# RunPod workers
+# ------------------------------------------------------------------ #
+
+class RunPodWorker(QThread):
+    """Submits a text-to-image workflow to a RunPod serverless endpoint."""
+    status   = pyqtSignal(str)
+    progress = pyqtSignal(int)
+    done     = pyqtSignal(str)
+    error    = pyqtSignal(str)
+
+    def __init__(self, api_key: str, endpoint_id: str, workflow: dict,
+                 output_dir: Path, prefix: str = "runpod"):
+        super().__init__()
+        self._api_key = api_key
+        self._endpoint_id = endpoint_id.strip()
+        self._workflow = workflow
+        self._output_dir = output_dir
+        self._prefix = prefix
+        self._base = f"https://api.runpod.io/v2/{self._endpoint_id}"
+
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def _poll_and_save(self, requests, job_id: str):
+        import time
+        elapsed = 0
+        while True:
+            time.sleep(4)
+            elapsed += 4
+            if elapsed > 900:
+                raise RuntimeError("RunPod job timed out after 15 minutes")
+
+            r = requests.get(
+                f"{self._base}/status/{job_id}",
+                headers=self._headers(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            data = r.json()
+            status = data.get("status", "")
+
+            if status in ("IN_QUEUE", "IN_PROGRESS"):
+                self.status.emit(f"RunPod: {status} ({elapsed}s)")
+                self.progress.emit(min(20 + elapsed, 85))
+            elif status == "FAILED":
+                raise RuntimeError(f"RunPod job failed: {data.get('error', 'unknown')}")
+            elif status == "COMPLETED":
+                output = data.get("output", {})
+                images = output.get("images", [])
+                if not images:
+                    raise RuntimeError("RunPod returned no images in output")
+
+                self.status.emit("Saving image...")
+                self.progress.emit(92)
+
+                img_entry = images[0]
+                raw_b64 = img_entry.get("data") or img_entry.get("image", "")
+                if not raw_b64:
+                    raise RuntimeError("Unexpected RunPod output format — no base64 data")
+
+                raw_bytes = base64.b64decode(raw_b64)
+                self._output_dir.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                out_path = self._output_dir / f"{self._prefix}_{ts}.png"
+                out_path.write_bytes(raw_bytes)
+
+                self.progress.emit(100)
+                self.done.emit(str(out_path))
+                return
+            else:
+                self.status.emit(f"RunPod: {status} ({elapsed}s)")
+                self.progress.emit(min(20 + elapsed, 85))
+
+    def run(self):
+        try:
+            import requests
+
+            self.status.emit("Submitting to RunPod...")
+            self.progress.emit(10)
+
+            resp = requests.post(
+                f"{self._base}/run",
+                json={"input": {"prompt": self._workflow}},
+                headers=self._headers(),
+                timeout=30,
+            )
+            resp.raise_for_status()
+            job_id = resp.json()["id"]
+
+            self.status.emit(f"Job queued ({job_id[:8]}...)")
+            self.progress.emit(15)
+            self._poll_and_save(requests, job_id)
+
+        except Exception as e:
+            import traceback
+            self.error.emit(f"{e}\n\n{traceback.format_exc()}")
+
+
+class RunPodEditorWorker(RunPodWorker):
+    """Uploads reference images as base64 and runs a scene-compose workflow on RunPod."""
+
+    def __init__(self, api_key: str, endpoint_id: str, workflow: dict,
+                 output_dir: Path, ref_images: list[str], target_size: tuple[int, int]):
+        super().__init__(api_key, endpoint_id, workflow, output_dir, "runpod_edit")
+        self._ref_images = ref_images
+        self._target_size = target_size
+
+    def run(self):
+        try:
+            import requests, random, string
+            from PIL import Image as PILImage
+
+            load_nodes = [
+                (k, v) for k, v in self._workflow.items()
+                if v.get("class_type") == "LoadImage"
+            ]
+            load_nodes.sort(key=lambda x: x[0])
+
+            target_w, target_h = self._target_size
+            image_inputs = []
+
+            for i, img_path in enumerate(self._ref_images[:len(load_nodes)]):
+                node_id, _ = load_nodes[i]
+                self.status.emit(f"Encoding image {i+1}...")
+                self.progress.emit(5 + i * 8)
+
+                rand = ''.join(random.choices(string.ascii_lowercase, k=8))
+                upload_name = f"img_{rand}.png"
+
+                img = PILImage.open(img_path).convert("RGB")
+                if i == 0:
+                    img = img.resize((target_w, target_h), PILImage.LANCZOS)
+                px = img.load()
+                r, g, b = px[0, 0]
+                px[0, 0] = ((r + 1) % 256, g, b)
+
+                import io
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                encoded = base64.b64encode(buf.getvalue()).decode()
+
+                image_inputs.append({"name": upload_name, "image": encoded})
+                self._workflow[node_id]["inputs"]["image"] = upload_name
+
+            self.status.emit("Submitting to RunPod...")
+            self.progress.emit(35)
+
+            resp = requests.post(
+                f"{self._base}/run",
+                json={"input": {"prompt": self._workflow, "images": image_inputs}},
+                headers=self._headers(),
+                timeout=60,
+            )
+            resp.raise_for_status()
+            job_id = resp.json()["id"]
+
+            self.status.emit(f"Job queued ({job_id[:8]}...)")
+            self.progress.emit(40)
+            self._poll_and_save(requests, job_id)
 
         except Exception as e:
             import traceback
@@ -592,7 +779,7 @@ class PreviewPanel(QWidget):
         self._preview.setStyleSheet(
             f"color: {FG_DIM}; background-color: {BG_MED}; border-radius: 4px;"
         )
-        self._preview.setMinimumSize(400, 400)
+        self._preview.setMinimumSize(200, 200)
         self._preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         preview_layout.addWidget(self._preview)
         layout.addWidget(preview_group, stretch=1)
@@ -656,14 +843,210 @@ class PreviewPanel(QWidget):
 
 
 # ------------------------------------------------------------------ #
+# Connection widget  (Local ComfyUI  /  RunPod Serverless)
+# ------------------------------------------------------------------ #
+
+class ConnectionWidget(QGroupBox):
+    """Toggle between Local ComfyUI and RunPod with the appropriate fields."""
+    changed = pyqtSignal()
+
+    def __init__(self, settings: dict, api_keys: dict, prefix: str, parent=None):
+        super().__init__("Connection", parent)
+        self._settings = settings
+        self._api_keys = api_keys
+        self._prefix = prefix
+        self._build_ui()
+
+    def _build_ui(self):
+        outer = QVBoxLayout(self)
+        outer.setSpacing(6)
+
+        mode_row = QHBoxLayout()
+        mode_lbl = QLabel("Mode:")
+        mode_lbl.setFixedWidth(42)
+        self._mode_combo = QComboBox()
+        self._mode_combo.addItem("Local ComfyUI", "local")
+        self._mode_combo.addItem("RunPod Serverless", "runpod")
+        saved_mode = self._settings.get(f"{self._prefix}_conn_mode", "local")
+        idx = 1 if saved_mode == "runpod" else 0
+        self._mode_combo.setCurrentIndex(idx)
+        self._mode_combo.currentIndexChanged.connect(self._on_mode_change)
+        mode_row.addWidget(mode_lbl)
+        mode_row.addWidget(self._mode_combo, stretch=1)
+        outer.addLayout(mode_row)
+
+        # Local ComfyUI row (show/hide instead of stacked widget to avoid height reservation)
+        self._local_widget = QWidget()
+        ll = QHBoxLayout(self._local_widget)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(6)
+        url_lbl = QLabel("URL:")
+        url_lbl.setFixedWidth(30)
+        self._url_edit = QLineEdit(self._settings.get(f"{self._prefix}_url",
+                                                       "http://127.0.0.1:8188"))
+        self._url_edit.textChanged.connect(self._on_change)
+        ll.addWidget(url_lbl)
+        ll.addWidget(self._url_edit)
+        outer.addWidget(self._local_widget)
+
+        # RunPod rows
+        self._runpod_widget = QWidget()
+        rl = QVBoxLayout(self._runpod_widget)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(4)
+        key_row = QHBoxLayout()
+        key_lbl = QLabel("Key:")
+        key_lbl.setFixedWidth(30)
+        self._key_edit = QLineEdit()
+        self._key_edit.setPlaceholderText("rp_xxxxxxxxxxxx")
+        self._key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._key_edit.setText(self._api_keys.get("runpod_api_key", ""))
+        self._key_edit.textChanged.connect(self._on_change)
+        key_row.addWidget(key_lbl)
+        key_row.addWidget(self._key_edit)
+        ep_row = QHBoxLayout()
+        ep_lbl = QLabel("EP:")
+        ep_lbl.setFixedWidth(30)
+        self._ep_edit = QLineEdit()
+        self._ep_edit.setPlaceholderText("abc1def234ghij56")
+        self._ep_edit.setText(self._settings.get(f"{self._prefix}_runpod_endpoint", ""))
+        self._ep_edit.textChanged.connect(self._on_change)
+        ep_row.addWidget(ep_lbl)
+        ep_row.addWidget(self._ep_edit)
+        rl.addLayout(key_row)
+        rl.addLayout(ep_row)
+        outer.addWidget(self._runpod_widget)
+
+        self._local_widget.setVisible(idx == 0)
+        self._runpod_widget.setVisible(idx == 1)
+
+    def _on_mode_change(self, idx: int):
+        self._local_widget.setVisible(idx == 0)
+        self._runpod_widget.setVisible(idx == 1)
+        self._on_change()
+
+    def _on_change(self):
+        mode = self._mode_combo.currentData()
+        self._settings[f"{self._prefix}_conn_mode"] = mode
+        self._settings[f"{self._prefix}_url"] = self._url_edit.text().strip()
+        self._settings[f"{self._prefix}_runpod_endpoint"] = self._ep_edit.text().strip()
+        key = self._key_edit.text().strip()
+        if key:
+            self._api_keys["runpod_api_key"] = key
+            save_api_keys(self._api_keys)
+        save_settings(self._settings)
+        self.changed.emit()
+
+    @property
+    def mode(self) -> str:
+        return self._mode_combo.currentData()
+
+    @property
+    def local_url(self) -> str:
+        return self._url_edit.text().strip()
+
+    @property
+    def runpod_api_key(self) -> str:
+        return self._key_edit.text().strip()
+
+    @property
+    def runpod_endpoint(self) -> str:
+        return self._ep_edit.text().strip()
+
+
+# ------------------------------------------------------------------ #
+# Library thumbnail card
+# ------------------------------------------------------------------ #
+
+_CARD_W  = 174
+_CARD_H  = 210
+_THUMB_W = 158
+_THUMB_H = 138
+_LIB_COLS = 4
+
+
+class ThumbnailCard(QFrame):
+    selected_signal = pyqtSignal(str)
+
+    def __init__(self, img_path: str, parent=None):
+        super().__init__(parent)
+        self._path = img_path
+        self.setFixedSize(_CARD_W, _CARD_H)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._build_ui()
+        self._set_style(False)
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(3)
+
+        self._thumb = QLabel()
+        self._thumb.setFixedSize(_THUMB_W, _THUMB_H)
+        self._thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._thumb.setStyleSheet(f"background-color: {BG}; border-radius: 3px;")
+        pix = QPixmap(self._path)
+        if not pix.isNull():
+            scaled = pix.scaled(_THUMB_W, _THUMB_H,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            self._thumb.setPixmap(scaled)
+        else:
+            self._thumb.setText("?")
+        layout.addWidget(self._thumb)
+
+        name = Path(self._path).name
+        if len(name) > 22:
+            name = name[:19] + "..."
+        name_lbl = QLabel(name)
+        name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        name_lbl.setStyleSheet(f"color: {FG}; font-size: 8pt; background: transparent; border: none;")
+        layout.addWidget(name_lbl)
+
+        try:
+            mtime = Path(self._path).stat().st_mtime
+            date_str = datetime.fromtimestamp(mtime).strftime("%m/%d  %H:%M")
+        except Exception:
+            date_str = ""
+        date_lbl = QLabel(date_str)
+        date_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        date_lbl.setStyleSheet(f"color: {FG_DIM}; font-size: 7pt; background: transparent; border: none;")
+        layout.addWidget(date_lbl)
+
+    def _set_style(self, selected: bool):
+        border = ACCENT if selected else BORDER
+        bg = BG_MED if selected else BG_LT
+        self.setStyleSheet(f"""
+            QFrame {{
+                background-color: {bg};
+                border: 2px solid {border};
+                border-radius: 6px;
+            }}
+        """)
+
+    def set_selected(self, selected: bool):
+        self._set_style(selected)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.selected_signal.emit(self._path)
+        super().mousePressEvent(event)
+
+    @property
+    def path(self) -> str:
+        return self._path
+
+
+# ------------------------------------------------------------------ #
 # Tab 1 — Text to Image
 # ------------------------------------------------------------------ #
 
 class TextToImageTab(QWidget):
-    def __init__(self, settings: dict, parent=None):
+    def __init__(self, settings: dict, api_keys: dict, parent=None):
         super().__init__(parent)
         self._settings = settings
-        self._worker: ComfyWorker | None = None
+        self._api_keys = api_keys
+        self._worker: QThread | None = None
         self._build_ui()
         self._reload_workflows()
 
@@ -672,18 +1055,21 @@ class TextToImageTab(QWidget):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(12)
 
-        left = QVBoxLayout()
+        left_widget = QWidget()
+        left = QVBoxLayout(left_widget)
         left.setSpacing(10)
+        left.setContentsMargins(4, 4, 4, 4)
 
-        # URL
-        url_group = QGroupBox("ComfyUI Server URL")
-        url_row = QHBoxLayout(url_group)
-        self._url_edit = QTextEdit(self._settings.get("t2i_url", "http://127.0.0.1:8188"))
-        self._url_edit.setFixedHeight(36)
-        self._url_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
-        self._url_edit.textChanged.connect(self._save_state)
-        url_row.addWidget(self._url_edit)
-        left.addWidget(url_group)
+        left_scroll = QScrollArea()
+        left_scroll.setWidget(left_widget)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setMinimumWidth(280)
+        left_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        # Connection (Local / RunPod)
+        self._conn = ConnectionWidget(self._settings, self._api_keys, "t2i")
+        left.addWidget(self._conn)
 
         # Workflow
         wf_group = QGroupBox("Workflow")
@@ -788,7 +1174,7 @@ class TextToImageTab(QWidget):
         self._status.setWordWrap(True)
         left.addWidget(self._status)
 
-        root.addLayout(left, stretch=1)
+        root.addWidget(left_scroll, stretch=1)
 
         self._preview_panel = PreviewPanel()
         root.addWidget(self._preview_panel, stretch=2)
@@ -809,11 +1195,11 @@ class TextToImageTab(QWidget):
     def _save_state(self):
         if not hasattr(self, '_prompt'):
             return
-        self._settings["t2i_url"] = self._url_edit.toPlainText().strip()
         self._settings["t2i_prompt"] = self._prompt.toPlainText()
         self._settings["t2i_steps"] = self._steps.value()
         self._settings["t2i_workflow"] = self._wf_combo.currentData() or ""
         self._settings["t2i_size"] = list(self._size_combo.currentData() or (1024, 1024))
+        self._settings["t2i_output_dir"] = self._out_edit.toPlainText().strip()
         save_settings(self._settings)
 
     def _browse_output(self):
@@ -825,7 +1211,6 @@ class TextToImageTab(QWidget):
             save_settings(self._settings)
 
     def _generate(self):
-        url = self._url_edit.toPlainText().strip()
         workflow_path = self._wf_combo.currentData()
         prompt = self._prompt.toPlainText().strip()
         out = self._out_edit.toPlainText().strip()
@@ -852,7 +1237,17 @@ class TextToImageTab(QWidget):
         self._preview_panel.set_message("Generating...")
         self._save_state()
 
-        self._worker = ComfyWorker(url, workflow, Path(out), "t2i")
+        if self._conn.mode == "runpod":
+            api_key = self._conn.runpod_api_key
+            endpoint = self._conn.runpod_endpoint
+            if not api_key or not endpoint:
+                self._status.setText("Enter RunPod API key and endpoint ID.")
+                self._gen_btn.setEnabled(True)
+                return
+            self._worker = RunPodWorker(api_key, endpoint, workflow, Path(out), "t2i")
+        else:
+            self._worker = ComfyWorker(self._conn.local_url, workflow, Path(out), "t2i")
+
         self._worker.status.connect(self._status.setText)
         self._worker.progress.connect(self._progress.setValue)
         self._worker.done.connect(self._on_done)
@@ -872,14 +1267,15 @@ class TextToImageTab(QWidget):
 
 
 # ------------------------------------------------------------------ #
-# Tab 2 — Image Editor
+# Tab 2 — Scene Composer
 # ------------------------------------------------------------------ #
 
-class ImageEditorTab(QWidget):
-    def __init__(self, settings: dict, parent=None):
+class SceneComposerTab(QWidget):
+    def __init__(self, settings: dict, api_keys: dict, parent=None):
         super().__init__(parent)
         self._settings = settings
-        self._worker: EditorWorker | None = None
+        self._api_keys = api_keys
+        self._worker: QThread | None = None
         self._build_ui()
         self._reload_workflows()
 
@@ -888,18 +1284,21 @@ class ImageEditorTab(QWidget):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(12)
 
-        left = QVBoxLayout()
+        left_widget = QWidget()
+        left = QVBoxLayout(left_widget)
         left.setSpacing(10)
+        left.setContentsMargins(4, 4, 4, 4)
 
-        # URL
-        url_group = QGroupBox("ComfyUI Server URL")
-        url_row = QHBoxLayout(url_group)
-        self._url_edit = QTextEdit(self._settings.get("edit_url", "http://127.0.0.1:8188"))
-        self._url_edit.setFixedHeight(36)
-        self._url_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
-        self._url_edit.textChanged.connect(self._save_state)
-        url_row.addWidget(self._url_edit)
-        left.addWidget(url_group)
+        left_scroll = QScrollArea()
+        left_scroll.setWidget(left_widget)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setMinimumWidth(280)
+        left_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        # Connection (Local / RunPod)
+        self._conn = ConnectionWidget(self._settings, self._api_keys, "edit")
+        left.addWidget(self._conn)
 
         # Workflow
         wf_group = QGroupBox("Workflow")
@@ -929,23 +1328,23 @@ class ImageEditorTab(QWidget):
         size_layout.addWidget(self._size_combo)
         left.addWidget(size_group)
 
-        # Image slots
+        # Image slots — 2×2 grid so each slot stays 160px wide
         refs_group = QGroupBox("Reference Images  (drag & drop or click)")
         refs_layout = QVBoxLayout(refs_group)
-        refs_layout.setContentsMargins(6, 10, 6, 16)
-        slot_row = QHBoxLayout()
-        slot_row.setSpacing(8)
+        refs_layout.setContentsMargins(6, 10, 6, 10)
+        slot_grid = QGridLayout()
+        slot_grid.setSpacing(8)
         self._slots: list[ImageSlot] = []
         saved_images = self._settings.get("edit_images", [None, None, None, None])
         for i, lbl in enumerate(["Image 1", "Image 2", "Image 3", "Image 4"]):
             slot = ImageSlot(lbl)
             slot.image_changed.connect(self._save_state)
             self._slots.append(slot)
-            slot_row.addWidget(slot)
+            slot_grid.addWidget(slot, i // 2, i % 2)
             saved = saved_images[i] if i < len(saved_images) else None
             if saved and Path(saved).exists():
                 slot.set_image(saved, copy=False)
-        refs_layout.addLayout(slot_row)
+        refs_layout.addLayout(slot_grid)
         left.addWidget(refs_group)
 
         clear_row = QHBoxLayout()
@@ -962,7 +1361,7 @@ class ImageEditorTab(QWidget):
         instr_layout = QVBoxLayout(instr_group)
         self._instruction = QTextEdit()
         self._instruction.setPlaceholderText(
-            "Describe the edit, e.g.:\n"
+            "Describe the scene, e.g.:\n"
             "\"Place these two people on a beach at sunset\""
         )
         self._instruction.setPlainText(self._settings.get("edit_prompt", ""))
@@ -1019,7 +1418,7 @@ class ImageEditorTab(QWidget):
 
         left.addStretch()
 
-        self._compose_btn = QPushButton("🎨  Generate Edit")
+        self._compose_btn = QPushButton("🎨  Compose Scene")
         self._compose_btn.setFixedHeight(50)
         self._compose_btn.setStyleSheet(f"font-size:13pt; background-color:{ACCENT}; border-radius:6px;")
         self._compose_btn.clicked.connect(self._compose)
@@ -1029,13 +1428,13 @@ class ImageEditorTab(QWidget):
         self._progress.setRange(0, 100)
         left.addWidget(self._progress)
 
-        self._status = QLabel("Load reference images and describe your edit")
+        self._status = QLabel("Load reference images and describe your scene")
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._status.setStyleSheet(f"color:{FG_DIM}; font-size:9pt;")
         self._status.setWordWrap(True)
         left.addWidget(self._status)
 
-        root.addLayout(left, stretch=1)
+        root.addWidget(left_scroll, stretch=1)
 
         self._preview_panel = PreviewPanel()
         root.addWidget(self._preview_panel, stretch=2)
@@ -1056,12 +1455,12 @@ class ImageEditorTab(QWidget):
     def _save_state(self):
         if not hasattr(self, '_instruction'):
             return
-        self._settings["edit_url"] = self._url_edit.toPlainText().strip()
         self._settings["edit_prompt"] = self._instruction.toPlainText()
         self._settings["edit_steps"] = self._steps.value()
         self._settings["edit_workflow"] = self._wf_combo.currentData() or ""
         self._settings["edit_images"] = [s.path for s in self._slots]
         self._settings["edit_size"] = list(self._size_combo.currentData() or (1024, 1024))
+        self._settings["edit_output_dir"] = self._out_edit.toPlainText().strip()
         save_settings(self._settings)
 
     def _browse_output(self):
@@ -1077,7 +1476,6 @@ class ImageEditorTab(QWidget):
             slot.clear_image()
 
     def _compose(self):
-        url = self._url_edit.toPlainText().strip()
         workflow_path = self._wf_combo.currentData()
         instruction = self._instruction.toPlainText().strip()
         out = self._out_edit.toPlainText().strip()
@@ -1109,7 +1507,21 @@ class ImageEditorTab(QWidget):
         self._preview_panel.set_message("Sending to ComfyUI...")
         self._save_state()
 
-        self._worker = EditorWorker(url, workflow, Path(out), ref_images, (w, h))
+        if self._conn.mode == "runpod":
+            api_key = self._conn.runpod_api_key
+            endpoint = self._conn.runpod_endpoint
+            if not api_key or not endpoint:
+                self._status.setText("Enter RunPod API key and endpoint ID.")
+                self._compose_btn.setEnabled(True)
+                return
+            self._worker = RunPodEditorWorker(
+                api_key, endpoint, workflow, Path(out), ref_images, (w, h)
+            )
+        else:
+            self._worker = EditorWorker(
+                self._conn.local_url, workflow, Path(out), ref_images, (w, h)
+            )
+
         self._worker.status.connect(self._status.setText)
         self._worker.progress.connect(self._progress.setValue)
         self._worker.done.connect(self._on_done)
@@ -1129,6 +1541,208 @@ class ImageEditorTab(QWidget):
 
 
 # ------------------------------------------------------------------ #
+# Tab 3 — Library
+# ------------------------------------------------------------------ #
+
+class LibraryTab(QWidget):
+    def __init__(self, settings: dict, parent=None):
+        super().__init__(parent)
+        self._settings = settings
+        self._cards: list[ThumbnailCard] = []
+        self._selected_card: ThumbnailCard | None = None
+        self._all_paths: list[str] = []
+        self._build_ui()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
+
+        # Toolbar
+        toolbar = QHBoxLayout()
+        refresh_btn = QPushButton("↻  Refresh")
+        refresh_btn.setObjectName("secondary")
+        refresh_btn.clicked.connect(self.refresh)
+        filter_lbl = QLabel("Filter:")
+        self._filter_edit = QLineEdit()
+        self._filter_edit.setPlaceholderText("Filename...")
+        self._filter_edit.setFixedWidth(200)
+        self._filter_edit.textChanged.connect(self._apply_filter)
+        clear_filter_btn = QPushButton("✕")
+        clear_filter_btn.setObjectName("secondary")
+        clear_filter_btn.setFixedSize(28, 28)
+        clear_filter_btn.setToolTip("Clear filter")
+        clear_filter_btn.clicked.connect(lambda: self._filter_edit.clear())
+        self._count_lbl = QLabel("0 images")
+        self._count_lbl.setStyleSheet(f"color:{FG_DIM}; font-size:9pt;")
+        toolbar.addWidget(refresh_btn)
+        toolbar.addSpacing(12)
+        toolbar.addWidget(filter_lbl)
+        toolbar.addWidget(self._filter_edit)
+        toolbar.addWidget(clear_filter_btn)
+        toolbar.addStretch()
+        toolbar.addWidget(self._count_lbl)
+        root.addLayout(toolbar)
+
+        # Split: grid left | preview right
+        split = QHBoxLayout()
+        split.setSpacing(12)
+
+        # Left — scrollable thumbnail grid
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._grid_widget = QWidget()
+        self._grid_widget.setStyleSheet(f"background-color: {BG};")
+        self._grid_layout = QGridLayout(self._grid_widget)
+        self._grid_layout.setSpacing(8)
+        self._grid_layout.setContentsMargins(4, 4, 4, 4)
+        self._grid_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self._scroll.setWidget(self._grid_widget)
+        split.addWidget(self._scroll, stretch=3)
+
+        # Right — preview + info + actions
+        right_widget = QWidget()
+        right_widget.setFixedWidth(370)
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
+
+        self._lib_preview = PreviewPanel()
+        self._lib_preview.set_message("Select an image")
+        right_layout.addWidget(self._lib_preview, stretch=1)
+
+        info_group = QGroupBox("Info")
+        info_layout = QVBoxLayout(info_group)
+        info_layout.setSpacing(3)
+        self._meta_name = QLabel("—")
+        self._meta_name.setWordWrap(True)
+        self._meta_name.setStyleSheet(f"font-size:9pt; color:{FG};")
+        self._meta_date = QLabel("—")
+        self._meta_date.setStyleSheet(f"font-size:8pt; color:{FG_DIM};")
+        self._meta_size = QLabel("—")
+        self._meta_size.setStyleSheet(f"font-size:8pt; color:{FG_DIM};")
+        info_layout.addWidget(self._meta_name)
+        info_layout.addWidget(self._meta_date)
+        info_layout.addWidget(self._meta_size)
+        right_layout.addWidget(info_group)
+
+        action_row = QHBoxLayout()
+        self._lib_open_btn = QPushButton("📁  Open Folder")
+        self._lib_open_btn.setObjectName("secondary")
+        self._lib_open_btn.setEnabled(False)
+        self._lib_open_btn.clicked.connect(self._open_folder)
+        self._lib_delete_btn = QPushButton("🗑  Delete")
+        self._lib_delete_btn.setObjectName("danger")
+        self._lib_delete_btn.setEnabled(False)
+        self._lib_delete_btn.clicked.connect(self._delete_selected)
+        action_row.addWidget(self._lib_open_btn)
+        action_row.addWidget(self._lib_delete_btn)
+        right_layout.addLayout(action_row)
+
+        split.addWidget(right_widget)
+        root.addLayout(split, stretch=1)
+
+    def refresh(self):
+        dirs = []
+        for key in ("t2i_output_dir", "edit_output_dir"):
+            d = self._settings.get(key, "")
+            if d and Path(d).exists():
+                dirs.append(Path(d))
+
+        imgs: list[Path] = []
+        for d in dirs:
+            for ext in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
+                imgs.extend(d.glob(ext))
+
+        # Deduplicate and sort newest first
+        seen: set[str] = set()
+        unique: list[Path] = []
+        for p in imgs:
+            if str(p) not in seen:
+                seen.add(str(p))
+                unique.append(p)
+        unique.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+        self._all_paths = [str(p) for p in unique[:200]]
+        self._apply_filter()
+
+    def _apply_filter(self):
+        query = self._filter_edit.text().lower()
+        filtered = [p for p in self._all_paths
+                    if not query or query in Path(p).name.lower()]
+        self._rebuild_grid(filtered)
+
+    def _rebuild_grid(self, paths: list[str]):
+        for card in self._cards:
+            self._grid_layout.removeWidget(card)
+            card.setParent(None)
+            card.deleteLater()
+        self._cards.clear()
+        self._selected_card = None
+
+        for i, path in enumerate(paths):
+            card = ThumbnailCard(path)
+            card.selected_signal.connect(self._on_card_clicked)
+            self._cards.append(card)
+            row, col = divmod(i, _LIB_COLS)
+            self._grid_layout.addWidget(card, row, col)
+
+        self._count_lbl.setText(f"{len(paths)} image{'s' if len(paths) != 1 else ''}")
+
+    def _on_card_clicked(self, path: str):
+        if self._selected_card:
+            self._selected_card.set_selected(False)
+
+        for card in self._cards:
+            if card.path == path:
+                card.set_selected(True)
+                self._selected_card = card
+                break
+
+        self._lib_preview.show_image(path)
+
+        p = Path(path)
+        self._meta_name.setText(p.name)
+        try:
+            stat = p.stat()
+            mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d  %H:%M:%S")
+            size_kb = stat.st_size / 1024
+            self._meta_date.setText(f"Modified: {mtime}")
+            self._meta_size.setText(f"Size: {size_kb:.1f} KB   ({p.suffix.upper().lstrip('.')})")
+        except Exception:
+            pass
+
+        self._lib_open_btn.setEnabled(True)
+        self._lib_delete_btn.setEnabled(True)
+
+    def _open_folder(self):
+        if self._selected_card:
+            subprocess.Popen(f'explorer "{Path(self._selected_card.path).parent}"')
+
+    def _delete_selected(self):
+        if not self._selected_card:
+            return
+        path = self._selected_card.path
+        reply = QMessageBox.question(
+            self, "Delete Image",
+            f"Permanently delete:\n{Path(path).name}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                Path(path).unlink()
+                self.refresh()
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not delete file:\n{e}")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._all_paths:
+            self.refresh()
+
+
+# ------------------------------------------------------------------ #
 # Main window
 # ------------------------------------------------------------------ #
 
@@ -1136,10 +1750,11 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self._settings = load_settings()
+        self._api_keys = load_api_keys()
 
         self.setWindowTitle(f"AI Image Studio  v{VERSION}")
-        self.setMinimumSize(1200, 820)
-        self.resize(1500, 940)
+        self.setMinimumSize(800, 600)
+        self.resize(1400, 900)
         self.setStyleSheet(STYLESHEET)
 
         central = QWidget()
@@ -1154,10 +1769,12 @@ class MainWindow(QMainWindow):
         root.addWidget(title)
 
         tabs = QTabWidget()
-        self._t2i_tab = TextToImageTab(self._settings)
-        self._edit_tab = ImageEditorTab(self._settings)
-        tabs.addTab(self._t2i_tab, "✨  Text to Image")
-        tabs.addTab(self._edit_tab, "🎨  Image Editor")
+        self._t2i_tab     = TextToImageTab(self._settings, self._api_keys)
+        self._compose_tab = SceneComposerTab(self._settings, self._api_keys)
+        self._library_tab = LibraryTab(self._settings)
+        tabs.addTab(self._t2i_tab,     "✨  Text to Image")
+        tabs.addTab(self._compose_tab, "🎨  Scene Composer")
+        tabs.addTab(self._library_tab, "🖼  Library")
         root.addWidget(tabs)
 
     def closeEvent(self, event):
