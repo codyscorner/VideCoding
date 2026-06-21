@@ -70,6 +70,10 @@ Your ComfyUI workflow must be exported in **API format** (enable Dev Mode in Com
 
 ## Changelog
 
+### v1.3.0
+- **Auto Run mode** — process all images unattended N at a time: set batch size (1–50), click **▶▶ Auto Run**, and the app automatically selects the next batch and starts it when each batch finishes; processed images are removed from the grid between batches; **⏹ Stop After Batch** lets you halt after the current batch completes
+- Auto Run is disabled when "Show all" is checked (no unprocessed images to iterate)
+
 ### v1.2.1
 - Version number now displayed in window title bar
 - Log window clears automatically on each new Start

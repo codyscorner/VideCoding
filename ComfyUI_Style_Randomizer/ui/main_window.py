@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QSplitter, QStackedWidget,
     QFileDialog, QAbstractItemView, QPlainTextEdit, QCheckBox,
     QStatusBar, QComboBox, QMessageBox, QDialog, QSizePolicy,
+    QSpinBox,
 )
 
 from config import ConfigManager
@@ -482,6 +483,13 @@ class ThumbnailGrid(QListWidget):
     def selected_keys(self) -> list[str]:
         return [item.data(Qt.ItemDataRole.UserRole) for item in self.selectedItems()]
 
+    def remove_items_by_stems(self, stems: set[str]):
+        for i in range(self.count() - 1, -1, -1):
+            item = self.item(i)
+            key = item.data(Qt.ItemDataRole.UserRole) if item else None
+            if key and Path(key).stem in stems:
+                self.takeItem(i)
+
 
 # ------------------------------------------------------------------ #
 # Main window
@@ -499,6 +507,9 @@ class MainWindow(QMainWindow):
         self._lib_loader: LibraryLoaderThread | None = None
         self._last_lib_dir: str = ""
         self._processed_count: int = 0
+        self._auto_mode = False
+        self._auto_stop_requested = False
+        self._auto_current_batch: list[Path] = []
 
         self._build_ui()
         self._load_initial_state()
@@ -590,7 +601,7 @@ class MainWindow(QMainWindow):
         self._show_all_chk.setToolTip("Include already-processed images (shown with ✓ badge)")
         self._show_all_chk.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
         self._show_all_chk.setChecked(False)
-        self._show_all_chk.stateChanged.connect(lambda _: self._reload_images())
+        self._show_all_chk.stateChanged.connect(self._on_show_all_changed)
         input_row.addWidget(input_lbl)
         input_row.addWidget(self._input_edit, stretch=1)
         input_row.addWidget(input_browse)
@@ -664,6 +675,47 @@ class MainWindow(QMainWindow):
         bottom_row.addWidget(self._cancel_btn)
 
         layout.addLayout(bottom_row)
+
+        # Auto run row
+        auto_row = QHBoxLayout()
+        auto_row.addStretch()
+        auto_lbl = QLabel("Batch size:")
+        auto_lbl.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
+        self._auto_size_spin = QSpinBox()
+        self._auto_size_spin.setRange(1, 50)
+        self._auto_size_spin.setValue(4)
+        self._auto_size_spin.setFixedHeight(28)
+        self._auto_size_spin.setFixedWidth(64)
+        self._auto_size_spin.setToolTip("Images per auto batch (1–50)")
+        _auto_btn_style = "font-size: 9pt; padding: 4px 14px;"
+        self._auto_btn = QPushButton("▶▶  Auto Run")
+        self._auto_btn.setFixedHeight(28)
+        self._auto_btn.setStyleSheet(
+            f"QPushButton {{ background-color: #4a78d4; color: white;"
+            f" border-radius: 4px; font-weight: bold; {_auto_btn_style} }}"
+            f"QPushButton:hover {{ background-color: #5b8ce0; }}"
+            f"QPushButton:disabled {{ background-color: {COLORS['bg_light']};"
+            f" color: {COLORS['fg_dim']}; {_auto_btn_style} }}"
+        )
+        self._auto_btn.setToolTip("Automatically process all images N at a time, no prompts between batches")
+        self._auto_btn.clicked.connect(self._start_auto)
+        self._stop_auto_btn = QPushButton("⏹  Stop After Batch")
+        self._stop_auto_btn.setObjectName("cancel_btn")
+        self._stop_auto_btn.setFixedHeight(28)
+        self._stop_auto_btn.setStyleSheet(f"QPushButton {{ font-size: 9pt; padding: 4px 14px; }}")
+        self._stop_auto_btn.setEnabled(False)
+        self._stop_auto_btn.setToolTip("Finish the current batch then stop auto mode")
+        self._stop_auto_btn.clicked.connect(self._stop_auto_after_batch)
+        auto_row.addWidget(auto_lbl)
+        auto_row.addSpacing(4)
+        auto_row.addWidget(self._auto_size_spin)
+        auto_row.addSpacing(10)
+        auto_row.addWidget(self._auto_btn)
+        auto_row.addSpacing(8)
+        auto_row.addWidget(self._stop_auto_btn)
+        auto_row.addStretch()
+        layout.addLayout(auto_row)
+
         return page
 
     def _build_library_page(self) -> QWidget:
@@ -778,6 +830,11 @@ class MainWindow(QMainWindow):
         self._reload_prompts()
         self._update_mode_label()
         self._update_status()
+        self._update_auto_buttons()
+
+    def _on_show_all_changed(self):
+        self._reload_images()
+        self._update_auto_buttons()
 
     def _existing_output_stems(self) -> set:
         output_dir = Path(self._config.get("output_dir", ""))
@@ -998,12 +1055,52 @@ class MainWindow(QMainWindow):
             self._reload_images()  # output_dir may have changed; refresh processed stems
 
     # ------------------------------------------------------------------ #
+    # Auto mode
+    # ------------------------------------------------------------------ #
+
+    def _get_next_auto_batch(self) -> list[Path]:
+        count = self._thumb_grid.count()
+        if count == 0:
+            return []
+        batch_size = min(self._auto_size_spin.value(), count)
+        return [Path(self._thumb_grid.item(i).data(Qt.ItemDataRole.UserRole))
+                for i in range(batch_size)]
+
+    def _start_auto(self):
+        batch = self._get_next_auto_batch()
+        if not batch:
+            QMessageBox.information(self, "Auto Run", "No images remaining in the grid.")
+            return
+        self._auto_mode = True
+        self._auto_stop_requested = False
+        self._auto_current_batch = batch
+        self._update_auto_buttons()
+        self._start(batch, clear_log=True)
+
+    def _stop_auto_after_batch(self):
+        self._auto_stop_requested = True
+        self._stop_auto_btn.setEnabled(False)
+        self._append_log("Stopping after current batch…")
+
+    def _update_auto_buttons(self):
+        show_all = self._show_all_chk.isChecked()
+        self._auto_btn.setEnabled(not self._auto_mode and not show_all)
+        self._auto_btn.setToolTip(
+            "Disabled: uncheck 'Show all' before using Auto Run"
+            if show_all else
+            "Automatically process all images N at a time, no prompts between batches"
+        )
+        self._stop_auto_btn.setEnabled(self._auto_mode and not self._auto_stop_requested)
+
+    # ------------------------------------------------------------------ #
     # Worker control
     # ------------------------------------------------------------------ #
 
-    def _start(self):
-        self._log_view.clear()
-        images = self._thumb_grid.all_paths()
+    def _start(self, images: list[Path] | None = None, clear_log: bool = True):
+        if clear_log:
+            self._log_view.clear()
+        if images is None:
+            images = self._thumb_grid.all_paths()
         if not images:
             self._append_log("No images found. Select an input folder.")
             return
@@ -1035,6 +1132,11 @@ class MainWindow(QMainWindow):
         self._worker.start()
 
     def _cancel(self):
+        if self._auto_mode:
+            self._auto_mode = False
+            self._auto_stop_requested = False
+            self._auto_current_batch = []
+            self._update_auto_buttons()
         if self._worker:
             self._worker.cancel()
         self._cancel_btn.setEnabled(False)
@@ -1044,10 +1146,39 @@ class MainWindow(QMainWindow):
         self._start_btn.setEnabled(True)
         self._cancel_btn.setEnabled(False)
         self._last_lib_dir = ""  # force library to reload next time it's opened
+
+        if self._auto_mode:
+            # Remove the batch we just finished from the grid
+            processed_stems = {p.stem for p in self._auto_current_batch}
+            if not self._show_all_chk.isChecked():
+                self._thumb_grid.remove_items_by_stems(processed_stems)
+
+            if not self._auto_stop_requested:
+                next_batch = self._get_next_auto_batch()
+                if next_batch:
+                    self._auto_current_batch = next_batch
+                    self._start(next_batch, clear_log=False)
+                    return
+                # Grid exhausted
+                self._append_log("Auto mode complete — no images remaining.")
+            else:
+                self._append_log("Auto mode stopped after batch.")
+
+            self._auto_mode = False
+            self._auto_stop_requested = False
+            self._auto_current_batch = []
+            self._update_auto_buttons()
+            self._reload_images()
+            return
+
         self._reload_images()
 
     def _on_error(self, msg: str):
         self._append_log(f"ERROR: {msg}")
+        self._auto_mode = False
+        self._auto_stop_requested = False
+        self._auto_current_batch = []
+        self._update_auto_buttons()
         self._start_btn.setEnabled(True)
         self._cancel_btn.setEnabled(False)
 
