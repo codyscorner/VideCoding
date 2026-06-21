@@ -1,6 +1,6 @@
 # VibeCoding — Daily Progress Tracker
 **Session Date:** 2026-06-21
-**Current Branch:** master (clean)
+**Current Branch:** feature/screensnap-p1 (PR #11 open → master)
 
 ---
 
@@ -16,7 +16,7 @@ When starting a new context window, read this file first. It tells you exactly w
 - [x] ~~Delete `WinFolderMover/` duplicate~~ ✅ commit `ed5bc3d`
 - [x] ~~Rewrite main README.md as centralized project index~~ ✅ commit `304842d`
 - [x] ~~**Build Desktop Video Browser**~~ ✅ v1.1.0 — PR #10 (`feature/desktop-video-browser`)
-- [ ] **Implement ScreenSnap capture stubs** — WPF/.NET 10 project, capture logic is all stubs
+- [x] ~~**ScreenSnap P1 tools**~~ ✅ Ellipse, Freehand, Highlight — PR #11 (`feature/screensnap-p1`)
 - [ ] **Build ImageConverter** — batch image format converter, plan in `ImageConverter/PROJECT_SUMMARY.md`
 
 ### 🟡 Medium Priority
@@ -47,6 +47,14 @@ When starting a new context window, read this file first. It tells you exactly w
 - Renamed README/plan docs to PROJECT_SUMMARY.md across 25 projects
 - Created new PROJECT_SUMMARY.md from scratch for 8 projects with no docs
 - Committed: `adc2beb` — pushed to `feature/style-randomizer-v1.2.1`
+
+### ✅ DONE — ScreenSnap P1 tools
+- Added EllipseLayer (drag-to-draw ellipse, proper ellipse hit-test)
+- Added FreehandLayer (free-draw path, round caps, accumulated on MouseMove)
+- Added HighlightLayer (semi-transparent yellow fill rectangle)
+- Wired all three into AnnotationCanvas with live drag preview
+- Added toolbar buttons + keyboard shortcuts: E=ellipse, F=freehand, H=highlight
+- 34 tests still passing — PR #11 open on `feature/screensnap-p1`
 
 ---
 
