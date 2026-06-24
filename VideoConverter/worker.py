@@ -50,6 +50,7 @@ class ConversionWorker(QThread):
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                     text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
                 )
                 stderr_lines: list[str] = []
                 for line in self._proc.stderr:
