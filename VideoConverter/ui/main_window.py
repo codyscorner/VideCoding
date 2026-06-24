@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import shutil
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSlot
@@ -25,6 +27,8 @@ from PyQt6.QtWidgets import (
 )
 
 from worker import ConversionWorker
+
+CONFIG_FILE = Path(__file__).parent.parent / "video_converter_config.json"
 
 VIDEO_EXTENSIONS = {
     ".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv",
@@ -294,6 +298,7 @@ class MainWindow(QMainWindow):
         self._worker: ConversionWorker | None = None
 
         self._build_ui()
+        self._load_config()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -381,6 +386,21 @@ class MainWindow(QMainWindow):
         sfx_row.addWidget(self._suffix_edit, 1)
         sg.addLayout(sfx_row)
 
+        # FFmpeg path
+        ffmpeg_row = QHBoxLayout()
+        ffmpeg_lbl = QLabel("FFmpeg Path:")
+        ffmpeg_lbl.setFixedWidth(110)
+        ffmpeg_row.addWidget(ffmpeg_lbl)
+        self._ffmpeg_edit = QLineEdit()
+        self._ffmpeg_edit.setPlaceholderText("ffmpeg  (if on PATH) — or browse to ffmpeg.exe")
+        self._ffmpeg_edit.textChanged.connect(self._save_config)
+        ffmpeg_row.addWidget(self._ffmpeg_edit, 1)
+        ffmpeg_browse = QPushButton("Browse…")
+        ffmpeg_browse.setFixedWidth(80)
+        ffmpeg_browse.clicked.connect(self._browse_ffmpeg)
+        ffmpeg_row.addWidget(ffmpeg_browse)
+        sg.addLayout(ffmpeg_row)
+
         root.addWidget(settings)
 
         # Action row
@@ -452,6 +472,66 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Select Output Folder")
         if folder:
             self._out_dir_edit.setText(folder)
+
+    def _browse_ffmpeg(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Locate ffmpeg.exe", "", "Executable (*.exe);;All Files (*.*)"
+        )
+        if path:
+            self._ffmpeg_edit.setText(path)
+
+    # ------------------------------------------------------------------
+    # Config persistence
+
+    def _load_config(self):
+        try:
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        ffmpeg = data.get("ffmpeg_path", "")
+        if not ffmpeg:
+            ffmpeg = self._auto_find_ffmpeg()
+        self._ffmpeg_edit.setText(ffmpeg)
+
+    @staticmethod
+    def _auto_find_ffmpeg() -> str:
+        # 1. Check PATH
+        found = shutil.which("ffmpeg")
+        if found:
+            return found
+
+        # 2. Check Chain Automator config (sibling app in the same repo)
+        chain_cfg = Path(__file__).parent.parent.parent / "ComfyUI_Chain_Automator" / "main_config.json"
+        try:
+            data = json.loads(chain_cfg.read_text(encoding="utf-8"))
+            p = Path(data.get("ffmpeg_path", ""))
+            if p.exists():
+                return str(p)
+        except Exception:
+            pass
+
+        # 3. Scan all venvs under known Python/pip roots for imageio_ffmpeg binaries
+        search_roots = [
+            Path("C:/AI"),
+            Path("C:/Users") / Path(__file__).parts[2] / "AppData/Local/Programs/Python",
+            Path("P:/AI"),
+        ]
+        for root in search_roots:
+            if not root.exists():
+                continue
+            for exe in root.rglob("ffmpeg-win-x86_64*.exe"):
+                return str(exe)
+            for exe in root.rglob("ffmpeg.exe"):
+                return str(exe)
+
+        return ""
+
+    def _save_config(self):
+        data = {"ffmpeg_path": self._ffmpeg_edit.text().strip()}
+        try:
+            CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
     def _add_files(self, paths: list[Path]):
         existing = set(self._files)
@@ -552,7 +632,8 @@ class MainWindow(QMainWindow):
 
         self._set_controls_busy(True)
 
-        self._worker = ConversionWorker(jobs)
+        ffmpeg_path = self._ffmpeg_edit.text().strip() or "ffmpeg"
+        self._worker = ConversionWorker(jobs, ffmpeg_path=ffmpeg_path)
         self._worker.progress.connect(self._on_progress)
         self._worker.file_done.connect(self._on_file_done)
         self._worker.log.connect(self._log_append)
