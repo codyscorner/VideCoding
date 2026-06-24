@@ -42,12 +42,45 @@ PRESETS = [
         "args": ["-vcodec", "libxvid", "-q:v", "4", "-acodec", "mp3", "-q:a", "4"],
     },
     {
-        "label": "MP4 — H.264 Baseline (universal device compatibility)",
+        "label": "MP4 — H.264 Baseline (maximum device compatibility)",
         "ext": ".mp4",
         "args": [
             "-vcodec", "libx264",
             "-profile:v", "baseline",
             "-level", "3.1",
+            "-pix_fmt", "yuv420p",
+            "-acodec", "aac",
+            "-b:a", "128k",
+        ],
+    },
+    {
+        "label": "MP4 — H.264 High (modern TVs, phones, PC players)",
+        "ext": ".mp4",
+        "args": [
+            "-vcodec", "libx264",
+            "-profile:v", "high",
+            "-pix_fmt", "yuv420p",
+            "-acodec", "aac",
+            "-b:a", "128k",
+        ],
+    },
+    {
+        "label": "MP4 — H.265 / HEVC (newer devices, ~50% smaller files)",
+        "ext": ".mp4",
+        "args": [
+            "-vcodec", "libx265",
+            "-pix_fmt", "yuv420p",
+            "-acodec", "aac",
+            "-b:a", "128k",
+        ],
+    },
+    {
+        "label": "MP4 — MPEG-4 Part 2 (very old devices / frames without H.264)",
+        "ext": ".mp4",
+        "args": [
+            "-vcodec", "mpeg4",
+            "-vtag", "xvid",
+            "-q:v", "4",
             "-pix_fmt", "yuv420p",
             "-acodec", "aac",
             "-b:a", "128k",
