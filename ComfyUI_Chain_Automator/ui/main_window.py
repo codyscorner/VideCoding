@@ -2,6 +2,7 @@ from datetime import datetime
 from pathlib import Path
 import subprocess
 import threading
+import os
 
 from PIL import Image, ImageOps
 
@@ -238,6 +239,180 @@ class SegmentDot(QLabel):
 
 
 # ------------------------------------------------------------------ #
+# Video converter
+# ------------------------------------------------------------------ #
+
+CONVERT_PRESETS = [
+    {
+        "label": "AVI — Xvid (widest photo frame compatibility)",
+        "ext": ".avi",
+        "args": ["-vcodec", "libxvid", "-q:v", "4", "-acodec", "mp3", "-q:a", "4"],
+    },
+    {
+        "label": "MP4 — H.264 Baseline (universal device compatibility)",
+        "ext": ".mp4",
+        "args": [
+            "-vcodec", "libx264", "-profile:v", "baseline", "-level", "3.1",
+            "-pix_fmt", "yuv420p", "-acodec", "aac", "-b:a", "128k",
+        ],
+    },
+    {
+        "label": "MOV — H.264 (QuickTime / Apple devices)",
+        "ext": ".mov",
+        "args": ["-vcodec", "libx264", "-pix_fmt", "yuv420p", "-acodec", "aac", "-b:a", "128k"],
+    },
+]
+
+
+class ConvertDialog(QDialog):
+    """Format picker shown before conversion starts."""
+
+    def __init__(self, file_count: int, out_dir: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Convert Video")
+        self.setModal(True)
+        self.setMinimumWidth(480)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        count_lbl = QLabel(
+            f"Convert {file_count} video{'s' if file_count != 1 else ''} to:"
+        )
+        count_lbl.setStyleSheet(f"color:{COLORS['fg_primary']}; font-size:10pt;")
+        layout.addWidget(count_lbl)
+
+        self._format_combo = QComboBox()
+        self._format_combo.setFixedHeight(36)
+        for p in CONVERT_PRESETS:
+            self._format_combo.addItem(p["label"])
+        layout.addWidget(self._format_combo)
+
+        out_row = QHBoxLayout()
+        out_lbl = QLabel("Output folder:")
+        out_lbl.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
+        self._out_edit = QLineEdit(out_dir)
+        self._out_edit.setFixedHeight(34)
+        browse_btn = QPushButton("...")
+        browse_btn.setFixedSize(40, 34)
+        browse_btn.clicked.connect(self._browse)
+        out_row.addWidget(out_lbl)
+        out_row.addWidget(self._out_edit, stretch=1)
+        out_row.addWidget(browse_btn)
+        layout.addLayout(out_row)
+
+        note = QLabel("Converted files are saved alongside the originals unless you change the folder.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{COLORS['fg_dim']}; font-size:9pt;")
+        layout.addWidget(note)
+
+        btn_row = QHBoxLayout()
+        ok_btn = QPushButton("Convert")
+        ok_btn.setFixedHeight(34)
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setFixedHeight(34)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+        self.setStyleSheet(f"""
+            QDialog {{ background-color: {COLORS['bg_dark']}; }}
+            QLabel {{ color: {COLORS['fg_primary']}; }}
+            QLineEdit, QComboBox {{
+                background-color: {COLORS['bg_light']};
+                color: {COLORS['fg_primary']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 10pt;
+            }}
+            QPushButton {{
+                background-color: {COLORS['bg_light']};
+                color: {COLORS['fg_secondary']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 4px;
+                padding: 4px 16px;
+                font-size: 10pt;
+            }}
+            QPushButton:hover {{ background-color: {COLORS['accent']}; color: white; }}
+        """)
+
+    def _browse(self):
+        folder = QFileDialog.getExistingDirectory(self, "Output Folder", self._out_edit.text())
+        if folder:
+            self._out_edit.setText(folder)
+
+    def selected_preset(self) -> dict:
+        return CONVERT_PRESETS[self._format_combo.currentIndex()]
+
+    def output_dir(self) -> str:
+        return self._out_edit.text().strip()
+
+
+class VideoConverterThread(QThread):
+    """Runs ffmpeg conversions sequentially in a background thread."""
+    progress = pyqtSignal(int, int, str)   # current, total, current_filename
+    finished = pyqtSignal(int, list)        # success_count, error_list
+    log = pyqtSignal(str)
+
+    def __init__(self, paths: list[str], preset: dict, out_dir: str, ffmpeg: str):
+        super().__init__()
+        self._paths = paths
+        self._preset = preset
+        self._out_dir = Path(out_dir)
+        self._ffmpeg = ffmpeg
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        total = len(self._paths)
+        success = 0
+        errors = []
+        self._out_dir.mkdir(parents=True, exist_ok=True)
+
+        for i, src in enumerate(self._paths):
+            if self._cancelled:
+                break
+            src_path = Path(src)
+            stem = src_path.stem
+            ext = self._preset["ext"]
+
+            # Auto-number if output already exists
+            dest = self._out_dir / f"{stem}{ext}"
+            counter = 1
+            while dest.exists():
+                dest = self._out_dir / f"{stem}_{counter}{ext}"
+                counter += 1
+
+            self.progress.emit(i + 1, total, src_path.name)
+            cmd = [
+                self._ffmpeg, "-y", "-i", str(src_path),
+                *self._preset["args"],
+                str(dest),
+            ]
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+                )
+                if result.returncode != 0:
+                    errors.append(f"{src_path.name}: ffmpeg error (code {result.returncode})")
+                    self.log.emit(f"[convert] FAILED {src_path.name}: {result.stderr[-300:].strip()}")
+                else:
+                    success += 1
+                    self.log.emit(f"[convert] OK → {dest.name}")
+            except Exception as e:
+                errors.append(f"{src_path.name}: {e}")
+                self.log.emit(f"[convert] ERROR {src_path.name}: {e}")
+
+        self.finished.emit(success, errors)
+
+
+# ------------------------------------------------------------------ #
 # Main window
 # ------------------------------------------------------------------ #
 
@@ -294,6 +469,12 @@ class MainWindow(QMainWindow):
 
     def _ffmpeg_path(self) -> str:
         return self.config.get("ffmpeg_path", "ffmpeg") or "ffmpeg"
+
+    def _effective_video_dir(self) -> Path:
+        """Root final-video folder + active chain subfolder (auto-created on use)."""
+        root = Path(self.config.get("final_video_dir", ""))
+        folder = self.config.get("active_chain_folder", "").strip()
+        return root / folder if folder else root
 
     # ------------------------------------------------------------------ #
     # UI construction
@@ -582,6 +763,11 @@ class MainWindow(QMainWindow):
         self._vid_delete_btn.setObjectName("cancel_btn")
         self._vid_delete_btn.setEnabled(False)
         self._vid_delete_btn.clicked.connect(self._delete_selected_video)
+        self._vid_convert_btn = QPushButton("🔄  Convert")
+        self._vid_convert_btn.setFixedHeight(40)
+        self._vid_convert_btn.setEnabled(False)
+        self._vid_convert_btn.setToolTip("Convert selected videos to AVI, MP4 Baseline, or MOV")
+        self._vid_convert_btn.clicked.connect(self._convert_selected_videos)
         toolbar.addWidget(vid_folder_lbl)
         toolbar.addWidget(self._vid_dir_edit, stretch=1)
         toolbar.addWidget(vid_browse_btn)
@@ -591,6 +777,8 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(refresh_btn)
         toolbar.addSpacing(4)
         toolbar.addWidget(self._vid_play_btn)
+        toolbar.addSpacing(4)
+        toolbar.addWidget(self._vid_convert_btn)
         toolbar.addSpacing(4)
         toolbar.addWidget(self._vid_delete_btn)
         layout.addLayout(toolbar)
@@ -716,12 +904,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _existing_video_stems(self) -> set[str]:
-        """Return stems of videos in the final video folder.
+        """Return stems of videos in the current template's output folder.
         Adds both the raw stem and the _N-stripped stem so images like
         'photo_1.png' are excluded when 'photo_1.mp4' exists, and plain
         'photo.png' is excluded when 'photo_1.mp4' (auto-numbered) exists."""
         import re
-        vid_dir = Path(self.config.get("final_video_dir", ""))
+        vid_dir = self._effective_video_dir()
         if not vid_dir.exists():
             return set()
         stems: set[str] = set()
@@ -818,7 +1006,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _populate_videos(self, force: bool = False):
-        vid_dir = Path(self._vid_dir_edit.text().strip() or self.config.get("final_video_dir", ""))
+        vid_dir = Path(self._vid_dir_edit.text().strip()) if self._vid_dir_edit.text().strip() else self._effective_video_dir()
 
         # Skip reload if same folder already loaded
         if not force and str(vid_dir) == self._last_vid_dir and self.video_grid.count() > 0:
@@ -884,19 +1072,26 @@ class MainWindow(QMainWindow):
     def _on_vid_sort_changed(self):
         self._populate_videos(force=True)
 
+    def _sync_lib_dir_display(self):
+        """Update the Library folder display to the current template's output subfolder."""
+        self._vid_dir_edit.setText(str(self._effective_video_dir()))
+        self._last_vid_dir = ""  # force reload next time Library is shown
+
     def _browse_video_dir(self):
-        current = self._vid_dir_edit.text().strip()
-        folder = QFileDialog.getExistingDirectory(self, "Select Video Folder", current or str(Path.home()))
+        # Browse selects the ROOT folder; effective dir = root / active_chain_folder
+        root = self.config.get("final_video_dir", "")
+        folder = QFileDialog.getExistingDirectory(self, "Select Root Video Folder", root or str(Path.home()))
         if folder:
-            self._vid_dir_edit.setText(folder)
             self.config.set("final_video_dir", folder)
             self.config.save()
+            self._sync_lib_dir_display()
             self._populate_videos()
 
     def _on_vid_selection_changed(self):
         keys = self.video_grid.selected_keys()
         has_sel = bool(keys)
         self._vid_play_btn.setEnabled(has_sel)
+        self._vid_convert_btn.setEnabled(has_sel)
         self._vid_delete_btn.setEnabled(has_sel)
         total = self.video_grid.count()
         if has_sel:
@@ -953,6 +1148,62 @@ class MainWindow(QMainWindow):
             if count > 0 else "No video files found in folder"
         )
 
+    def _convert_selected_videos(self):
+        keys = self.video_grid.selected_keys()
+        if not keys:
+            return
+
+        # Default output folder = same folder as first selected video
+        default_out = str(Path(keys[0]).parent)
+        dlg = ConvertDialog(len(keys), default_out, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        preset = dlg.selected_preset()
+        out_dir = dlg.output_dir()
+        if not out_dir:
+            QMessageBox.warning(self, "Convert", "Please choose an output folder.")
+            return
+
+        # Progress dialog
+        self._convert_progress = QProgressDialog(
+            f"Converting 0 / {len(keys)}...", "Cancel", 0, len(keys), self
+        )
+        self._convert_progress.setWindowTitle("Converting Videos")
+        self._convert_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self._convert_progress.setMinimumWidth(420)
+        self._convert_progress.setAutoClose(False)
+        self._convert_progress.setAutoReset(False)
+        self._convert_progress.setValue(0)
+        self._convert_progress.show()
+
+        self._converter = VideoConverterThread(keys, preset, out_dir, self._ffmpeg_path())
+        self._converter.progress.connect(self._on_convert_progress)
+        self._converter.finished.connect(self._on_convert_finished)
+        self._convert_progress.canceled.connect(self._converter.cancel)
+        self._converter.start()
+
+    def _on_convert_progress(self, current: int, total: int, filename: str):
+        self._convert_progress.setLabelText(f"Converting {current} / {total}: {filename}")
+        self._convert_progress.setValue(current)
+
+    def _on_convert_finished(self, success: int, errors: list):
+        self._convert_progress.close()
+        if errors:
+            err_text = "\n".join(errors[:10])
+            if len(errors) > 10:
+                err_text += f"\n…and {len(errors) - 10} more"
+            QMessageBox.warning(
+                self, "Convert",
+                f"Converted {success} file{'s' if success != 1 else ''} successfully.\n\n"
+                f"Errors ({len(errors)}):\n{err_text}"
+            )
+        else:
+            QMessageBox.information(
+                self, "Convert",
+                f"Done — {success} file{'s' if success != 1 else ''} converted successfully."
+            )
+
     # ------------------------------------------------------------------ #
     # Settings
     # ------------------------------------------------------------------ #
@@ -981,12 +1232,15 @@ class MainWindow(QMainWindow):
             self.config.save()
         # Rebuild segment panel to reflect the now-selected folder
         self._rebuild_seg_panel()
+        self._sync_lib_dir_display()
 
     def _on_chain_folder_changed(self, _idx: int):
         folder = self._chain_folder_combo.currentText()
         self.config.set("active_chain_folder", folder)
         self.config.save()
         self._rebuild_seg_panel()
+        self._populate_images()
+        self._sync_lib_dir_display()
 
     def _on_seg_dot_double_clicked(self, segment: int):
         workflow_dir = Path(self.config.get("workflow_dir", ""))
@@ -1008,7 +1262,7 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             self._refresh_chain_folders()
             self._populate_images()
-            self._vid_dir_edit.setText(self.config.get("final_video_dir", ""))
+            self._sync_lib_dir_display()
             self._generate_tab.refresh_mode()
             self._generate_tab.refresh_workflows()
 
@@ -1122,7 +1376,11 @@ class MainWindow(QMainWindow):
         self._write_daily_log("=" * 80)
         for k in keys:
             self._write_daily_log(f"  - {Path(k).name}")
-        self._worker = BatchChainWorker(self.config.get_all(), keys)
+        eff_dir = self._effective_video_dir()
+        eff_dir.mkdir(parents=True, exist_ok=True)
+        worker_cfg = self.config.get_all()
+        worker_cfg["final_video_dir"] = str(eff_dir)
+        self._worker = BatchChainWorker(worker_cfg, keys)
         self._worker.log.connect(self._on_log)
         self._worker.segment_done.connect(self._on_segment_done)
         self._worker.segment_time.connect(self._on_segment_time)
@@ -1283,7 +1541,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _write_daily_log(self, message: str):
-        vid_dir = Path(self.config.get("final_video_dir", ""))
+        vid_dir = self._effective_video_dir()
+        vid_dir.mkdir(parents=True, exist_ok=True)
         if not vid_dir.exists():
             return
         today = datetime.now().strftime("%m_%d_%Y")

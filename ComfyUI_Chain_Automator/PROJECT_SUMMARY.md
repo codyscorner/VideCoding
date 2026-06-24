@@ -91,6 +91,21 @@ Output: `dist\ComfyUI_Chain_Automator.exe`
 
 ## Changelog
 
+### v3.5.0
+- **Per-template output subfolders**: the "Final Video Folder" in Settings is now a root folder; the app automatically creates a subfolder named after the active chain template (e.g. `Videos/WAN_Chain_1/`) and writes all stitched videos there
+- Switching templates instantly refreshes the starting image grid — images already processed for the current template are hidden; switching to a template with no videos shows all images
+- Library tab auto-updates its folder display when you switch templates
+- Daily run log is written into the template's subfolder instead of the root
+- Zero config changes required — root folder is still set once in Settings
+
+### v3.4.0
+- **Video Converter**: select one or more videos in the Library tab and click **🔄 Convert** to re-encode them to a photo-frame-compatible format
+  - **AVI — Xvid**: widest digital photo frame support
+  - **MP4 — H.264 Baseline**: universal device compatibility (re-encodes at Baseline/Level 3.1 + yuv420p)
+  - **MOV — H.264**: QuickTime / Apple device compatibility
+- Output folder defaults to the same folder as the source; can be changed per conversion
+- Conversion runs in a background thread so the UI stays responsive; Cancel button stops mid-batch
+
 ### v3.3.0
 - Poll log interval changed from 15 seconds to 1 minute — log now shows elapsed time in minutes (`2m`) instead of seconds to reduce log noise during long RunPod generations
 
