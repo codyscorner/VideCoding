@@ -2,7 +2,7 @@
 
 ## Created: December 8, 2025
 ## Last Updated: June 28, 2026
-## Version: 3.3.1
+## Version: 3.3.6
 
 ---
 

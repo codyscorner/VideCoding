@@ -5,6 +5,49 @@ All notable changes to File Copy Move Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.6] - 2026-06-28
+
+### Changed
+- **Multi-Source tab reverted to sequential source processing** — sources now run one at a time (first source completes fully before the second starts); workers-per-source still applies so copying within each source remains parallel; this eliminates simultaneous I/O across multiple USB drives which was causing hard system resets
+
+---
+
+## [3.3.5] - 2026-06-28
+
+### Fixed
+- **Read-only destination files** — when overwriting an existing file that has the read-only attribute set, the app now automatically clears the read-only flag and retries instead of failing with Permission denied
+- **Clearer error messages** — errors now say "reading source" or "writing destination" so you can immediately tell which drive/side the problem is on
+
+---
+
+## [3.3.4] - 2026-06-28
+
+### Fixed
+- **Incremental mode now overwrites changed files** — previously a file that existed at the destination but had different size or mtime was incorrectly skipped as a "duplicate" when *Number duplicate files* was unchecked; it now overwrites the destination copy as intended. The "number duplicates" duplicate-numbering logic is skipped entirely when incremental mode is on.
+
+---
+
+## [3.3.3] - 2026-06-28
+
+### Added
+- **Live Transfers Panel** — a dynamic "Active Large-File Transfers" section appears above the progress bar whenever a file ≥50 MB is being copied; each active transfer gets its own row with filename and a live progress bar; rows appear/disappear automatically as transfers start and finish
+- **Watchdog / freeze detector** — a background thread monitors disk I/O activity every 10 seconds; if no bytes have been written for 45 seconds, the operation is auto-cancelled with a clear warning dialog ("drive may be unresponsive") so the app never hangs silently due to a frozen drive
+
+### Changed
+- Large files (≥120 MB) now always use chunked I/O regardless of whether a progress callback is set, ensuring the watchdog always has accurate activity timestamps even in multi-source parallel mode
+
+---
+
+## [3.3.2] - 2026-06-28
+
+### Added
+- **Incremental pre-filter** — when Incremental mode is on, the full file list is scanned and stat-compared against the destination *before* any workers start, so workers only receive files that genuinely need copying; eliminates per-file lock contention during the skip phase
+
+### Fixed
+- Workers per source setting was not being saved or loaded correctly on the Multi-Source tab (was sharing the single-source `"workers"` config key); now uses its own `"multi_workers"` key
+
+---
+
 ## [3.3.1] - 2026-06-28
 
 ### Changed
