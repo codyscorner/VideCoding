@@ -1,10 +1,12 @@
-"""File operation classes for File Copy Manager application"""
+"""File operation classes for File Copy Move Manager application"""
 
 import os
 import shutil
 import time
 import fnmatch
 import hashlib
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Callable
 from dataclasses import dataclass, field
@@ -168,6 +170,8 @@ class FileCopier:
         counters_callback: Optional[Callable[[int, int, int], None]] = None,
         verify_checksum: bool = False,
         incremental: bool = False,
+        move_mode: bool = False,
+        workers: int = 1,
     ):
         self.status_callback = status_callback
         self.progress_callback = progress_callback
@@ -180,6 +184,9 @@ class FileCopier:
         self.organizer = FolderOrganizer()
         self.verify_checksum = verify_checksum
         self.incremental = incremental
+        self.move_mode = move_mode
+        self.workers = max(1, workers)
+        self._filename_lock = threading.Lock()
 
     def _log_status(self, message: str) -> None:
         """Log status message if callback is set"""
@@ -302,57 +309,93 @@ class FileCopier:
 
             self._log_status(f"Found {len(filtered_files)} files — sorting smallest to largest...")
 
-        self._log_status(f"Starting copy operations...")
+        op_verb = "move" if self.move_mode else "copy"
+        worker_str = f" ({self.workers} workers)" if self.workers > 1 else ""
+        self._log_status(f"Starting {op_verb} operations{worker_str}...")
 
-        # Process each file (already sorted smallest-first)
         total = len(filtered_files)
         results = []
-        SUMMARY_INTERVAL = 100
-        for idx, (full_path, rel_path, file_size) in enumerate(filtered_files, 1):
-            # Check for cancellation
-            if self.cancel_check and self.cancel_check():
-                self._log_status("Operation cancelled by user")
-                break
 
-            filename = os.path.basename(full_path)
-            show_file_progress = file_size >= 50 * 1024 * 1024
+        if self.workers <= 1:
+            # ── Sequential path ──────────────────────────────────────────────
+            for idx, (full_path, rel_path, file_size) in enumerate(filtered_files, 1):
+                if self.cancel_check and self.cancel_check():
+                    self._log_status("Operation cancelled by user")
+                    break
 
-            # Update progress
-            if self.progress_callback:
-                self.progress_callback(idx, total, filename, 0 if show_file_progress else -1)
+                filename = os.path.basename(full_path)
+                show_file_progress = file_size >= 50 * 1024 * 1024
 
-            result = self._process_single_file(
-                full_path,
-                rel_path,
-                source_folder,
-                dest_folder,
-                structure,
-                idx,
-                total
-            )
-            results.append(result)
+                if self.progress_callback:
+                    self.progress_callback(idx, total, filename, 0 if show_file_progress else -1)
 
-            # Update progress to 100% for this file
-            if self.progress_callback:
-                self.progress_callback(idx, total, filename, 100 if show_file_progress else -1)
+                result = self._process_single_file(
+                    full_path, rel_path, source_folder, dest_folder, structure, idx, total
+                )
+                results.append(result)
 
-            # Live counter update after every file
-            if self.counters_callback:
-                copied_n  = sum(1 for r in results if r.success and r.destination_file is not None)
-                skipped_n = sum(1 for r in results if r.success and r.destination_file is None)
-                errors_n  = sum(1 for r in results if not r.success)
-                self.counters_callback(copied_n, skipped_n, errors_n)
+                if self.progress_callback:
+                    self.progress_callback(idx, total, filename, 100 if show_file_progress else -1)
+
+                if self.counters_callback:
+                    copied_n  = sum(1 for r in results if r.success and r.destination_file is not None)
+                    skipped_n = sum(1 for r in results if r.success and r.destination_file is None)
+                    errors_n  = sum(1 for r in results if not r.success)
+                    self.counters_callback(copied_n, skipped_n, errors_n)
+
+        else:
+            # ── Parallel path ─────────────────────────────────────────────────
+            _lock = threading.Lock()
+            _counts = [0, 0, 0, 0]  # [completed, copied, skipped, errors]
+
+            def _worker(item):
+                full_path, rel_path, _ = item
+                if self.cancel_check and self.cancel_check():
+                    return FileOperationResult(
+                        success=True, source_file=os.path.basename(full_path),
+                        destination_file=None, error_message="Cancelled"
+                    )
+                result = self._process_single_file(
+                    full_path, rel_path, source_folder, dest_folder, structure, 0, 0
+                )
+                fname = os.path.basename(full_path)
+                with _lock:
+                    _counts[0] += 1
+                    if result.success and result.destination_file is not None:
+                        _counts[1] += 1
+                    elif result.success:
+                        _counts[2] += 1
+                    else:
+                        _counts[3] += 1
+                    if self.progress_callback:
+                        self.progress_callback(_counts[0], total, fname, -1)
+                    if self.counters_callback:
+                        self.counters_callback(_counts[1], _counts[2], _counts[3])
+                return result
+
+            with ThreadPoolExecutor(max_workers=self.workers) as executor:
+                futures = {executor.submit(_worker, item): item for item in filtered_files}
+                for future in as_completed(futures):
+                    try:
+                        results.append(future.result())
+                    except Exception as e:
+                        fname = os.path.basename(futures[future][0])
+                        self._log_status(f"Error: {fname} — {e}")
+                        results.append(FileOperationResult(
+                            success=False, source_file=fname, error_message=str(e)
+                        ))
 
 
         # Summary
+        op_verb_past = "moved" if self.move_mode else "copied"
         if self.cancel_check and self.cancel_check():
             copied_count = sum(1 for r in results if r.success and r.destination_file is not None)
-            self._log_status(f"Operation cancelled: {copied_count} files copied before cancellation")
+            self._log_status(f"Operation cancelled: {copied_count} files {op_verb_past} before cancellation")
         else:
             copied_count = sum(1 for r in results if r.success and r.destination_file is not None)
             skipped_count = sum(1 for r in results if r.success and r.destination_file is None)
             error_count = sum(1 for r in results if not r.success)
-            self._log_status(f"Operation completed: {copied_count} copied, {skipped_count} skipped, {error_count} errors")
+            self._log_status(f"Operation completed: {copied_count} {op_verb_past}, {skipped_count} skipped, {error_count} errors")
 
         return results
 
@@ -404,50 +447,57 @@ class FileCopier:
 
         LARGE_FILE_THRESHOLD = 120 * 1024 * 1024  # 120 MB — use chunked I/O above this
         MIN_FILE_PROGRESS_SIZE = 50 * 1024 * 1024  # 50 MB — skip per-file bar below this
-        CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB
+        CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
         MAX_RETRIES = 3
         RETRY_DELAY = 1.5
 
         try:
-            # Determine final filename (handle duplicates)
-            final_filename = self._truncate_path(final_dest_folder, filename)
-            dest_path = os.path.join(final_dest_folder, final_filename)
+            # ── Thread-safe filename resolution + reservation ─────────────────
+            # Lock ensures two parallel workers can't claim the same dest path.
+            with self._filename_lock:
+                final_filename = self._truncate_path(final_dest_folder, filename)
+                dest_path = os.path.join(final_dest_folder, final_filename)
+                skip_result = None
 
-            if os.path.exists(dest_path):
-                # Incremental mode: skip if dest file is identical (size + mtime)
-                if self.incremental:
-                    try:
-                        src_stat = os.stat(source_path)
-                        dst_stat = os.stat(dest_path)
-                        if (src_stat.st_size == dst_stat.st_size and
-                                abs(src_stat.st_mtime - dst_stat.st_mtime) <= 2.0):
-                            return FileOperationResult(
-                                success=True,
-                                source_file=filename,
-                                destination_file=None,
-                                error_message="Skipped (unchanged)"
+                if os.path.exists(dest_path):
+                    if self.incremental:
+                        try:
+                            src_stat = os.stat(source_path)
+                            dst_stat = os.stat(dest_path)
+                            if (src_stat.st_size == dst_stat.st_size and
+                                    abs(src_stat.st_mtime - dst_stat.st_mtime) <= 2.0):
+                                skip_result = FileOperationResult(
+                                    success=True, source_file=filename,
+                                    destination_file=None, error_message="Skipped (unchanged)"
+                                )
+                        except OSError:
+                            pass
+
+                    if skip_result is None:
+                        if self.number_duplicates:
+                            base_name, ext = os.path.splitext(filename)
+                            counter = 1
+                            while os.path.exists(dest_path):
+                                final_filename = f"{base_name}_{counter:03d}{ext}"
+                                dest_path = os.path.join(final_dest_folder, final_filename)
+                                counter += 1
+                            self._log_status(f"Duplicate found: {filename} → {final_filename}")
+                        else:
+                            self._log_status(f"Skipped (duplicate): {filename}")
+                            skip_result = FileOperationResult(
+                                success=True, source_file=filename,
+                                destination_file=None, error_message="Skipped (duplicate)"
                             )
+
+                if skip_result is None:
+                    # Reserve the path so other workers pick a different name
+                    try:
+                        open(dest_path, 'wb').close()
                     except OSError:
                         pass
 
-                if self.number_duplicates:
-                    # Add number to filename
-                    base_name, ext = os.path.splitext(filename)
-                    counter = 1
-                    while os.path.exists(dest_path):
-                        final_filename = f"{base_name}_{counter:03d}{ext}"
-                        dest_path = os.path.join(final_dest_folder, final_filename)
-                        counter += 1
-                    self._log_status(f"Duplicate found: {filename} → {final_filename}")
-                else:
-                    # Skip duplicate
-                    self._log_status(f"Skipped (duplicate): {filename}")
-                    return FileOperationResult(
-                        success=True,
-                        source_file=filename,
-                        destination_file=None,
-                        error_message="Skipped (duplicate)"
-                    )
+            if skip_result is not None:
+                return skip_result
 
             # Get file size
             file_size = os.path.getsize(source_path)
@@ -501,12 +551,20 @@ class FileCopier:
                         checksum_verified=False
                     )
 
+            # Move mode: delete source after successful copy+verify
+            if self.move_mode:
+                try:
+                    os.remove(source_path)
+                except OSError as del_err:
+                    self._log_status(f"Warning: source not deleted after move: {filename} — {del_err}")
+
             # Only log large files individually; small files are counted silently
+            verb = "Moved" if self.move_mode else "Copied"
             if file_size >= LARGE_FILE_THRESHOLD:
                 size_str = self._format_file_size(file_size)
                 time_str = f"{copy_time:.2f}s"
                 verified_tag = " ✓" if checksum_ok else ""
-                self._log_status(f"Copied (large): {filename} ({size_str}, {time_str}){verified_tag}")
+                self._log_status(f"{verb} (large): {filename} ({size_str}, {time_str}){verified_tag}")
 
             return FileOperationResult(
                 success=True,

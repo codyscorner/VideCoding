@@ -1,4 +1,4 @@
-"""Folder organization strategies for File Copy Manager application"""
+"""Folder organization strategies for File Copy Move Manager application"""
 
 import os
 from datetime import datetime

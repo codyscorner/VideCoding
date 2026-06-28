@@ -1,4 +1,4 @@
-"""File Copy Manager - Main Entry Point"""
+"""File Copy Move Manager - Main Entry Point"""
 
 import sys
 from pathlib import Path
@@ -9,7 +9,7 @@ from PyQt6.QtGui import QIcon
 from config import ConfigManager
 from ui.main_window import MainWindow
 
-VERSION = "3.2.0"
+VERSION = "3.3.1"
 
 
 def get_config_file() -> Path:

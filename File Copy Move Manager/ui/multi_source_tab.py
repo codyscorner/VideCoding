@@ -1,4 +1,4 @@
-"""Multi-Source tab — run the same copy template across N source folders in sequence."""
+"""Multi-Source tab — run the same copy/move template across N source folders in sequence."""
 
 import os
 import logging
@@ -11,7 +11,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QLineEdit, QPushButton, QCheckBox, QComboBox,
     QProgressBar, QListWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QScrollArea, QFrame, QFileDialog, QMessageBox,
+    QScrollArea, QFrame, QFileDialog, QMessageBox, QSpinBox,
 )
 from PyQt6.QtCore import Qt, QTimer
 
@@ -22,10 +22,10 @@ from ui.styles import COLORS
 
 
 _SHOW_PREFIXES = (
-    "Error", "Copied (large):", "Path too long", "Found ", "Scanning",
+    "Error", "Copied (large):", "Moved (large):", "Path too long", "Found ", "Scanning",
     "Reading", "Gathering", "Checking", "Starting", "Sorting",
     "Duplicate found:", "Operation cancelled", "Start:",
-    "Retry ", "CHECKSUM",
+    "Retry ", "CHECKSUM", "Warning: source not deleted",
 )
 
 
@@ -40,6 +40,7 @@ class MultiSourceTab(QWidget):
         self._completed_copied = 0
         self._completed_skipped = 0
         self._completed_errors = 0
+        self.mode = 'copy'
 
         self._build_ui()
         self._load_config()
@@ -137,9 +138,9 @@ class MultiSourceTab(QWidget):
         layout.addWidget(hint_mask)
 
         # ── Copy Options + File Filters (2-column grid) ──────────────────────
-        opts_lbl = QLabel("Copy Options")
-        opts_lbl.setObjectName("section_label")
-        layout.addWidget(opts_lbl)
+        self.options_section_label = QLabel("Copy Options")
+        self.options_section_label.setObjectName("section_label")
+        layout.addWidget(self.options_section_label)
 
         self.recursive_check    = QCheckBox("Search subfolders recursively")
         self.preserve_check     = QCheckBox("Preserve original folder structure")
@@ -165,6 +166,19 @@ class MultiSourceTab(QWidget):
         opts_grid.setColumnStretch(0, 1)
         opts_grid.setColumnStretch(1, 1)
         layout.addLayout(opts_grid)
+
+        workers_row = QHBoxLayout()
+        workers_row.addWidget(QLabel("Parallel workers:"))
+        self.workers_spin = QSpinBox()
+        self.workers_spin.setRange(1, 16)
+        self.workers_spin.setValue(self._config.get("workers", 4))
+        self.workers_spin.setFixedWidth(60)
+        workers_row.addWidget(self.workers_spin)
+        workers_hint = QLabel("(1 = sequential  |  2–4 USB/HDD  |  4–8 NVMe)")
+        workers_hint.setObjectName("dim_label")
+        workers_row.addWidget(workers_hint)
+        workers_row.addStretch()
+        layout.addLayout(workers_row)
 
         # ── Size / Date filter sub-rows (hidden until checked) ───────────────
         self.size_widget = QWidget()
@@ -221,7 +235,7 @@ class MultiSourceTab(QWidget):
 
         # ── Action Buttons ───────────────────────────────────────────────────
         btn_row = QHBoxLayout()
-        self.run_btn = QPushButton("Run All Sources")
+        self.run_btn = QPushButton("Copy All Sources")
         self.run_btn.clicked.connect(self._start_run)
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setObjectName("cancel_btn")
@@ -267,7 +281,8 @@ class MultiSourceTab(QWidget):
         layout.addWidget(self.file_progress)
 
         counters_row = QHBoxLayout()
-        counters_row.addWidget(QLabel("Total Copied:"))
+        self.copied_title_label = QLabel("Total Copied:")
+        counters_row.addWidget(self.copied_title_label)
         self.copied_label = QLabel("0")
         self.copied_label.setObjectName("section_label")
         counters_row.addWidget(self.copied_label)
@@ -320,6 +335,13 @@ class MultiSourceTab(QWidget):
         self.unit_combo.setCurrentText(self._config.get("multi_size_unit", "MB"))
         self.days_edit.setText(str(self._config.get("multi_days_old", "30")))
         self._on_preserve_changed()
+
+    def set_mode(self, mode: str):
+        self.mode = mode
+        verb = "Move" if mode == 'move' else "Copy"
+        self.copied_title_label.setText(f"Total {verb}d:")
+        self.options_section_label.setText(f"{verb} Options")
+        self.run_btn.setText(f"{verb} All Sources")
 
     def _save_config(self):
         sources = [self.source_list.item(i).text() for i in range(self.source_list.count())]
@@ -477,6 +499,8 @@ class MultiSourceTab(QWidget):
             'max_days_old': max_days_old,
             'verify_checksum': self.verify_check.isChecked(),
             'incremental': self.incremental_check.isChecked(),
+            'operation_mode': self.mode,
+            'workers': self.workers_spin.value(),
         }
 
     # ── Run / Cancel ─────────────────────────────────────────────────────────
@@ -559,6 +583,8 @@ class MultiSourceTab(QWidget):
                     ),
                     verify_checksum=options.get('verify_checksum', False),
                     incremental=options.get('incremental', False),
+                    move_mode=options.get('operation_mode') == 'move',
+                    workers=options.get('workers', 1),
                 )
 
                 results = copier.copy_files(
@@ -715,10 +741,12 @@ class MultiSourceTab(QWidget):
         self.copied_label.setText(str(copied))
         self.skipped_label.setText(str(skipped))
         self.errors_label.setText(str(errors))
+        verb = "Moved" if self.mode == 'move' else "Copied"
         self.source_progress_label.setText(f"All sources complete  —  Elapsed: {elapsed_str}")
-        self._add_status(f"═══ All sources complete  —  Elapsed: {elapsed_str}  —  Copied: {copied}  Skipped: {skipped}  Errors: {errors} ═══")
+        self._add_status(f"═══ All sources complete  —  Elapsed: {elapsed_str}  —  {verb}: {copied}  Skipped: {skipped}  Errors: {errors} ═══")
 
-        summary = f"Total Copied: {copied}\nTotal Skipped: {skipped}\nTotal Errors: {errors}\nElapsed: {elapsed_str}"
+        summary = f"Total {verb}: {copied}\nTotal Skipped: {skipped}\nTotal Errors: {errors}\nElapsed: {elapsed_str}"
+        action = "move" if self.mode == 'move' else "copy"
         if errors == 0 and copied > 0:
             QMessageBox.information(self, "Complete", summary)
         elif copied > 0:
@@ -726,7 +754,7 @@ class MultiSourceTab(QWidget):
                 f"{summary}\n\nCheck the status log for details.")
         else:
             QMessageBox.information(self, "Complete",
-                "No files were found to copy across all sources.\n\nCheck file mask and source folders.")
+                f"No files were found to {action} across all sources.\n\nCheck file mask and source folders.")
 
     def _on_all_cancelled(self, data: dict):
         self._is_running = False
@@ -737,10 +765,11 @@ class MultiSourceTab(QWidget):
         self.skipped_label.setText(str(skipped))
         self.errors_label.setText(str(errors))
         self.source_progress_label.setText("Cancelled")
+        verb = "Moved" if self.mode == 'move' else "Copied"
         self._add_status(
-            f"Operation cancelled  —  Copied: {copied}  Skipped: {skipped}  Errors: {errors}"
+            f"Operation cancelled  —  {verb}: {copied}  Skipped: {skipped}  Errors: {errors}"
         )
         QMessageBox.information(
             self, "Cancelled",
-            f"Operation cancelled.\n\nCopied so far: {copied}\nSkipped: {skipped}",
+            f"Operation cancelled.\n\n{verb} so far: {copied}\nSkipped: {skipped}",
         )

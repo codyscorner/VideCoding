@@ -1,9 +1,32 @@
 # Changelog
 
-All notable changes to File Copy Manager will be documented in this file.
+All notable changes to File Copy Move Manager will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [3.3.1] - 2026-06-28
+
+### Changed
+- Version bump for build release
+- README, FEATURES.md, and PROJECT_SUMMARY fully rewritten to reflect current feature set (Move Mode, Multi-Source tab, Preview, checksum, incremental, network retry)
+- Created `FileCopyMoveManager.spec` for PyInstaller builds
+
+---
+
+## [3.3.0] - 2026-06-28
+
+### Added
+- **Move Mode** — toggle between Copy Mode (gold theme) and Move Mode (red theme) using the COPY MODE / MOVE MODE buttons at the top of each tab; in Move Mode the source file is deleted after a successful copy+verify
+- **Red theme** — `RED_COLORS` palette and mode-aware `get_stylesheet(mode)` function in `ui/styles.py`; the entire app repaints when the mode changes
+- **Mode persistence** — last-used mode saved to `config.json` and restored on next launch
+- Mode-aware UI: action button changes between "Copy Files" / "Move Files", window title reflects current mode, counters update "Copied:" → "Moved:" accordingly
+
+### Changed
+- Project renamed from **File Copy Manager** to **File Copy Move Manager** — folder, title, log filename, and all in-code references updated
+- Version bumped to 3.3.0
+
+---
 
 ## [3.2.0] - 2026-06-28
 

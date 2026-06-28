@@ -1,4 +1,4 @@
-"""Main window UI for File Copy Manager"""
+"""Main window UI for File Copy Move Manager"""
 
 import os
 import logging
@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QProgressBar, QListWidget,
     QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout,
     QScrollArea, QFrame, QFileDialog, QMessageBox, QDialog,
-    QTabWidget,
+    QTabWidget, QApplication, QSpinBox,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
@@ -20,7 +20,7 @@ from PyQt6.QtGui import QIcon
 from config import ConfigManager
 from file_operations import FileCopier, FileScanner, FileValidator
 from folder_organization import FolderStructure, FolderOrganizer
-from ui.styles import STYLESHEET, COLORS
+from ui.styles import STYLESHEET, COLORS, get_stylesheet
 from ui.preview_dialog import PreviewDialog
 from ui.multi_source_tab import MultiSourceTab
 
@@ -35,19 +35,20 @@ class MainWindow(QMainWindow):
         self._progress_queue = queue.Queue()
         self._cancel_requested = False
         self._is_copying = False
+        self._mode = 'copy'
 
-        self.setWindowTitle(f"File Copy Manager (V-{self.version})")
+        self.setWindowTitle(f"File Copy Move Manager  |  Copy Mode  (V-{self.version})")
         self.setMinimumSize(900, 675)
         self.resize(1200, 900)
         self.setStyleSheet(STYLESHEET)
 
-        log_path = Path(self.config.config_path).parent / "FileCopyManager.log"
+        log_path = Path(self.config.config_path).parent / "FileCopyMoveManager.log"
         logging.basicConfig(
             filename=str(log_path), level=logging.DEBUG,
             format='%(asctime)s [%(levelname)s] %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
-        self._logger = logging.getLogger("FileCopyManager")
+        self._logger = logging.getLogger("FileCopyMoveManager")
 
         self._build_ui()
         self._load_config()
@@ -57,8 +58,31 @@ class MainWindow(QMainWindow):
         self._poll_timer.timeout.connect(self._poll_progress_queue)
 
     def _build_ui(self):
+        root = QWidget()
+        self.setCentralWidget(root)
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        # Global mode selector — applies to both tabs
+        mode_bar_widget = QWidget()
+        mode_bar_widget.setObjectName("mode_bar_widget")
+        mode_bar = QHBoxLayout(mode_bar_widget)
+        mode_bar.setContentsMargins(12, 6, 12, 6)
+        mode_bar.setSpacing(8)
+        self.copy_mode_btn = QPushButton("COPY MODE")
+        self.copy_mode_btn.setObjectName("mode_copy_btn")
+        self.copy_mode_btn.clicked.connect(lambda: self._on_mode_changed('copy'))
+        self.move_mode_btn = QPushButton("MOVE MODE")
+        self.move_mode_btn.setObjectName("mode_move_btn")
+        self.move_mode_btn.clicked.connect(lambda: self._on_mode_changed('move'))
+        mode_bar.addWidget(self.copy_mode_btn)
+        mode_bar.addWidget(self.move_mode_btn)
+        mode_bar.addStretch()
+        root_layout.addWidget(mode_bar_widget)
+
         tabs = QTabWidget()
-        self.setCentralWidget(tabs)
+        root_layout.addWidget(tabs)
         tabs.addTab(self._build_single_source_tab(), "Single Source")
         self._multi_tab = MultiSourceTab(self.config, self._logger)
         tabs.addTab(self._multi_tab, "Multi-Source  ⚡")
@@ -76,12 +100,12 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
 
         # Title
-        title = QLabel("File Copy Manager")
+        title = QLabel("File Copy Move Manager")
         title.setObjectName("title_label")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
-        sub = QLabel("Copy files with automatic numbering and folder organization")
+        sub = QLabel("Copy or move files with automatic numbering and folder organization")
         sub.setObjectName("subtitle_label")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(sub)
@@ -140,10 +164,10 @@ class MainWindow(QMainWindow):
         hint.setObjectName("dim_label")
         layout.addWidget(hint)
 
-        # Copy options
-        copy_section = QLabel("Copy Options")
-        copy_section.setObjectName("section_label")
-        layout.addWidget(copy_section)
+        # Copy/Move options
+        self.options_section_label = QLabel("Copy Options")
+        self.options_section_label.setObjectName("section_label")
+        layout.addWidget(self.options_section_label)
         self.recursive_check = QCheckBox("Search subfolders recursively (include all files from nested folders)")
         self.preserve_check = QCheckBox("Preserve original folder structure")
         self.number_check = QCheckBox("Number duplicate files (e.g., file_001.jpg, file_002.jpg)")
@@ -160,6 +184,19 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.number_check)
         layout.addWidget(self.incremental_check)
         layout.addWidget(self.verify_check)
+
+        workers_row = QHBoxLayout()
+        workers_row.addWidget(QLabel("Parallel workers:"))
+        self.workers_spin = QSpinBox()
+        self.workers_spin.setRange(1, 16)
+        self.workers_spin.setValue(self.config.get("workers", 4))
+        self.workers_spin.setFixedWidth(60)
+        workers_row.addWidget(self.workers_spin)
+        workers_hint = QLabel("(1 = sequential  |  2–4 USB/HDD  |  4–8 NVMe)")
+        workers_hint.setObjectName("dim_label")
+        workers_row.addWidget(workers_hint)
+        workers_row.addStretch()
+        layout.addLayout(workers_row)
 
         # File filters
         filter_section = QLabel("File Filters")
@@ -264,7 +301,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.file_progress)
 
         counters_row = QHBoxLayout()
-        counters_row.addWidget(QLabel("Copied:"))
+        self.copied_title_label = QLabel("Copied:")
+        counters_row.addWidget(self.copied_title_label)
         self.copied_label = QLabel("0")
         self.copied_label.setObjectName("section_label")
         counters_row.addWidget(self.copied_label)
@@ -295,7 +333,7 @@ class MainWindow(QMainWindow):
         self.status_list.setMinimumHeight(80)
         self.status_list.setMaximumHeight(120)
         layout.addWidget(self.status_list)
-        self._add_status("Ready to copy files...")
+        self._add_status("Ready...")
 
         return scroll
 
@@ -304,6 +342,23 @@ class MainWindow(QMainWindow):
         self.date_check.setChecked(self.config.get("enable_date_filter", False))
         self.min_size_edit.setText(str(self.config.get("min_size", "0")))
         self.max_size_edit.setText(str(self.config.get("max_size", "")))
+        self._on_mode_changed('copy')
+
+    def _on_mode_changed(self, mode: str):
+        self._mode = mode
+        self.setStyleSheet(get_stylesheet(mode))
+        verb = "Move" if mode == 'move' else "Copy"
+        self.copy_btn.setText(f"{verb} Files")
+        self.setWindowTitle(f"File Copy Move Manager  |  {verb} Mode  (V-{self.version})")
+        self.copied_title_label.setText(f"{verb}d:")
+        self.options_section_label.setText(f"{verb} Options")
+        # Highlight the active mode button with a white border; inactive gets none
+        active_style = "border: 2px solid white; padding: 4px 13px;"
+        self.copy_mode_btn.setStyleSheet(active_style if mode == 'copy' else "")
+        self.move_mode_btn.setStyleSheet(active_style if mode == 'move' else "")
+        # Sync multi-source tab
+        if hasattr(self, '_multi_tab'):
+            self._multi_tab.set_mode(mode)
 
     def _browse_source(self):
         existing = self.source_edit.text().strip()
@@ -407,6 +462,8 @@ class MainWindow(QMainWindow):
             'max_days_old': max_days_old,
             'verify_checksum': self.verify_check.isChecked(),
             'incremental': self.incremental_check.isChecked(),
+            'operation_mode': self._mode,
+            'workers': self.workers_spin.value(),
         }
 
     def _execute_copy(self, options: dict):
@@ -508,10 +565,10 @@ class MainWindow(QMainWindow):
             self._queue_msg('status', f"Start: {start_str}")
             folder_structure = FolderStructure(options['folder_structure'])
             _SHOW_PREFIXES = (
-                "Error", "Copied (large):", "Path too long", "Found ", "Scanning",
+                "Error", "Copied (large):", "Moved (large):", "Path too long", "Found ", "Scanning",
                 "Reading", "Gathering", "Checking", "Starting", "Sorting",
                 "Duplicate found:", "Operation cancelled", "Start:",
-                "Retry ", "CHECKSUM",
+                "Retry ", "CHECKSUM", "Warning: source not deleted",
             )
 
             def _status_cb(msg):
@@ -531,6 +588,8 @@ class MainWindow(QMainWindow):
                 ),
                 verify_checksum=options.get('verify_checksum', False),
                 incremental=options.get('incremental', False),
+                move_mode=options.get('operation_mode') == 'move',
+                workers=options.get('workers', 1),
             )
             results = copier.copy_files(
                 options['source_folder'], options['dest_folder'], options['extension'],
@@ -621,7 +680,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Preview", "No files found matching the current filters.")
             return
 
-        dialog = PreviewDialog(files, self)
+        dialog = PreviewDialog(files, options, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             options['pre_scanned_files'] = files  # skip re-scan — list already filtered
             self._execute_copy(options)
@@ -660,11 +719,13 @@ class MainWindow(QMainWindow):
         self.config.set("days_old", self.days_edit.text())
         self.config.set("incremental", self.incremental_check.isChecked())
         self.config.set("verify_checksum", self.verify_check.isChecked())
+        self.config.set("workers", self.workers_spin.value())
         self.config.save()
 
+        verb = "Moved" if opts.get('operation_mode') == 'move' else "Copied"
         self.copied_label.setText(str(copied))
         self.skipped_label.setText(str(skipped))
-        self.progress_label.setText(f"Complete! Copied: {copied}  Skipped: {skipped}")
+        self.progress_label.setText(f"Complete! {verb}: {copied}  Skipped: {skipped}")
 
         import datetime as _dt
         start_str = _dt.datetime.fromtimestamp(start_t).strftime("%H:%M:%S.") + f"{int(start_t % 1 * 100):02d}"
@@ -672,13 +733,14 @@ class MainWindow(QMainWindow):
         elapsed_str = self._format_elapsed(elapsed)
         self._add_status(f"End: {end_str}  |  Elapsed: {elapsed_str}")
 
-        summary = f"Total Copied: {copied}\nTotal Skipped: {skipped}\nElapsed: {elapsed_str}"
+        summary = f"Total {verb}: {copied}\nTotal Skipped: {skipped}\nElapsed: {elapsed_str}"
+        action = "process" if opts.get('operation_mode') == 'move' else "copy"
         if errors == 0 and copied > 0:
             QMessageBox.information(self, "Complete", summary)
         elif copied > 0:
             QMessageBox.warning(self, "Completed with errors", f"{summary}\nErrors: {errors}\n\nCheck status for details.")
         elif errors == 0:
-            QMessageBox.information(self, "No Files", "No files were found to process")
+            QMessageBox.information(self, "No Files", f"No files were found to {action}")
 
     def _on_copy_cancelled(self):
         self._is_copying = False
@@ -687,7 +749,8 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(False)
         self.progress_label.setText("Cancelled")
         self._add_status("Operation cancelled by user")
-        QMessageBox.information(self, "Cancelled", "Copy operation was cancelled")
+        verb = "Move" if self._mode == 'move' else "Copy"
+        QMessageBox.information(self, "Cancelled", f"{verb} operation was cancelled")
 
     def _on_copy_error(self, data: dict):
         self._is_copying = False
