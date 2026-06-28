@@ -5,6 +5,13 @@ All notable changes to File Copy Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-06-28
+
+### Changed
+- File type preset dropdown entries sorted alphabetically (Archives, Audio, Code, Data, Documents, Images, Videos) in both the Single Source and Multi Source tabs
+
+---
+
 ## [3.1.2] - 2026-06-21
 
 ### Fixed

@@ -1,8 +1,8 @@
 # File Copy Manager - Project Summary
 
 ## Created: December 8, 2025
-## Last Updated: June 21, 2026
-## Version: 3.1.2
+## Last Updated: June 28, 2026
+## Version: 3.2.0
 
 ---
 
@@ -399,7 +399,7 @@ File Copy Manager is a **production-ready** application that perfectly complemen
 
 **Status**: ✓ Active and Feature-Rich
 
-**Version**: 3.1.2
+**Version**: 3.2.0
 
 **Created**: December 8, 2025
 **Last Updated**: June 21, 2026

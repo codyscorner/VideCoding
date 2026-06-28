@@ -19,7 +19,7 @@ from config import ConfigManager
 from app.ui.main_window import MainWindow
 
 # Version number
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 
 def get_script_directory() -> Path:
