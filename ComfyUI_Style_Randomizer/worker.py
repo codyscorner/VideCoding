@@ -17,6 +17,9 @@ def load_prompts(path: Path) -> list[str]:
     return [b.strip() for b in text.split(PROMPT_SEPARATOR) if b.strip()]
 
 
+PROMPT_MODES = ("random", "sequential", "evens_odds")
+
+
 class BatchStyleWorker(QThread):
     progress = pyqtSignal(int, int)   # current, total
     log      = pyqtSignal(str)
@@ -24,12 +27,13 @@ class BatchStyleWorker(QThread):
     error    = pyqtSignal(str)
 
     def __init__(self, config: dict, prompts: list[str], image_paths: list[Path],
-                 fixed_prompt: str | None = None):
+                 fixed_prompt: str | None = None, prompt_mode: str = "random"):
         super().__init__()
         self._config        = config
         self._prompts       = prompts
         self._image_paths   = image_paths
         self._fixed_prompt  = fixed_prompt
+        self._prompt_mode   = prompt_mode
         self._cancelled     = False
         self._client_id   = str(uuid.uuid4())
         runpod = config.get("mode", "local") == "runpod"
@@ -66,6 +70,18 @@ class BatchStyleWorker(QThread):
             total = len(self._image_paths)
             self._log(f"Starting — {total} images, {len(self._prompts)} prompts")
 
+            # Build ordered prompt sequence for non-random modes
+            if self._prompt_mode == "sequential":
+                _seq = list(self._prompts)
+            elif self._prompt_mode == "evens_odds":
+                evens = self._prompts[0::2]
+                odds  = self._prompts[1::2]
+                _seq  = evens + odds
+            else:
+                _seq = None  # random per image
+
+            seq_pos = 0  # cursor for sequential / evens_odds
+
             for i, img_path in enumerate(self._image_paths):
                 if self._cancelled:
                     self._log("Cancelled.")
@@ -81,6 +97,12 @@ class BatchStyleWorker(QThread):
                     prompt  = self._fixed_prompt
                     preview = prompt.replace("\n", " ")[:60]
                     self._log(f"[{i+1}/{total}] {img_path.name}  →  {preview}…")
+                elif _seq is not None:
+                    prompt_idx = seq_pos % len(_seq)
+                    prompt     = _seq[prompt_idx]
+                    preview    = prompt.replace("\n", " ")[:60]
+                    self._log(f"[{i+1}/{total}] {img_path.name}  →  style #{prompt_idx+1}: {preview}…")
+                    seq_pos += 1
                 else:
                     prompt_idx = random.randrange(len(self._prompts))
                     prompt     = self._prompts[prompt_idx]

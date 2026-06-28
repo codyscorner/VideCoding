@@ -19,7 +19,7 @@ Every project has a single `PROJECT_SUMMARY.md` in its folder — click any proj
 | Project | Version | Status | Stack |
 |---|---|---|---|
 | [ComfyUI Workflow Chain Automator](ComfyUI_Chain_Automator/PROJECT_SUMMARY.md) | 3.3.0 | ✅ Active | Python, PyQt6 |
-| [ComfyUI Style Randomizer](ComfyUI_Style_Randomizer/PROJECT_SUMMARY.md) | 1.2.1 | ✅ Active | Python, PyQt6 |
+| [ComfyUI Style Randomizer](ComfyUI_Style_Randomizer/PROJECT_SUMMARY.md) | 1.4.0 | ✅ Active | Python, PyQt6 |
 | [Cumfy Workflow Editor](Cumfy_Workflow_Editor/PROJECT_SUMMARY.md) | 1.0.0 | 🔨 In Progress | Python, PyQt6 |
 | [Desktop Video Browser](Desktop%20Video%20Browser/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PySide6 |
 | [VideoDropPlayer](VideoDropPlayer/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6 |
@@ -48,7 +48,7 @@ Every project has a single `PROJECT_SUMMARY.md` in its folder — click any proj
 
 | Project | Version | Status | Stack |
 |---|---|---|---|
-| [File Copy Manager](File%20Copy%20Manager/PROJECT_SUMMARY.md) | 3.1.2 | ✅ Active | Python, PyQt6 |
+| [File Copy Manager](File%20Copy%20Manager/PROJECT_SUMMARY.md) | 3.2.0 | ✅ Active | Python, PyQt6 |
 | [File Rename Mover](File%20Rename%20Mover/PROJECT_SUMMARY.md) | 3.2.0 | ✅ Active | Python, PySide6 |
 | [File Hash Dedupe](File%20Hash%20Dedupe/PROJECT_SUMMARY.md) | 1.2.0 | ✅ Active | Python, PyQt6 |
 | [FileFinder](FileFinder/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6 |
@@ -56,6 +56,7 @@ Every project has a single `PROJECT_SUMMARY.md` in its folder — click any proj
 | [Win Folder Mover](Win%20Folder%20Mover/PROJECT_SUMMARY.md) | 1.0.2 | ✅ Active | Python, PyQt6 |
 | [Unzipper](Unzipper/PROJECT_SUMMARY.md) | 1.1.0 | ✅ Active | Python, PyQt6 |
 | [7z Folder Backup](7z_Folder_backup/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6 |
+| [FolderSync](FolderSync/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6 |
 
 ---
 
@@ -124,4 +125,4 @@ dotnet run --project src/ScreenSnap.UI
 
 ---
 
-**Last Updated:** 2026-06-21
+**Last Updated:** 2026-06-28

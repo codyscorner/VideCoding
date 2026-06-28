@@ -512,6 +512,7 @@ class MainWindow(QMainWindow):
         self._auto_stop_requested = False
         self._auto_current_batch: list[Path] = []
         self._last_auto_prompt_idx: int = -1
+        self._auto_prompt_cursor: int = 0  # cursor for sequential/evens_odds auto mode
 
         self._build_ui()
         self._load_initial_state()
@@ -663,6 +664,23 @@ class MainWindow(QMainWindow):
         self._progress.setFormat("%v / %m")
         self._progress.setValue(0)
         bottom_row.addWidget(self._progress, stretch=1)
+
+        order_lbl = QLabel("Order:")
+        order_lbl.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
+        bottom_row.addWidget(order_lbl)
+        self._prompt_order_combo = QComboBox()
+        self._prompt_order_combo.addItem("Evens → Odds", "evens_odds")
+        self._prompt_order_combo.addItem("Random",      "random")
+        self._prompt_order_combo.addItem("Sequential",  "sequential")
+        self._prompt_order_combo.setFixedHeight(28)
+        self._prompt_order_combo.setFixedWidth(130)
+        self._prompt_order_combo.setToolTip(
+            "Evens → Odds: even-numbered styles first, then odd\n"
+            "Random: each image gets a random style\n"
+            "Sequential: styles assigned in order (1, 2, 3…)"
+        )
+        bottom_row.addWidget(self._prompt_order_combo)
+        bottom_row.addSpacing(8)
 
         self._start_btn = QPushButton("Start")
         self._start_btn.setFixedWidth(100)
@@ -1069,7 +1087,25 @@ class MainWindow(QMainWindow):
                 for i in range(batch_size)]
 
     def _pick_next_auto_prompt(self) -> str:
+        mode = self._prompt_order_combo.currentData()
         n = len(self._prompts)
+
+        if mode == "sequential":
+            idx = self._auto_prompt_cursor % n
+            self._auto_prompt_cursor += 1
+            self._last_auto_prompt_idx = idx
+            return self._prompts[idx]
+
+        if mode == "evens_odds":
+            evens = self._prompts[0::2]
+            odds  = self._prompts[1::2]
+            seq   = evens + odds
+            idx   = self._auto_prompt_cursor % len(seq)
+            self._auto_prompt_cursor += 1
+            self._last_auto_prompt_idx = idx
+            return seq[idx]
+
+        # random — no consecutive repeat
         if n == 1:
             self._last_auto_prompt_idx = 0
         else:
@@ -1137,6 +1173,7 @@ class MainWindow(QMainWindow):
             prompts=self._prompts,
             image_paths=images,
             fixed_prompt=fixed_prompt,
+            prompt_mode=self._prompt_order_combo.currentData(),
         )
         self._worker.progress.connect(lambda cur, _: self._progress.setValue(cur))
         self._worker.log.connect(self._append_log)
@@ -1150,6 +1187,7 @@ class MainWindow(QMainWindow):
             self._auto_stop_requested = False
             self._auto_current_batch = []
             self._last_auto_prompt_idx = -1
+            self._auto_prompt_cursor = 0
             self._update_auto_buttons()
         if self._worker:
             self._worker.cancel()
@@ -1183,6 +1221,7 @@ class MainWindow(QMainWindow):
             self._auto_stop_requested = False
             self._auto_current_batch = []
             self._last_auto_prompt_idx = -1
+            self._auto_prompt_cursor = 0
             self._update_auto_buttons()
             self._reload_images()
             return

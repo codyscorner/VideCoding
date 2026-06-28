@@ -84,7 +84,7 @@ class FrameExtractorApp(QMainWindow):
         ext_label.setObjectName("section")
         layout.addWidget(ext_label, 4, 0, Qt.AlignmentFlag.AlignLeft)
         self.ext_combo = QComboBox()
-        self.ext_combo.addItems([".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".m4v"])
+        self.ext_combo.addItems([".avi", ".flv", ".m4v", ".mkv", ".mov", ".mp4", ".webm", ".wmv"])
         self.ext_combo.setFixedWidth(120)
         self.ext_combo.currentTextChanged.connect(lambda v: self._save_field("video_extension", v))
         layout.addWidget(self.ext_combo, 4, 1, Qt.AlignmentFlag.AlignLeft)

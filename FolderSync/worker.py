@@ -1,0 +1,159 @@
+import fnmatch
+import shutil
+from pathlib import Path
+
+from PyQt6.QtCore import QThread, pyqtSignal
+
+
+class SyncWorker(QThread):
+    compare_done = pyqtSignal(list)   # list of file-info dicts
+    progress     = pyqtSignal(int, int)
+    log          = pyqtSignal(str)
+    copy_done    = pyqtSignal()
+    error        = pyqtSignal(str)
+
+    def __init__(
+        self,
+        mode: str,
+        source: str,
+        dest: str,
+        recursive: bool,
+        file_mask: str = "",
+        missing_files: list | None = None,
+    ):
+        super().__init__()
+        self._mode = mode          # "compare" or "copy"
+        self._source = Path(source)
+        self._dest = Path(dest)
+        self._recursive = recursive
+        self._patterns = self._parse_mask(file_mask)
+        self._missing_files = missing_files or []
+        self._cancelled = False
+
+    @staticmethod
+    def _parse_mask(mask: str) -> list[str]:
+        if not mask.strip():
+            return []
+        patterns = []
+        for part in mask.split(","):
+            p = part.strip()
+            if not p:
+                continue
+            if "*" not in p and "?" not in p:
+                p = p.lstrip(".")
+                p = f"*.{p}"
+            patterns.append(p.lower())
+        return patterns
+
+    def _matches(self, filename: str) -> bool:
+        if not self._patterns:
+            return True
+        name = filename.lower()
+        return any(fnmatch.fnmatch(name, pat) for pat in self._patterns)
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:
+        try:
+            if self._mode == "compare":
+                self._run_compare()
+            else:
+                self._run_copy()
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+    # ------------------------------------------------------------------
+    def _run_compare(self) -> None:
+        self.log.emit(f"Source:      {self._source}")
+        self.log.emit(f"Destination: {self._dest}")
+        self.log.emit(f"Subfolders:  {'Yes' if self._recursive else 'No'}")
+        mask_display = ", ".join(self._patterns) if self._patterns else "all files"
+        self.log.emit(f"File mask:   {mask_display}")
+        self.log.emit("─" * 48)
+
+        self.log.emit("Scanning destination...")
+        dest_index = self._build_dest_index()
+        self.log.emit(f"Destination has {len(dest_index)} file(s).")
+
+        self.log.emit("Scanning source...")
+        pattern = "**/*" if self._recursive else "*"
+        missing = []
+        scanned = 0
+
+        try:
+            entries = list(self._source.glob(pattern))
+        except OSError as exc:
+            self.log.emit(f"WARNING: Could not scan source — {exc}")
+            entries = []
+
+        for src_file in entries:
+            if self._cancelled:
+                self.log.emit("Cancelled.")
+                return
+            try:
+                if not src_file.is_file():
+                    continue
+                if not self._matches(src_file.name):
+                    continue
+                size = src_file.stat().st_size
+            except OSError as exc:
+                self.log.emit(f"WARNING: Skipped (unreadable): {src_file.name} — {exc}")
+                continue
+
+            scanned += 1
+            rel = src_file.relative_to(self._source)
+            key = (str(rel), size)
+
+            if key not in dest_index:
+                missing.append({
+                    "name":     src_file.name,
+                    "size":     size,
+                    "src_path": str(src_file),
+                    "rel_path": str(rel),
+                })
+
+        self.log.emit(f"Source has {scanned} file(s).")
+        self.log.emit("─" * 48)
+        if missing:
+            self.log.emit(f"Missing from destination: {len(missing)} file(s). Ready to sync.")
+        else:
+            self.log.emit("Destination is up to date — nothing to copy.")
+        self.compare_done.emit(missing)
+
+    def _build_dest_index(self) -> set:
+        index = set()
+        if not self._dest.exists():
+            self.log.emit("Destination folder does not exist yet — all source files will be copied.")
+            return index
+        pattern = "**/*" if self._recursive else "*"
+        try:
+            entries = list(self._dest.glob(pattern))
+        except OSError as exc:
+            self.log.emit(f"WARNING: Could not fully scan destination — {exc}")
+            entries = []
+        for f in entries:
+            try:
+                if f.is_file():
+                    rel = f.relative_to(self._dest)
+                    index.add((str(rel), f.stat().st_size))
+            except OSError as exc:
+                self.log.emit(f"WARNING: Skipped (unreadable): {f.name} — {exc}")
+        return index
+
+    # ------------------------------------------------------------------
+    def _run_copy(self) -> None:
+        total = len(self._missing_files)
+        for i, info in enumerate(self._missing_files):
+            if self._cancelled:
+                self.log.emit("Cancelled.")
+                return
+
+            dst = self._dest / info["rel_path"]
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(info["src_path"], dst)
+
+            self.log.emit(f"Copied: {info['rel_path']}")
+            self.progress.emit(i + 1, total)
+
+        self.copy_done.emit()

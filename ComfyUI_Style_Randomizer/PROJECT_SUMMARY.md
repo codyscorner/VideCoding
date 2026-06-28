@@ -70,6 +70,13 @@ Your ComfyUI workflow must be exported in **API format** (enable Dev Mode in Com
 
 ## Changelog
 
+### v1.4.0
+- **Prompt order modes** — dropdown in the bottom bar lets you choose how styles are assigned per image:
+  - **Random** (default) — each image gets a randomly chosen style, no consecutive repeat in Auto Run
+  - **Sequential** — styles assigned in order (1, 2, 3… cycling); Auto Run advances the cursor each batch
+  - **Evens → Odds** — even-numbered styles run first (2, 4, 6…), then odd (1, 3, 5…); Auto Run follows the same sequence
+- All three modes work in both regular Start and Auto Run
+
 ### v1.3.0
 - **Auto Run mode** — process all images unattended N at a time: set batch size (1–50), click **▶▶ Auto Run**, and the app automatically selects the next batch and starts it when each batch finishes; processed images are removed from the grid between batches; **⏹ Stop After Batch** lets you halt after the current batch completes
 - Auto Run is disabled when "Show all" is checked (no unprocessed images to iterate)

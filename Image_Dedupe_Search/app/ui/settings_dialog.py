@@ -197,8 +197,8 @@ class SettingsDialog(QDialog):
         # Model selection
         self.model_combo = QComboBox()
         self.model_combo.addItems([
-            "clip-ViT-B-32",
             "clip-ViT-B-16",
+            "clip-ViT-B-32",
             "clip-ViT-L-14",
         ])
         self.model_combo.setToolTip(
