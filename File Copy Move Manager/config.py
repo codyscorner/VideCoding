@@ -1,4 +1,4 @@
-"""Configuration management for File Copy Manager application"""
+"""Configuration management for File Copy Move Manager application"""
 
 import json
 from pathlib import Path
@@ -15,7 +15,9 @@ class ConfigManager:
         "preserve_structure": True,
         "folder_structure": "flat",
         "number_duplicates": True,
-        "recursive_search": True
+        "recursive_search": True,
+        "operation_mode": "copy",
+        "workers": 4,
     }
 
     def __init__(self, config_path: Path):

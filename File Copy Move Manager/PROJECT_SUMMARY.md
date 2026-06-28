@@ -1,14 +1,14 @@
-# File Copy Manager - Project Summary
+# File Copy Move Manager - Project Summary
 
 ## Created: December 8, 2025
 ## Last Updated: June 28, 2026
-## Version: 3.2.0
+## Version: 3.3.1
 
 ---
 
 ## Overview
 
-File Copy Manager is a **companion application** to File Rename Mover, designed specifically for **copying files** rather than moving/renaming them. It features a distinctive **yellow and black color scheme** for easy visual identification.
+File Copy Move Manager is a **companion application** to File Rename Mover, designed for **copying and moving files** in bulk. It features a **gold theme for Copy Mode** and a **red theme for Move Mode**, switching visually when the user toggles between operations.
 
 ---
 
@@ -16,15 +16,15 @@ File Copy Manager is a **companion application** to File Rename Mover, designed 
 
 ### From File Rename Mover
 
-| Aspect | File Rename Mover | File Copy Manager |
-|--------|------------------|-------------------|
-| **Operation** | Move & Rename files | Copy files only |
-| **Color Theme** | Red & Black | Yellow & Black |
+| Aspect | File Rename Mover | File Copy Move Manager |
+|--------|------------------|----------------------|
+| **Operation** | Move & Rename files | Copy OR Move files (toggle) |
+| **Color Theme** | Red & Black (always) | Gold = Copy Mode / Red = Move Mode |
 | **File Naming** | Multiple patterns (numbering, datetime, prefix, custom) | Keep original names |
 | **Duplicates** | Error or skip | Number automatically (file_001.jpg) |
 | **Structure** | Date-based organization only | Preserve original OR date-based |
-| **Primary Use** | File organization | File backup |
-| **Safety** | Moves files (removes from source) | Copies files (originals untouched) |
+| **Primary Use** | File organization with rename | Bulk copy/move without renaming |
+| **Safety** | Always moves (removes source) | Copy = safe; Move = removes source after verify |
 
 ---
 
@@ -101,7 +101,7 @@ File Copy Manager is a **companion application** to File Rename Mover, designed 
 ## Project Structure
 
 ```
-File Copy Manager/
+File Copy Move Manager/
 ├── main.py                      # Application entry point
 ├── config.py                    # Configuration management (JSON)
 ├── file_operations.py           # File copying logic
@@ -355,13 +355,13 @@ Persistent settings in `config.json`:
 - **Operation**: Move & rename
 - **Result**: Files relocated and renamed
 
-**File Copy Manager** (Yellow theme)
+**File Copy Move Manager** (Yellow theme)
 - **Use when**: Backing up files
 - **Operation**: Copy only
 - **Result**: Files duplicated, originals untouched
 
 ### Workflow Example
-1. **Backup** with File Copy Manager (yellow)
+1. **Backup** with File Copy Move Manager (yellow)
 2. **Organize** with File Rename Mover (red)
 3. **Verify** backup is safe
 4. **Clean up** originals if needed
@@ -395,11 +395,11 @@ Persistent settings in `config.json`:
 
 ## Conclusion
 
-File Copy Manager is a **production-ready** application that perfectly complements File Rename Mover. The dark gold theme makes it instantly recognizable, and the copy-focused functionality — with filtering, progress tracking, and multi-threaded execution — provides a robust and safe alternative to moving files.
+File Copy Move Manager is a **production-ready** application that perfectly complements File Rename Mover. The dark gold theme makes it instantly recognizable, and the copy-focused functionality — with filtering, progress tracking, and multi-threaded execution — provides a robust and safe alternative to moving files.
 
 **Status**: ✓ Active and Feature-Rich
 
-**Version**: 3.2.0
+**Version**: 3.3.1
 
 **Created**: December 8, 2025
-**Last Updated**: June 21, 2026
+**Last Updated**: June 28, 2026
