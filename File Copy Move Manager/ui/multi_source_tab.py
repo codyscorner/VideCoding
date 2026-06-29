@@ -1,4 +1,4 @@
-"""Multi-Source tab — run the same copy/move template across N source folders in sequence."""
+"""Multi-Source tab — run the same copy/move template across N source folders in parallel."""
 
 import os
 import logging
@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer
 
 from config import ConfigManager
-from file_operations import FileCopier, FileValidator
+from file_operations import FileCopier, FileScanner, FileValidator
 from folder_organization import FolderStructure, FolderOrganizer
 from ui.styles import COLORS
 
@@ -40,6 +40,10 @@ class MultiSourceTab(QWidget):
         self._completed_copied = 0
         self._completed_skipped = 0
         self._completed_errors = 0
+        self._completed_sources = 0
+        self._sources_started = 0
+        self._live_counts: dict = {}  # src_idx -> (copied, skipped, errors)
+        self._watchdog_fired = False
         self.mode = 'copy'
 
         self._build_ui()
@@ -91,7 +95,7 @@ class MultiSourceTab(QWidget):
         self.source_list.setMaximumHeight(90)
         layout.addWidget(self.source_list)
 
-        hint_src = QLabel("Add each drive or folder you want to scan. The same template runs across all of them in order.")
+        hint_src = QLabel("Add each drive or folder you want to scan. Sources are processed one at a time — each uses its own dedicated workers.")
         hint_src.setObjectName("dim_label")
         layout.addWidget(hint_src)
 
@@ -168,10 +172,10 @@ class MultiSourceTab(QWidget):
         layout.addLayout(opts_grid)
 
         workers_row = QHBoxLayout()
-        workers_row.addWidget(QLabel("Parallel workers:"))
+        workers_row.addWidget(QLabel("Workers per source:"))
         self.workers_spin = QSpinBox()
         self.workers_spin.setRange(1, 16)
-        self.workers_spin.setValue(self._config.get("workers", 4))
+        self.workers_spin.setValue(self._config.get("multi_workers", 2))
         self.workers_spin.setFixedWidth(60)
         workers_row.addWidget(self.workers_spin)
         workers_hint = QLabel("(1 = sequential  |  2–4 USB/HDD  |  4–8 NVMe)")
@@ -246,8 +250,23 @@ class MultiSourceTab(QWidget):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
+        # ── Live Transfers Panel ─────────────────────────────────────────────
+        self.live_transfers_frame = QFrame()
+        self.live_transfers_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        lt_outer = QVBoxLayout(self.live_transfers_frame)
+        lt_outer.setContentsMargins(8, 6, 8, 6)
+        lt_outer.setSpacing(4)
+        lt_hdr = QLabel("Active Large-File Transfers:")
+        lt_hdr.setObjectName("dim_label")
+        lt_outer.addWidget(lt_hdr)
+        self._transfers_layout = QVBoxLayout()
+        self._transfers_layout.setSpacing(3)
+        lt_outer.addLayout(self._transfers_layout)
+        layout.addWidget(self.live_transfers_frame)
+        self.live_transfers_frame.setVisible(False)
+        self._transfer_rows: dict = {}  # transfer_id -> (QWidget, QProgressBar)
+
         # ── Progress ─────────────────────────────────────────────────────────
-        # Bar 1 — which source we're on
         self.source_progress_label = QLabel("Ready — add source folders and click Run All Sources")
         self.source_progress_label.setObjectName("dim_label")
         layout.addWidget(self.source_progress_label)
@@ -255,30 +274,6 @@ class MultiSourceTab(QWidget):
         self.source_progress = QProgressBar()
         self.source_progress.setRange(0, 100)
         layout.addWidget(self.source_progress)
-
-        # Bar 2 — files processed within the current source
-        src_file_row = QHBoxLayout()
-        src_file_row.addWidget(QLabel("Current Source:"))
-        self.src_file_label = QLabel("")
-        self.src_file_label.setObjectName("dim_label")
-        src_file_row.addWidget(self.src_file_label, stretch=1)
-        layout.addLayout(src_file_row)
-
-        self.src_file_progress = QProgressBar()
-        self.src_file_progress.setRange(0, 100)
-        layout.addWidget(self.src_file_progress)
-
-        # Bar 3 — large-file byte-level progress
-        file_row = QHBoxLayout()
-        file_row.addWidget(QLabel("Current File:"))
-        self.file_label = QLabel("")
-        self.file_label.setObjectName("dim_label")
-        file_row.addWidget(self.file_label, stretch=1)
-        layout.addLayout(file_row)
-
-        self.file_progress = QProgressBar()
-        self.file_progress.setRange(0, 100)
-        layout.addWidget(self.file_progress)
 
         counters_row = QHBoxLayout()
         self.copied_title_label = QLabel("Total Copied:")
@@ -360,6 +355,7 @@ class MultiSourceTab(QWidget):
         self._config.set("multi_max_size", self.max_size_edit.text())
         self._config.set("multi_size_unit", self.unit_combo.currentText())
         self._config.set("multi_days_old", self.days_edit.text())
+        self._config.set("multi_workers", self.workers_spin.value())
         self._config.save()
 
     # ── Source List Management ───────────────────────────────────────────────
@@ -500,7 +496,7 @@ class MultiSourceTab(QWidget):
             'verify_checksum': self.verify_check.isChecked(),
             'incremental': self.incremental_check.isChecked(),
             'operation_mode': self.mode,
-            'workers': self.workers_spin.value(),
+            'workers_per_source': self.workers_spin.value(),
         }
 
     # ── Run / Cancel ─────────────────────────────────────────────────────────
@@ -514,21 +510,26 @@ class MultiSourceTab(QWidget):
         self.status_list.clear()
         self._is_running = True
         self._cancel_requested = False
+        self._watchdog_fired = False
         self._completed_copied = 0
         self._completed_skipped = 0
         self._completed_errors = 0
+        self._completed_sources = 0
+        self._sources_started = 0
+        self._live_counts = {}
+        self._clear_transfer_panel()
         self.run_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.source_progress.setValue(0)
-        self.src_file_progress.setValue(0)
-        self.src_file_label.setText("")
-        self.file_progress.setValue(0)
-        self.file_label.setText("")
         self.copied_label.setText("0")
         self.skipped_label.setText("0")
         self.errors_label.setText("0")
+
         n = len(options['sources'])
-        self.source_progress_label.setText(f"Starting — {n} source{'s' if n != 1 else ''} queued…")
+        wps = options['workers_per_source']
+        self.source_progress_label.setText(
+            f"Starting {n} source{'s' if n != 1 else ''}  ({wps} worker{'s' if wps != 1 else ''} each, one source at a time)…"
+        )
 
         threading.Thread(target=self._worker, args=(options,), daemon=True).start()
         self._poll_timer.start()
@@ -537,15 +538,51 @@ class MultiSourceTab(QWidget):
         if self._is_running:
             self._cancel_requested = True
             self.cancel_btn.setEnabled(False)
-            self.source_progress_label.setText("Cancelling after current file…")
-            self._add_status("Cancellation requested — stopping after current file")
+            self.source_progress_label.setText("Cancelling — waiting for in-progress files to finish…")
+            self._add_status("Cancellation requested — stopping after current files")
 
     # ── Worker Thread ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _pre_filter_incremental(files: list, source_folder: str, options: dict) -> list:
+        """Return only files not already present at destination (size + mtime match)."""
+        dest_folder = options['dest_folder']
+        preserve = options['preserve_structure']
+        organizer = FolderOrganizer()
+        try:
+            folder_structure = FolderStructure(options['folder_structure'])
+        except ValueError:
+            folder_structure = FolderStructure.FLAT
+
+        result = []
+        for full_path, rel_path, size in files:
+            filename = os.path.basename(full_path)
+            if preserve:
+                rel_dir = os.path.dirname(rel_path)
+                final_dest = os.path.join(dest_folder, rel_dir) if rel_dir else dest_folder
+            else:
+                subfolder = organizer.get_destination_subfolder(
+                    full_path, folder_structure, source_folder, use_file_date=True
+                )
+                final_dest = os.path.join(dest_folder, subfolder) if subfolder else dest_folder
+
+            dest_path = os.path.join(final_dest, filename)
+            if os.path.exists(dest_path):
+                try:
+                    src_stat = os.stat(full_path)
+                    dst_stat = os.stat(dest_path)
+                    if (src_stat.st_size == dst_stat.st_size and
+                            abs(src_stat.st_mtime - dst_stat.st_mtime) <= 2.0):
+                        continue  # already up-to-date
+                except OSError:
+                    pass
+            result.append((full_path, rel_path, size))
+        return result
 
     def _worker(self, options: dict):
         sources = options['sources']
         total_sources = len(sources)
-        grand_copied = grand_skipped = grand_errors = 0
+        workers_per_src = options.get('workers_per_source', 1)
         start_time = time.time()
 
         try:
@@ -553,84 +590,141 @@ class MultiSourceTab(QWidget):
         except ValueError:
             folder_structure = FolderStructure.FLAT
 
-        for src_idx, source in enumerate(sources, 1):
+        grand_copied = grand_skipped = grand_errors = 0
+
+        # ── Watchdog + copier registry ────────────────────────────────────────
+        _copier_lock = threading.Lock()
+        _active_copiers: list = []
+        _watchdog_stop = threading.Event()
+
+        WATCHDOG_STALL = 45   # seconds of no I/O before auto-cancel
+        WATCHDOG_TICK  = 10   # check interval
+
+        def _watchdog_fn():
+            while not _watchdog_stop.wait(timeout=WATCHDOG_TICK):
+                if self._cancel_requested:
+                    break
+                with _copier_lock:
+                    if not _active_copiers:
+                        continue
+                    most_recent = max(c.last_activity_time for c in _active_copiers)
+                if time.time() - most_recent > WATCHDOG_STALL:
+                    self._watchdog_fired = True
+                    self._cancel_requested = True
+                    self._queue_msg('status',
+                        f"⚠ WATCHDOG: No disk I/O for {WATCHDOG_STALL}s — "
+                        "auto-cancelled (drive may be unresponsive)")
+                    break
+
+        threading.Thread(target=_watchdog_fn, daemon=True).start()
+        # ─────────────────────────────────────────────────────────────────────
+
+        def _run_source(src_idx: int, source: str):
             if self._cancel_requested:
-                break
+                return 0, 0, 0
 
             self._queue_msg('source_start', {
                 'index': src_idx, 'total': total_sources, 'path': source,
             })
 
             try:
-                def _status_cb(msg, _i=src_idx, _n=total_sources):
+                def _status_cb(msg):
                     if any(msg.startswith(p) for p in _SHOW_PREFIXES):
-                        self._queue_msg('status', f"[{_i}/{_n}] {msg}")
+                        self._queue_msg('status', f"[{src_idx}/{total_sources}] {msg}")
+
+                # ── Incremental pre-filter ───────────────────────────────────
+                # When incremental is on, scan the full file list first, then
+                # remove files already up-to-date at the destination before any
+                # copy work starts. Workers then only touch files that actually
+                # need copying — no per-file lock contention on skips.
+                pre_scanned = None
+                pre_skip = 0
+                if options.get('incremental'):
+                    patterns = FileValidator.validate_file_mask(options['extension'])
+                    self._queue_msg('status', f"[{src_idx}/{total_sources}] Scanning for new/changed files…")
+                    all_files = FileScanner.get_files_with_patterns(
+                        source, patterns, options['recursive_search'],
+                        min_size_bytes=options.get('min_size_bytes'),
+                        max_size_bytes=options.get('max_size_bytes'),
+                        max_days_old=options.get('max_days_old'),
+                    )
+                    pre_scanned = self._pre_filter_incremental(all_files, source, options)
+                    pre_skip = len(all_files) - len(pre_scanned)
+                    self._queue_msg('status',
+                        f"[{src_idx}/{total_sources}] Found {len(all_files)} files — "
+                        f"{pre_skip} already up-to-date, {len(pre_scanned)} to copy"
+                    )
+                    if pre_skip:
+                        self._queue_msg('source_counters', {
+                            'source_idx': src_idx, 'copied': 0, 'skipped': pre_skip, 'errors': 0
+                        })
 
                 copier = FileCopier(
                     status_callback=_status_cb,
                     folder_structure=folder_structure,
                     number_duplicates=options['number_duplicates'],
-                    progress_callback=lambda cur, tot, fname, fprog, _i=src_idx, _n=total_sources: (
-                        self._queue_msg('progress', {
-                            'source_idx': _i, 'source_total': _n,
-                            'current': cur, 'total': tot,
-                            'filename': fname, 'file_progress': fprog,
-                        })
-                    ),
+                    progress_callback=None,
                     cancel_check=lambda: self._cancel_requested,
-                    counters_callback=lambda c, s, e: self._queue_msg(
-                        'source_counters', {'copied': c, 'skipped': s, 'errors': e}
+                    counters_callback=lambda c, s, e, _ps=pre_skip: self._queue_msg(
+                        'source_counters', {'source_idx': src_idx, 'copied': c, 'skipped': s + _ps, 'errors': e}
                     ),
                     verify_checksum=options.get('verify_checksum', False),
                     incremental=options.get('incremental', False),
                     move_mode=options.get('operation_mode') == 'move',
-                    workers=options.get('workers', 1),
+                    workers=workers_per_src,
+                    transfer_callback=lambda tid, fname, pct: self._queue_msg(
+                        'transfer_update', {'transfer_id': tid, 'filename': fname, 'pct': pct}
+                    ),
                 )
 
-                results = copier.copy_files(
-                    source, options['dest_folder'], options['extension'],
-                    options['preserve_structure'], options['recursive_search'],
-                    min_size_bytes=options.get('min_size_bytes'),
-                    max_size_bytes=options.get('max_size_bytes'),
-                    max_days_old=options.get('max_days_old'),
-                )
+                with _copier_lock:
+                    _active_copiers.append(copier)
+                try:
+                    results = copier.copy_files(
+                        source, options['dest_folder'], options['extension'],
+                        options['preserve_structure'], options['recursive_search'],
+                        min_size_bytes=options.get('min_size_bytes'),
+                        max_size_bytes=options.get('max_size_bytes'),
+                        max_days_old=options.get('max_days_old'),
+                        pre_scanned_files=pre_scanned,
+                    )
+                finally:
+                    with _copier_lock:
+                        _active_copiers.remove(copier)
 
-                if self._cancel_requested:
-                    # Count partial results before breaking
-                    c = sum(1 for r in results if r.success and r.destination_file is not None)
-                    s = sum(1 for r in results if r.success and r.destination_file is None)
-                    e = sum(1 for r in results if not r.success)
-                    grand_copied += c
-                    grand_skipped += s
-                    grand_errors += e
-                    break
-
-                copied = sum(1 for r in results if r.success and r.destination_file is not None)
-                skipped = sum(1 for r in results if r.success and r.destination_file is None)
-                errors = sum(1 for r in results if not r.success)
-                grand_copied += copied
-                grand_skipped += skipped
-                grand_errors += errors
-
-                self._queue_msg('source_complete', {
-                    'index': src_idx, 'total': total_sources, 'path': source,
-                    'copied': copied, 'skipped': skipped, 'errors': errors,
-                    'grand_copied': grand_copied,
-                    'grand_skipped': grand_skipped,
-                    'grand_errors': grand_errors,
-                })
+                copied  = sum(1 for r in results if r.success and r.destination_file is not None)
+                skipped = sum(1 for r in results if r.success and r.destination_file is None) + pre_skip
+                errors  = sum(1 for r in results if not r.success)
+                return copied, skipped, errors
 
             except Exception as e:
                 self._logger.error(f"Multi-source error on {source}: {e}")
                 self._queue_msg('status', f"[{src_idx}/{total_sources}] ERROR: {e}")
-                grand_errors += 1
-                self._queue_msg('source_complete', {
-                    'index': src_idx, 'total': total_sources, 'path': source,
-                    'copied': 0, 'skipped': 0, 'errors': 1,
-                    'grand_copied': grand_copied,
-                    'grand_skipped': grand_skipped,
-                    'grand_errors': grand_errors,
-                })
+                return 0, 0, 1
+
+        # Sources processed one at a time — no simultaneous USB/disk streams
+        for src_idx, source in enumerate(sources, 1):
+            if self._cancel_requested:
+                break
+            try:
+                copied, skipped, errors = _run_source(src_idx, source)
+            except Exception as e:
+                copied, skipped, errors = 0, 0, 1
+                self._queue_msg('status', f"[{src_idx}/{total_sources}] FATAL: {e}")
+
+            grand_copied  += copied
+            grand_skipped += skipped
+            grand_errors  += errors
+
+            self._queue_msg('source_complete', {
+                'index': src_idx, 'total': total_sources, 'path': source,
+                'copied': copied, 'skipped': skipped, 'errors': errors,
+                'grand_copied': grand_copied,
+                'grand_skipped': grand_skipped,
+                'grand_errors': grand_errors,
+            })
+
+        _watchdog_stop.set()
 
         end_time = time.time()
 
@@ -659,46 +753,53 @@ class MultiSourceTab(QWidget):
                         self._add_status(data)
 
                     elif msg_type == 'source_start':
-                        idx, total, path = data['index'], data['total'], data['path']
-                        pct = int((idx - 1) / total * 100)
-                        self.source_progress.setValue(pct)
+                        self._sources_started += 1
+                        path = data['path']
+                        total = data['total']
                         self.source_progress_label.setText(
-                            f"Source  {idx} / {total}  —  {path}"
+                            f"Processing source {data['index']} / {total}…"
                         )
-                        self.src_file_label.setText("")
-                        self.src_file_progress.setValue(0)
-                        self.file_label.setText("")
-                        self.file_progress.setValue(0)
-                        self._add_status(f"── [{idx}/{total}] {path}")
+                        self._add_status(f"── [{data['index']}/{total}] started  —  {path}")
 
                     elif msg_type == 'source_counters':
-                        # Live per-file counters: base (completed sources) + current source running counts
-                        self.copied_label.setText(str(self._completed_copied + data['copied']))
-                        self.skipped_label.setText(str(self._completed_skipped + data['skipped']))
-                        self.errors_label.setText(str(self._completed_errors + data['errors']))
-
-                    elif msg_type == 'progress':
-                        if data['file_progress'] >= 0:
-                            self.file_progress.setValue(data['file_progress'])
-                        cur, tot = data['current'], data['total']
-                        self.file_label.setText(data['filename'])
-                        if tot > 0:
-                            self.src_file_label.setText(f"File  {cur} / {tot}")
-                            self.src_file_progress.setValue(int(cur / tot * 100))
+                        src_idx = data['source_idx']
+                        self._live_counts[src_idx] = (data['copied'], data['skipped'], data['errors'])
+                        total_c = self._completed_copied + sum(c for c, s, e in self._live_counts.values())
+                        total_s = self._completed_skipped + sum(s for c, s, e in self._live_counts.values())
+                        total_e = self._completed_errors + sum(e for c, s, e in self._live_counts.values())
+                        self.copied_label.setText(str(total_c))
+                        self.skipped_label.setText(str(total_s))
+                        self.errors_label.setText(str(total_e))
 
                     elif msg_type == 'source_complete':
                         idx, total = data['index'], data['total']
                         path = data['path']
                         c, s, e = data['copied'], data['skipped'], data['errors']
-                        self.source_progress.setValue(int(idx / total * 100))
-                        self._completed_copied = data['grand_copied']
+
+                        # Promote this source's live counts into completed totals
+                        self._live_counts.pop(idx, None)
+                        self._completed_copied  = data['grand_copied']
                         self._completed_skipped = data['grand_skipped']
-                        self._completed_errors = data['grand_errors']
+                        self._completed_errors  = data['grand_errors']
                         self.copied_label.setText(str(self._completed_copied))
                         self.skipped_label.setText(str(self._completed_skipped))
                         self.errors_label.setText(str(self._completed_errors))
-                        status_line = f"  ✓ [{idx}/{total}]  copied={c}  skipped={s}  errors={e}  —  {path}"
-                        self._add_status(status_line)
+
+                        self._completed_sources += 1
+                        pct = int(self._completed_sources / total * 100)
+                        self.source_progress.setValue(pct)
+                        self.source_progress_label.setText(
+                            f"Completed {self._completed_sources} / {total} sources"
+                        )
+                        verb = "moved" if self.mode == 'move' else "copied"
+                        self._add_status(
+                            f"  ✓ [{idx}/{total}]  {verb}={c}  skipped={s}  errors={e}  —  {path}"
+                        )
+
+                    elif msg_type == 'transfer_update':
+                        self._update_transfer_panel(
+                            data['transfer_id'], data['filename'], data['pct']
+                        )
 
                     elif msg_type == 'all_complete':
                         self._poll_timer.stop()
@@ -715,6 +816,48 @@ class MultiSourceTab(QWidget):
         except Exception as exc:
             print(f"Multi-source queue poll error: {exc}")
 
+    # ── Live Transfer Panel ──────────────────────────────────────────────────
+
+    def _update_transfer_panel(self, transfer_id: str, filename: str, pct: int):
+        """Add, update, or remove a live transfer row (called from Qt main thread via poll)."""
+        if pct == -1:
+            if transfer_id in self._transfer_rows:
+                row_widget, _ = self._transfer_rows.pop(transfer_id)
+                self._transfers_layout.removeWidget(row_widget)
+                row_widget.deleteLater()
+            if not self._transfer_rows:
+                self.live_transfers_frame.setVisible(False)
+        else:
+            if transfer_id not in self._transfer_rows:
+                row_widget = QWidget()
+                row_layout = QHBoxLayout(row_widget)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(8)
+                short_name = os.path.basename(filename)
+                if len(short_name) > 42:
+                    short_name = short_name[:39] + "…"
+                name_lbl = QLabel(short_name)
+                name_lbl.setFixedWidth(270)
+                bar = QProgressBar()
+                bar.setRange(0, 100)
+                bar.setValue(pct)
+                bar.setFixedHeight(16)
+                row_layout.addWidget(name_lbl)
+                row_layout.addWidget(bar, 1)
+                self._transfers_layout.addWidget(row_widget)
+                self._transfer_rows[transfer_id] = (row_widget, bar)
+                self.live_transfers_frame.setVisible(True)
+            else:
+                _, bar = self._transfer_rows[transfer_id]
+                bar.setValue(pct)
+
+    def _clear_transfer_panel(self):
+        for row_widget, _ in list(self._transfer_rows.values()):
+            self._transfers_layout.removeWidget(row_widget)
+            row_widget.deleteLater()
+        self._transfer_rows.clear()
+        self.live_transfers_frame.setVisible(False)
+
     # ── Completion Handlers ──────────────────────────────────────────────────
 
     @staticmethod
@@ -727,14 +870,15 @@ class MultiSourceTab(QWidget):
         return f"{hh:02d}:{mm:02d}:{ss:02d}.{ms:02d}"
 
     def _on_all_complete(self, data: dict):
+        self._clear_transfer_panel()
         self._is_running = False
         self.run_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.source_progress.setValue(100)
 
-        copied = data['copied']
+        copied  = data['copied']
         skipped = data['skipped']
-        errors = data['errors']
+        errors  = data['errors']
         elapsed = data['end_time'] - data['start_time']
         elapsed_str = self._format_elapsed(elapsed)
 
@@ -743,7 +887,9 @@ class MultiSourceTab(QWidget):
         self.errors_label.setText(str(errors))
         verb = "Moved" if self.mode == 'move' else "Copied"
         self.source_progress_label.setText(f"All sources complete  —  Elapsed: {elapsed_str}")
-        self._add_status(f"═══ All sources complete  —  Elapsed: {elapsed_str}  —  {verb}: {copied}  Skipped: {skipped}  Errors: {errors} ═══")
+        self._add_status(
+            f"═══ All sources complete  —  Elapsed: {elapsed_str}  —  {verb}: {copied}  Skipped: {skipped}  Errors: {errors} ═══"
+        )
 
         summary = f"Total {verb}: {copied}\nTotal Skipped: {skipped}\nTotal Errors: {errors}\nElapsed: {elapsed_str}"
         action = "move" if self.mode == 'move' else "copy"
@@ -757,6 +903,7 @@ class MultiSourceTab(QWidget):
                 f"No files were found to {action} across all sources.\n\nCheck file mask and source folders.")
 
     def _on_all_cancelled(self, data: dict):
+        self._clear_transfer_panel()
         self._is_running = False
         self.run_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
@@ -764,12 +911,15 @@ class MultiSourceTab(QWidget):
         self.copied_label.setText(str(copied))
         self.skipped_label.setText(str(skipped))
         self.errors_label.setText(str(errors))
-        self.source_progress_label.setText("Cancelled")
         verb = "Moved" if self.mode == 'move' else "Copied"
-        self._add_status(
-            f"Operation cancelled  —  {verb}: {copied}  Skipped: {skipped}  Errors: {errors}"
-        )
-        QMessageBox.information(
-            self, "Cancelled",
-            f"Operation cancelled.\n\n{verb} so far: {copied}\nSkipped: {skipped}",
-        )
+        if self._watchdog_fired:
+            self.source_progress_label.setText("Auto-cancelled — drive unresponsive")
+            reason = "Auto-cancelled: drive appeared unresponsive (no disk I/O for 45 seconds).\nCheck the drive and try again."
+            self._add_status(f"Auto-cancelled (watchdog)  —  {verb}: {copied}  Skipped: {skipped}  Errors: {errors}")
+            QMessageBox.warning(self, "Auto-Cancelled (Watchdog)",
+                f"{reason}\n\n{verb} so far: {copied}\nSkipped: {skipped}")
+        else:
+            self.source_progress_label.setText("Cancelled")
+            self._add_status(f"Operation cancelled  —  {verb}: {copied}  Skipped: {skipped}  Errors: {errors}")
+            QMessageBox.information(self, "Cancelled",
+                f"Operation cancelled.\n\n{verb} so far: {copied}\nSkipped: {skipped}")

@@ -172,11 +172,13 @@ class FileCopier:
         incremental: bool = False,
         move_mode: bool = False,
         workers: int = 1,
+        transfer_callback: Optional[Callable[[str, str, int], None]] = None,
     ):
         self.status_callback = status_callback
         self.progress_callback = progress_callback
         self.cancel_check = cancel_check
         self.counters_callback = counters_callback
+        self.transfer_callback = transfer_callback
         self.validator = FileValidator()
         self.scanner = FileScanner()
         self.folder_structure = folder_structure
@@ -187,6 +189,7 @@ class FileCopier:
         self.move_mode = move_mode
         self.workers = max(1, workers)
         self._filename_lock = threading.Lock()
+        self.last_activity_time: float = time.time()
 
     def _log_status(self, message: str) -> None:
         """Log status message if callback is set"""
@@ -361,6 +364,7 @@ class FileCopier:
                 fname = os.path.basename(full_path)
                 with _lock:
                     _counts[0] += 1
+                    self.last_activity_time = time.time()
                     if result.success and result.destination_file is not None:
                         _counts[1] += 1
                     elif result.success:
@@ -451,6 +455,7 @@ class FileCopier:
         MAX_RETRIES = 3
         RETRY_DELAY = 1.5
 
+        dest_path = ""
         try:
             # ── Thread-safe filename resolution + reservation ─────────────────
             # Lock ensures two parallel workers can't claim the same dest path.
@@ -470,10 +475,12 @@ class FileCopier:
                                     success=True, source_file=filename,
                                     destination_file=None, error_message="Skipped (unchanged)"
                                 )
+                            # else: file changed — fall through and overwrite it
                         except OSError:
                             pass
 
-                    if skip_result is None:
+                    if skip_result is None and not self.incremental:
+                        # Non-incremental mode: handle duplicates per user setting
                         if self.number_duplicates:
                             base_name, ext = os.path.splitext(filename)
                             counter = 1
@@ -501,13 +508,19 @@ class FileCopier:
 
             # Get file size
             file_size = os.path.getsize(source_path)
+            self.last_activity_time = time.time()
+
+            _show_transfer = (self.transfer_callback is not None and file_size >= MIN_FILE_PROGRESS_SIZE)
+            if _show_transfer:
+                self.transfer_callback(source_path, filename, 0)
 
             # Copy with retry loop (handles transient network errors)
             start_time = time.time()
             for attempt in range(MAX_RETRIES):
                 try:
-                    if file_size >= LARGE_FILE_THRESHOLD and self.progress_callback and total > 0:
-                        copied = 0
+                    if file_size >= LARGE_FILE_THRESHOLD:
+                        # Always chunk large files so last_activity_time stays current
+                        copied_bytes = 0
                         with open(source_path, 'rb') as src, open(dest_path, 'wb') as dst:
                             while True:
                                 if self.cancel_check and self.cancel_check():
@@ -516,9 +529,13 @@ class FileCopier:
                                 if not chunk:
                                     break
                                 dst.write(chunk)
-                                copied += len(chunk)
-                                pct = int(copied / file_size * 100)
-                                self.progress_callback(idx, total, os.path.basename(source_path), pct)
+                                copied_bytes += len(chunk)
+                                self.last_activity_time = time.time()
+                                pct = int(copied_bytes / file_size * 100)
+                                if self.progress_callback and total > 0:
+                                    self.progress_callback(idx, total, filename, pct)
+                                if _show_transfer:
+                                    self.transfer_callback(source_path, filename, pct)
                         shutil.copystat(source_path, dest_path)
                     else:
                         shutil.copy2(source_path, dest_path)
@@ -526,12 +543,24 @@ class FileCopier:
                 except OSError as copy_err:
                     if self.cancel_check and self.cancel_check():
                         break
+                    # If destination is read-only, strip the flag and retry immediately
+                    err_str = str(copy_err)
+                    if copy_err.errno == 13 and dest_path in err_str:
+                        try:
+                            import stat as _stat
+                            os.chmod(dest_path, _stat.S_IWRITE | _stat.S_IREAD)
+                            continue  # retry without counting this as an attempt
+                        except OSError:
+                            pass
+                    side = "reading source" if source_path in err_str else "writing destination" if dest_path in err_str else "during copy"
                     if attempt < MAX_RETRIES - 1:
-                        self._log_status(f"Retry {attempt + 1}/{MAX_RETRIES - 1}: {filename} — {copy_err}")
+                        self._log_status(f"Retry {attempt + 1}/{MAX_RETRIES - 1}: {filename} ({side}) — {copy_err}")
                         time.sleep(RETRY_DELAY)
                     else:
-                        raise
+                        raise OSError(f"[{side}] {copy_err}") from copy_err
             copy_time = time.time() - start_time
+            if _show_transfer:
+                self.transfer_callback(source_path, filename, -1)
 
             # Checksum verification
             checksum_ok: Optional[bool] = None
@@ -575,8 +604,14 @@ class FileCopier:
                 checksum_verified=checksum_ok
             )
         except Exception as e:
-            error_msg = f"Error copying {filename}: {e}"
-            self._log_status(error_msg)
+            err_str = str(e)
+            if source_path in err_str:
+                side = "reading source"
+            elif dest_path and dest_path in err_str:
+                side = "writing destination"
+            else:
+                side = "copying"
+            self._log_status(f"Error {side} — {filename}: {e}")
             return FileOperationResult(
                 success=False,
                 source_file=filename,
