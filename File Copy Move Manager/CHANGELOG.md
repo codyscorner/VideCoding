@@ -5,6 +5,46 @@ All notable changes to File Copy Move Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-06-29
+
+### Added
+- **Copy order dropdown** — both tabs now let you choose the order files are processed: **Largest first** (new default), Smallest first, Oldest first (modified date), or Directory order (as found). The choice is saved and written into the run-settings log header.
+- **Largest-first is the new default** — for parallel copies it balances work across the worker pool and eliminates the "idle worker tail" where most workers finish while one grinds the last few huge files. Smallest-first remains available for a fast-climbing progress count; Directory order preserves read locality on mechanical drives.
+
+### Notes
+- Date-based behavior is consistent on **modified date**: the age filter, the date folder structure (Year / Year-Month), and the new "Oldest first" sort all use the file's modified time. Modified time is preferred over created time because copying a file resets its created date but preserves its modified date.
+
+---
+
+## [3.3.12] - 2026-06-29
+
+### Fixed
+- **Log header separators now use plain `=`** — the box-drawing `═` (U+2550) used in the run-settings header isn't in the log file's Windows code page (cp1252), so it was being written as literal `═` escapes. Replaced with `=` so the header is readable in the log.
+
+---
+
+## [3.3.11] - 2026-06-29
+
+### Added
+- **Run settings header in the log file** — when an operation starts, the full set of settings for the active tab is written to the top of the log: mode, source(s), destination, file mask, recursive, preserve structure, folder structure, number-duplicates, incremental, verify-checksum, workers, and the size/date filters. Makes every run self-documenting and reproducible. Single-Source and Multi-Source each log their own header (Multi-Source lists every source folder).
+
+---
+
+## [3.3.10] - 2026-06-29
+
+### Changed
+- **Timestamped log filename** — each app launch now writes to its own `FileCopyMoveManager_YYYY-MM-DD_HH-MM-SS.log` instead of a single reused `FileCopyMoveManager.log`, so previous run logs are preserved and sort chronologically. The completion status line still prints the full path to the current run's log.
+
+---
+
+## [3.3.9] - 2026-06-29
+
+### Added
+- **Per-file skip reasons in the log file** — every skipped file now writes a reason line to `FileCopyMoveManager.log`: `Skipped (duplicate)` (name collision, numbering off), `Skipped (identical)` (byte-identical content, numbering on), and `Skipped (unchanged)` (incremental size + mtime match). The incremental "unchanged" skip — previously completely silent — is now recorded, and the Multi-Source incremental pre-filter logs each file it drops before workers start. All copier events (skips, duplicate renames, retries, errors) are routed to the log file even when filtered out of the on-screen status list.
+- **Log file path shown on completion** — both tabs now print the full path to `FileCopyMoveManager.log` in the status window when an operation finishes, so the per-file skip details are easy to find.
+
+---
+
 ## [3.3.6] - 2026-06-28
 
 ### Changed

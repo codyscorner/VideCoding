@@ -1,8 +1,8 @@
 # File Copy Move Manager - Project Summary
 
 ## Created: December 8, 2025
-## Last Updated: June 28, 2026
-## Version: 3.3.6
+## Last Updated: June 29, 2026
+## Version: 3.4.0
 
 ---
 
@@ -77,8 +77,24 @@ File Copy Move Manager is a **companion application** to File Rename Mover, desi
 ### 5. Progress Tracking
 - Overall progress bar (current file / total files)
 - Per-file progress bar for files ≥ 50 MB
+- Live Transfers panel — one progress row per active large-file transfer
 - Live counters: copied, skipped, errors
 - Status log list showing warnings, errors, and timing
+
+### 5a. Copy Order
+- Selectable processing order: **Largest first** (default), Smallest first, Oldest first (modified date), Directory order
+- Largest-first minimizes makespan with parallel workers (avoids the idle-worker tail on the last few big files); directory order preserves read locality on mechanical drives
+- All date-driven features (age filter, date folder structure, oldest-first sort) use **modified** date for consistency — survives copies, unlike created date
+
+### 5b. Logging & Diagnostics
+- One timestamped log file per launch (`FileCopyMoveManager_YYYY-MM-DD_HH-MM-SS.log`) — previous runs preserved
+- Each log opens with a full **run-settings header** for reproducibility
+- **Per-file skip reasons** recorded (duplicate / identical / unchanged)
+- Full log path shown in the status window on completion
+- **Watchdog** auto-cancels on an unresponsive drive (no I/O for 45 s)
+
+### 5c. Saved Profiles
+- Store a complete settings set and recall it from a dropdown; profiles are mode-agnostic (Copy and Move)
 
 ### 6. Persistent Configuration
 - Settings auto-saved to `config.json` on close
