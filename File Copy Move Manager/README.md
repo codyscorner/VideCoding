@@ -2,13 +2,30 @@
 
 A powerful dual-mode tool for batch **copying** or **moving** files with flexible folder organization, advanced filtering, and incremental backup support.
 
-## Version 3.3.1
+## Version 3.4.0
 
 **Gold theme = Copy Mode | Red theme = Move Mode** — instantly distinguishable from the companion File Rename Mover (always red).
 
 ---
 
 ## What's New
+
+### v3.4.0 — Copy Order Control
+- **Copy order dropdown** (both tabs) — choose how files are processed: **Largest first** (new default), Smallest first, Oldest first (modified date), or Directory order (as found)
+- **Largest-first default** balances work across the parallel worker pool and eliminates the "idle worker tail" where most workers finish while one grinds the last few huge files; smallest-first keeps the progress count climbing fast; directory order preserves read locality on mechanical drives
+- All date-driven behavior (age filter, date folder structure, oldest-first sort) consistently uses **modified** date — preserved across copies, unlike created date
+
+### v3.3.7–v3.3.12 — Logging & Profiles
+- **Saved profiles** — store a full set of settings and recall it from a dropdown; profiles are mode-agnostic (work for Copy and Move)
+- **Per-file skip reasons in the log** — every skipped file is recorded with its reason (`duplicate`, `identical`, `unchanged`) so you can see exactly why files were skipped
+- **Timestamped log per launch** — each run writes its own `FileCopyMoveManager_YYYY-MM-DD_HH-MM-SS.log`; the full path is shown in the status window on completion
+- **Run-settings header** — every log opens with the complete set of settings used for that run, making it self-documenting and reproducible
+
+### v3.3.0–v3.3.6 — Move Mode, Watchdog & Live Transfers
+- **Copy/Move toggle** on each tab — Copy Mode (gold) vs Move Mode (red); the whole UI repaints to signal the active mode; in Move Mode source files are deleted after a successful copy + verify
+- **Live Transfers panel** — files ≥ 50 MB get their own labeled progress row that appears/disappears as transfers start and finish
+- **Watchdog / freeze detector** — auto-cancels with a clear warning if no disk I/O occurs for 45 s (e.g. an unresponsive drive)
+- **Sequential multi-source** — sources process one at a time to avoid overwhelming USB controllers, while workers-per-source keep copying parallel within each source
 
 ### v3.3.0 — Move Mode
 - **Copy/Move toggle** on each tab — switch between Copy Mode (gold theme) and Move Mode (red theme) with a single button; the entire UI repaints to signal the active mode
@@ -60,13 +77,31 @@ A powerful dual-mode tool for batch **copying** or **moving** files with flexibl
 - **Number duplicates** — appends `_001`, `_002`, etc. (default, safest)
 - **Skip duplicates** — leaves existing files untouched
 
+### Copy Order
+- **Largest first** (default) — best load-balancing for parallel workers
+- **Smallest first** — fastest-climbing progress count
+- **Oldest first** — by modified date
+- **Directory order** — as found on disk; preserves read locality on HDDs
+
 ### Progress & Status
 - Overall progress bar (file count)
 - Per-file progress bar for files ≥ 50 MB
+- **Live Transfers panel** — dedicated progress row per active large-file transfer
 - Live counters: Copied / Skipped / Errors (update after every file)
 - Quiet status log — only errors, warnings, large-file copies, and job timing
 - Start + end timestamps with elapsed time (HH:MM:SS.mm)
 - Log capped at 500 entries; oldest drop off automatically
+
+### Logging
+- One timestamped log file per launch — never overwrites a previous run
+- Opens with a full **run-settings header** (every setting used)
+- **Per-file skip reasons** recorded (duplicate / identical / unchanged)
+- Full log path shown in the status window on completion
+
+### Reliability
+- **Watchdog** auto-cancels if a drive stops responding (no I/O for 45 s)
+- **Saved profiles** — recall a full settings set from a dropdown
+- Sequential multi-source processing to protect USB controllers
 
 ### Copy Quality
 - **Chunked I/O** — 4 MB chunks for files ≥ 120 MB; real-time progress and Cancel support
@@ -111,10 +146,13 @@ File Copy Move Manager/
 ├── config.py                # JSON configuration manager
 ├── file_operations.py       # FileCopier, FileScanner, FileValidator
 ├── folder_organization.py   # FolderOrganizer, FolderStructure enum
+├── profiles.py              # ProfileManager — saved settings profiles
 ├── ui/
 │   ├── main_window.py       # MainWindow — tab host, mode sync
 │   ├── multi_source_tab.py  # MultiSourceTab — multi-folder batch
 │   ├── preview_dialog.py    # PreviewDialog — pre-copy file list
+│   ├── save_profile_dialog.py    # Save-profile dialog
+│   ├── manage_profiles_dialog.py # Manage-profiles dialog
 │   └── styles.py            # Gold + red themes, get_stylesheet(mode)
 ├── app_icon.ico
 ├── config.json              # User settings (auto-generated)
@@ -150,6 +188,13 @@ File Copy Move Manager/
 
 | Version | Date | Highlights |
 |---|---|---|
+| 3.4.0 | 2026-06-29 | Copy order dropdown (largest-first default); modified-date consistency |
+| 3.3.12 | 2026-06-29 | Log header uses plain `=` (cp1252-safe) |
+| 3.3.11 | 2026-06-29 | Run-settings header written to log |
+| 3.3.10 | 2026-06-29 | Timestamped log file per launch |
+| 3.3.9 | 2026-06-29 | Per-file skip reasons logged; log path on completion |
+| 3.3.7 | 2026-06-29 | Saved profiles |
+| 3.3.6 | 2026-06-28 | Watchdog, live transfers, sequential multi-source, incremental fix |
 | 3.3.1 | 2026-06-28 | Docs sync + build bump |
 | 3.3.0 | 2026-06-28 | Move Mode, red theme, mode persistence, renamed from File Copy Manager |
 | 3.2.0 | 2026-06-28 | File type presets sorted alphabetically |

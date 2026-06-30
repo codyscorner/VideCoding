@@ -5,6 +5,7 @@ import logging
 import threading
 import queue
 import time
+from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -18,11 +19,12 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
 
 from config import ConfigManager
+from profiles import ProfileManager
 from file_operations import FileCopier, FileScanner, FileValidator
 from folder_organization import FolderStructure, FolderOrganizer
 from ui.styles import STYLESHEET, COLORS, get_stylesheet
 from ui.preview_dialog import PreviewDialog
-from ui.multi_source_tab import MultiSourceTab
+from ui.multi_source_tab import MultiSourceTab, SORT_ORDER_LABELS, SORT_ORDER_VALUES
 
 
 class MainWindow(QMainWindow):
@@ -30,6 +32,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config = config_manager
         self.version = version
+
+        profiles_path = Path(self.config.config_path).parent / "FileCopyMoveManager_profiles.json"
+        self.profile_manager = ProfileManager(profiles_path)
 
         self._copy_thread = None
         self._progress_queue = queue.Queue()
@@ -42,9 +47,12 @@ class MainWindow(QMainWindow):
         self.resize(1200, 900)
         self.setStyleSheet(STYLESHEET)
 
-        log_path = Path(self.config.config_path).parent / "FileCopyMoveManager.log"
+        # One uniquely-named log per app launch — timestamp on the end of the
+        # filename so old run logs aren't overwritten and sort chronologically.
+        _log_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self._log_path = Path(self.config.config_path).parent / f"FileCopyMoveManager_{_log_stamp}.log"
         logging.basicConfig(
-            filename=str(log_path), level=logging.DEBUG,
+            filename=str(self._log_path), level=logging.DEBUG,
             format='%(asctime)s [%(levelname)s] %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
@@ -84,7 +92,7 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         root_layout.addWidget(tabs)
         tabs.addTab(self._build_single_source_tab(), "Single Source")
-        self._multi_tab = MultiSourceTab(self.config, self._logger)
+        self._multi_tab = MultiSourceTab(self.config, self._logger, self._log_path)
         tabs.addTab(self._multi_tab, "Multi-Source  ⚡")
 
     def _build_single_source_tab(self) -> QWidget:
@@ -109,6 +117,28 @@ class MainWindow(QMainWindow):
         sub.setObjectName("subtitle_label")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(sub)
+
+        # Profiles bar
+        profile_bar = QHBoxLayout()
+        profile_bar.addWidget(QLabel("Profile:"))
+        self.profile_combo = QComboBox()
+        self.profile_combo.setMinimumWidth(200)
+        self.profile_combo.addItem("-- Select Profile --")
+        self.profile_combo.addItems(self.profile_manager.get_profile_names())
+        profile_bar.addWidget(self.profile_combo, stretch=1)
+        load_profile_btn = QPushButton("Load")
+        load_profile_btn.setMinimumWidth(75)
+        load_profile_btn.clicked.connect(self._load_profile_from_combo)
+        profile_bar.addWidget(load_profile_btn)
+        save_profile_btn = QPushButton("Save Profile")
+        save_profile_btn.setMinimumWidth(110)
+        save_profile_btn.clicked.connect(self._save_profile)
+        profile_bar.addWidget(save_profile_btn)
+        manage_profile_btn = QPushButton("Manage")
+        manage_profile_btn.setMinimumWidth(85)
+        manage_profile_btn.clicked.connect(self._manage_profiles)
+        profile_bar.addWidget(manage_profile_btn)
+        layout.addLayout(profile_bar)
 
         # Source folder
         layout.addWidget(QLabel("Source Folder:"))
@@ -197,6 +227,19 @@ class MainWindow(QMainWindow):
         workers_row.addWidget(workers_hint)
         workers_row.addStretch()
         layout.addLayout(workers_row)
+
+        sort_row = QHBoxLayout()
+        sort_row.addWidget(QLabel("Copy order:"))
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItems(SORT_ORDER_LABELS)
+        self.sort_combo.setCurrentText(self.config.get("sort_order_label", "Largest first"))
+        self.sort_combo.setFixedWidth(220)
+        sort_row.addWidget(self.sort_combo)
+        sort_hint = QLabel("(Largest first balances parallel workers best)")
+        sort_hint.setObjectName("dim_label")
+        sort_row.addWidget(sort_hint)
+        sort_row.addStretch()
+        layout.addLayout(sort_row)
 
         # File filters
         filter_section = QLabel("File Filters")
@@ -464,6 +507,8 @@ class MainWindow(QMainWindow):
             'incremental': self.incremental_check.isChecked(),
             'operation_mode': self._mode,
             'workers': self.workers_spin.value(),
+            'sort_order': SORT_ORDER_VALUES.get(self.sort_combo.currentText(), "largest"),
+            'sort_order_label': self.sort_combo.currentText(),
         }
 
     def _execute_copy(self, options: dict):
@@ -514,6 +559,7 @@ class MainWindow(QMainWindow):
                 min_size_bytes=options.get('min_size_bytes'),
                 max_size_bytes=options.get('max_size_bytes'),
                 max_days_old=options.get('max_days_old'),
+                sort_order=options.get('sort_order', 'largest'),
             )
             if options.get('incremental') and files:
                 files = self._filter_incremental(files, options)
@@ -557,12 +603,39 @@ class MainWindow(QMainWindow):
             result.append((full_path, rel_path, size))
         return result
 
+    def _log_run_settings(self, options: dict):
+        """Write the full set of settings used for this run to the top of the log file."""
+        def _sz(b):
+            return "—" if b is None else f"{int(b):,} bytes"
+        days = options.get('max_days_old')
+        lines = [
+            "================ RUN SETTINGS — Single Source ================",
+            f"  Operation mode:     {str(options.get('operation_mode', 'copy')).upper()}",
+            f"  Source:             {options['source_folder']}",
+            f"  Destination:        {options['dest_folder']}",
+            f"  File mask:          {options['extension']}",
+            f"  Recursive search:   {options['recursive_search']}",
+            f"  Preserve structure: {options['preserve_structure']}",
+            f"  Folder structure:   {options['folder_structure']}",
+            f"  Number duplicates:  {options['number_duplicates']}",
+            f"  Incremental:        {options['incremental']}",
+            f"  Verify checksum:    {options['verify_checksum']}",
+            f"  Workers:            {options['workers']}",
+            f"  Copy order:         {options.get('sort_order_label', options.get('sort_order', 'largest'))}",
+            f"  Min size filter:    {_sz(options.get('min_size_bytes'))}",
+            f"  Max size filter:    {_sz(options.get('max_size_bytes'))}",
+            f"  Max days old:       {'—' if days is None else days}",
+            "==============================================================",
+        ]
+        self._logger.info("Run settings:\n" + "\n".join(lines))
+
     def _copy_worker(self, options: dict):
         try:
             start_time = time.time()
             import datetime as _dt
             start_str = _dt.datetime.fromtimestamp(start_time).strftime("%H:%M:%S.") + f"{int(start_time % 1 * 100):02d}"
             self._queue_msg('status', f"Start: {start_str}")
+            self._log_run_settings(options)
             folder_structure = FolderStructure(options['folder_structure'])
             _SHOW_PREFIXES = (
                 "Error", "Copied (large):", "Moved (large):", "Path too long", "Found ", "Scanning",
@@ -572,8 +645,16 @@ class MainWindow(QMainWindow):
             )
 
             def _status_cb(msg):
+                # Every event the copier emits (skips, duplicates, large copies,
+                # retries, errors) goes to the .log file — including the per-file
+                # skip reasons that are intentionally kept out of the UI list.
+                self._logger.info(msg)
                 if any(msg.startswith(p) for p in _SHOW_PREFIXES):
                     self._queue_msg('status', msg)
+
+            def _fatal_cb(msg):
+                self._cancel_requested = True
+                self._queue_msg('fatal_error', msg)
 
             copier = FileCopier(
                 status_callback=_status_cb,
@@ -590,6 +671,8 @@ class MainWindow(QMainWindow):
                 incremental=options.get('incremental', False),
                 move_mode=options.get('operation_mode') == 'move',
                 workers=options.get('workers', 1),
+                sort_order=options.get('sort_order', 'largest'),
+                fatal_error_callback=_fatal_cb,
             )
             results = copier.copy_files(
                 options['source_folder'], options['dest_folder'], options['extension'],
@@ -658,6 +741,13 @@ class MainWindow(QMainWindow):
                         self._poll_timer.stop()
                         self._on_copy_cancelled()
                         return
+                    elif msg_type == 'fatal_error':
+                        QMessageBox.critical(
+                            self,
+                            "Operation Stopped — Fatal Error",
+                            f"A critical error occurred and the operation was automatically stopped:"
+                            f"\n\n{data}\n\nFiles copied up to this point are intact."
+                        )
                     elif msg_type == 'error':
                         self._poll_timer.stop()
                         self._on_copy_error(data)
@@ -720,6 +810,7 @@ class MainWindow(QMainWindow):
         self.config.set("incremental", self.incremental_check.isChecked())
         self.config.set("verify_checksum", self.verify_check.isChecked())
         self.config.set("workers", self.workers_spin.value())
+        self.config.set("sort_order_label", self.sort_combo.currentText())
         self.config.save()
 
         verb = "Moved" if opts.get('operation_mode') == 'move' else "Copied"
@@ -732,6 +823,7 @@ class MainWindow(QMainWindow):
         end_str   = _dt.datetime.fromtimestamp(end_t).strftime("%H:%M:%S.") + f"{int(end_t % 1 * 100):02d}"
         elapsed_str = self._format_elapsed(elapsed)
         self._add_status(f"End: {end_str}  |  Elapsed: {elapsed_str}")
+        self._add_status(f"Log file (per-file skip reasons): {self._log_path}")
 
         summary = f"Total {verb}: {copied}\nTotal Skipped: {skipped}\nElapsed: {elapsed_str}"
         action = "process" if opts.get('operation_mode') == 'move' else "copy"
@@ -772,3 +864,93 @@ class MainWindow(QMainWindow):
             self.cancel_btn.setEnabled(False)
             self.progress_label.setText("Cancelling...")
             self._add_status("Cancellation requested, please wait...")
+
+    # ── Profile methods ─────────────────────────────────────────────────────
+
+    def _get_current_settings(self) -> dict:
+        return {
+            'source_folder': self.source_edit.text().strip(),
+            'dest_folder': self.dest_edit.text().strip(),
+            'extension': self.ext_edit.text().strip(),
+            'preserve_structure': self.preserve_check.isChecked(),
+            'number_duplicates': self.number_check.isChecked(),
+            'recursive_search': self.recursive_check.isChecked(),
+            'folder_structure': self.folder_combo.currentText(),
+            'verify_checksum': self.verify_check.isChecked(),
+            'incremental': self.incremental_check.isChecked(),
+            'workers': self.workers_spin.value(),
+            'enable_size_filter': self.size_check.isChecked(),
+            'min_size': self.min_size_edit.text().strip(),
+            'max_size': self.max_size_edit.text().strip(),
+            'size_unit': self.unit_combo.currentText(),
+            'enable_date_filter': self.date_check.isChecked(),
+            'days_old': self.days_edit.text().strip(),
+        }
+
+    def _apply_settings(self, settings: dict) -> None:
+        if 'source_folder' in settings:
+            self.source_edit.setText(settings['source_folder'])
+        if 'dest_folder' in settings:
+            self.dest_edit.setText(settings['dest_folder'])
+        if settings.get('extension'):
+            self.ext_edit.setText(settings['extension'])
+        if 'preserve_structure' in settings:
+            self.preserve_check.setChecked(settings['preserve_structure'])
+        if 'number_duplicates' in settings:
+            self.number_check.setChecked(settings['number_duplicates'])
+        if 'recursive_search' in settings:
+            self.recursive_check.setChecked(settings['recursive_search'])
+        if 'folder_structure' in settings:
+            idx = self.folder_combo.findText(settings['folder_structure'])
+            if idx >= 0:
+                self.folder_combo.setCurrentIndex(idx)
+        if 'verify_checksum' in settings:
+            self.verify_check.setChecked(settings['verify_checksum'])
+        if 'incremental' in settings:
+            self.incremental_check.setChecked(settings['incremental'])
+        if 'workers' in settings:
+            self.workers_spin.setValue(int(settings['workers']))
+        if 'enable_size_filter' in settings:
+            self.size_check.setChecked(settings['enable_size_filter'])
+        if 'min_size' in settings:
+            self.min_size_edit.setText(str(settings['min_size']))
+        if settings.get('max_size') is not None:
+            self.max_size_edit.setText(str(settings['max_size']))
+        if 'size_unit' in settings:
+            idx = self.unit_combo.findText(settings['size_unit'])
+            if idx >= 0:
+                self.unit_combo.setCurrentIndex(idx)
+        if 'enable_date_filter' in settings:
+            self.date_check.setChecked(settings['enable_date_filter'])
+        if 'days_old' in settings:
+            self.days_edit.setText(str(settings['days_old']))
+
+    def _refresh_profile_list(self, select: str | None = None) -> None:
+        current = select or self.profile_combo.currentText()
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.clear()
+        self.profile_combo.addItem("-- Select Profile --")
+        self.profile_combo.addItems(self.profile_manager.get_profile_names())
+        self.profile_combo.blockSignals(False)
+        if current:
+            idx = self.profile_combo.findText(current)
+            if idx >= 0:
+                self.profile_combo.setCurrentIndex(idx)
+
+    def _load_profile_from_combo(self) -> None:
+        name = self.profile_combo.currentText()
+        if not name or name.startswith("--"):
+            QMessageBox.warning(self, "No Profile Selected", "Please select a profile to load.")
+            return
+        profile = self.profile_manager.get_profile(name)
+        if profile:
+            self._apply_settings(profile)
+            self._add_status(f"Profile '{name}' loaded.")
+
+    def _save_profile(self) -> None:
+        from ui.save_profile_dialog import SaveProfileDialog
+        SaveProfileDialog(self).exec()
+
+    def _manage_profiles(self) -> None:
+        from ui.manage_profiles_dialog import ManageProfilesDialog
+        ManageProfilesDialog(self).exec()

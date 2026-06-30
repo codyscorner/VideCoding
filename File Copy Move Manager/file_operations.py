@@ -109,9 +109,14 @@ class FileScanner:
         min_size_bytes: Optional[float] = None,
         max_size_bytes: Optional[float] = None,
         max_days_old: Optional[int] = None,
+        sort_order: str = "largest",
     ) -> List[tuple[str, str, int]]:
         """
-        Scan folder for matching files, apply filters, and return sorted smallest-first.
+        Scan folder for matching files, apply filters, and return them ordered
+        per `sort_order`: "largest" (default, best for parallel load-balancing),
+        "smallest" (fast-climbing progress count), "oldest" (oldest modified
+        date first), or "directory" (scan order, preserves read locality on
+        mechanical drives).
 
         Returns list of (full_path, relative_path, size_bytes) tuples.
         """
@@ -123,38 +128,47 @@ class FileScanner:
 
         def _accept(full_path: str, filename: str):
             if not FileScanner._matches_any_pattern(filename, patterns):
-                return False, 0
+                return False, 0, 0.0
             try:
                 st = os.stat(full_path)
             except OSError:
-                return False, 0
+                return False, 0, 0.0
             size = st.st_size
             if min_size_bytes is not None and size < min_size_bytes:
-                return False, 0
+                return False, 0, 0.0
             if max_size_bytes is not None and size > max_size_bytes:
-                return False, 0
+                return False, 0, 0.0
             if cutoff is not None and st.st_mtime < cutoff:
-                return False, 0
-            return True, size
+                return False, 0, 0.0
+            return True, size, st.st_mtime
 
+        # Internal rows carry modified time for the "oldest" sort; it is
+        # stripped before returning so the public tuple shape stays 3-wide.
+        rows = []  # (full_path, rel_path, size, mtime)
         if recursive:
             for root, dirs, filenames in os.walk(folder_path):
                 for filename in filenames:
                     full_path = os.path.join(root, filename)
-                    ok, size = _accept(full_path, filename)
+                    ok, size, mtime = _accept(full_path, filename)
                     if ok:
                         rel_path = os.path.relpath(full_path, folder_path)
-                        files.append((full_path, rel_path, size))
+                        rows.append((full_path, rel_path, size, mtime))
         else:
             for filename in os.listdir(folder_path):
                 full_path = os.path.join(folder_path, filename)
                 if os.path.isfile(full_path):
-                    ok, size = _accept(full_path, filename)
+                    ok, size, mtime = _accept(full_path, filename)
                     if ok:
-                        files.append((full_path, filename, size))
+                        rows.append((full_path, filename, size, mtime))
 
-        files.sort(key=lambda x: x[2])
-        return files
+        if sort_order == "largest":
+            rows.sort(key=lambda x: x[2], reverse=True)
+        elif sort_order == "smallest":
+            rows.sort(key=lambda x: x[2])
+        elif sort_order == "oldest":
+            rows.sort(key=lambda x: x[3])  # oldest modified date first
+        # "directory" (or anything else): leave in natural scan order
+        return [(fp, rel, size) for fp, rel, size, _mtime in rows]
 
 
 class FileCopier:
@@ -173,12 +187,15 @@ class FileCopier:
         move_mode: bool = False,
         workers: int = 1,
         transfer_callback: Optional[Callable[[str, str, int], None]] = None,
+        fatal_error_callback: Optional[Callable[[str], None]] = None,
+        sort_order: str = "largest",
     ):
         self.status_callback = status_callback
         self.progress_callback = progress_callback
         self.cancel_check = cancel_check
         self.counters_callback = counters_callback
         self.transfer_callback = transfer_callback
+        self.fatal_error_callback = fatal_error_callback
         self.validator = FileValidator()
         self.scanner = FileScanner()
         self.folder_structure = folder_structure
@@ -188,6 +205,7 @@ class FileCopier:
         self.incremental = incremental
         self.move_mode = move_mode
         self.workers = max(1, workers)
+        self.sort_order = sort_order
         self._filename_lock = threading.Lock()
         self.last_activity_time: float = time.time()
 
@@ -304,13 +322,20 @@ class FileCopier:
                 min_size_bytes=min_size_bytes,
                 max_size_bytes=max_size_bytes,
                 max_days_old=max_days_old,
+                sort_order=self.sort_order,
             )
 
             if not filtered_files:
                 self._log_status(f"No files found matching '{patterns_str}'")
                 return []
 
-            self._log_status(f"Found {len(filtered_files)} files — sorting smallest to largest...")
+            _order_desc = {
+                "largest": "largest to smallest",
+                "smallest": "smallest to largest",
+                "oldest": "oldest modified date first",
+                "directory": "directory order",
+            }.get(self.sort_order, "largest to smallest")
+            self._log_status(f"Found {len(filtered_files)} files — ordering {_order_desc}...")
 
         op_verb = "move" if self.move_mode else "copy"
         worker_str = f" ({self.workers} workers)" if self.workers > 1 else ""
@@ -471,6 +496,7 @@ class FileCopier:
                             dst_stat = os.stat(dest_path)
                             if (src_stat.st_size == dst_stat.st_size and
                                     abs(src_stat.st_mtime - dst_stat.st_mtime) <= 2.0):
+                                self._log_status(f"Skipped (unchanged): {filename}")
                                 skip_result = FileOperationResult(
                                     success=True, source_file=filename,
                                     destination_file=None, error_message="Skipped (unchanged)"
@@ -482,13 +508,34 @@ class FileCopier:
                     if skip_result is None and not self.incremental:
                         # Non-incremental mode: handle duplicates per user setting
                         if self.number_duplicates:
-                            base_name, ext = os.path.splitext(filename)
-                            counter = 1
-                            while os.path.exists(dest_path):
-                                final_filename = f"{base_name}_{counter:03d}{ext}"
-                                dest_path = os.path.join(final_dest_folder, final_filename)
-                                counter += 1
-                            self._log_status(f"Duplicate found: {filename} → {final_filename}")
+                            # Before renaming, verify whether the collision is a true
+                            # duplicate (identical content) or just a name/size coincidence.
+                            # Only hash when sizes match — different sizes skip straight to
+                            # rename with zero I/O overhead.
+                            try:
+                                if os.path.getsize(source_path) == os.path.getsize(dest_path):
+                                    src_hash = self._compute_checksum(source_path)
+                                    self.last_activity_time = time.time()
+                                    dst_hash = self._compute_checksum(dest_path)
+                                    self.last_activity_time = time.time()
+                                    if src_hash == dst_hash:
+                                        self._log_status(f"Skipped (identical): {filename}")
+                                        skip_result = FileOperationResult(
+                                            success=True, source_file=filename,
+                                            destination_file=None,
+                                            error_message="Skipped (identical)"
+                                        )
+                            except OSError:
+                                pass
+
+                            if skip_result is None:
+                                base_name, ext = os.path.splitext(filename)
+                                counter = 1
+                                while os.path.exists(dest_path):
+                                    final_filename = f"{base_name}_{counter:03d}{ext}"
+                                    dest_path = os.path.join(final_dest_folder, final_filename)
+                                    counter += 1
+                                self._log_status(f"Duplicate found: {filename} → {final_filename}")
                         else:
                             self._log_status(f"Skipped (duplicate): {filename}")
                             skip_result = FileOperationResult(
@@ -543,6 +590,27 @@ class FileCopier:
                 except OSError as copy_err:
                     if self.cancel_check and self.cancel_check():
                         break
+                    # Detect unrecoverable errors — retrying more files would be pointless
+                    _winerr = getattr(copy_err, 'winerror', None)
+                    _FATAL_WINERRORS = {
+                        112,   # ERROR_DISK_FULL
+                        39,    # ERROR_DISK_FULL (alt)
+                        21,    # ERROR_NOT_READY (drive disconnected)
+                        1117,  # ERROR_IO_DEVICE
+                        1392,  # ERROR_FILE_CORRUPT
+                    }
+                    _is_fatal = copy_err.errno == 28 or _winerr in _FATAL_WINERRORS
+                    if _is_fatal:
+                        _reason = (
+                            "Destination disk is full" if (_winerr in (112, 39) or copy_err.errno == 28)
+                            else "Destination drive is not ready or disconnected" if _winerr in (21, 1117)
+                            else "Destination disk or file is corrupt"
+                        )
+                        fatal_msg = f"{_reason}: {copy_err}"
+                        self._log_status(f"FATAL: {fatal_msg}")
+                        if self.fatal_error_callback:
+                            self.fatal_error_callback(fatal_msg)
+                        raise OSError(fatal_msg) from copy_err
                     # If destination is read-only, strip the flag and retry immediately
                     err_str = str(copy_err)
                     if copy_err.errno == 13 and dest_path in err_str:
