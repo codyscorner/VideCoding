@@ -855,8 +855,10 @@ class MainWindowQt(QMainWindow):
     def _refresh_template_list(self) -> None:
         """Refresh the template dropdown with current templates"""
         current_text = self.template_combo.currentText()
+        self.template_combo.blockSignals(True)
         self.template_combo.clear()
         self.template_combo.addItems(self.template_manager.get_template_names())
+        self.template_combo.blockSignals(False)
         # Try to restore selection
         idx = self.template_combo.findText(current_text)
         if idx >= 0:
