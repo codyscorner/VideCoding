@@ -5,6 +5,7 @@ Batch-converts images between JPG, PNG, WebP, BMP, and TIFF formats.
 """
 
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from PIL import Image
@@ -12,7 +13,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QCheckBox, QProgressBar,
     QListWidget, QListWidgetItem, QFileDialog, QComboBox, QSlider,
-    QGroupBox, QStackedWidget,
+    QGroupBox, QStackedWidget, QSpinBox,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QIcon, QColor
@@ -23,7 +24,14 @@ try:
 except Exception:
     pass
 
-VERSION = "1.0.0"
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+    HEIC_SUPPORTED = True
+except ImportError:
+    HEIC_SUPPORTED = False
+
+VERSION = "1.1.0"
 
 BG_DARK      = "#0d0d1a"
 BG_MEDIUM    = "#1a1a2e"
@@ -163,6 +171,8 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
 
 # Supported input extensions
 INPUT_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
+if HEIC_SUPPORTED:
+    INPUT_EXTS |= {".heic", ".heif"}
 
 # Output format definitions
 FORMATS = {
@@ -174,11 +184,11 @@ FORMATS = {
 }
 
 
-def _save_image(img: Image.Image, dst: Path, fmt: dict, quality: int):
+def _save_image(img: Image.Image, dst: Path, fmt: dict, quality: int, save_kwargs: dict):
+    kwargs = dict(save_kwargs)
     if fmt["lossy"]:
-        img.save(dst, fmt["pillow"], quality=quality)
-    else:
-        img.save(dst, fmt["pillow"])
+        kwargs["quality"] = quality
+    img.save(dst, fmt["pillow"], **kwargs)
 
 
 class ConverterThread(QThread):
@@ -196,6 +206,9 @@ class ConverterThread(QThread):
         recursive: bool,
         delete_originals: bool,
         skip_same_fmt: bool,
+        max_dimension: int | None = None,
+        strip_metadata: bool = False,
+        workers: int = 1,
     ):
         super().__init__()
         self._src = src_folder
@@ -206,10 +219,64 @@ class ConverterThread(QThread):
         self._recursive = recursive
         self._delete = delete_originals
         self._skip_same = skip_same_fmt
+        self._max_dimension = max_dimension
+        self._strip_metadata = strip_metadata
+        self._workers = max(1, workers)
         self._cancelled = False
 
     def cancel(self):
         self._cancelled = True
+
+    def _convert_one(self, src: Path):
+        # Mirror subfolder structure under output folder
+        try:
+            rel = src.relative_to(self._src)
+        except ValueError:
+            rel = Path(src.name)
+
+        dst = self._out / rel.with_suffix(self._fmt["ext"])
+        dst.parent.mkdir(parents=True, exist_ok=True)
+
+        # Avoid collision
+        counter = 1
+        base_dst = dst
+        while dst.exists() and dst != src.with_suffix(self._fmt["ext"]):
+            dst = base_dst.with_stem(f"{base_dst.stem}_{counter}")
+            counter += 1
+
+        try:
+            with Image.open(src) as img:
+                out_img = img
+                # JPEG doesn't support alpha; flatten to white background
+                if self._fmt["pillow"] == "JPEG" and img.mode in ("RGBA", "LA", "P"):
+                    bg = Image.new("RGB", img.size, (255, 255, 255))
+                    if img.mode == "P":
+                        img = img.convert("RGBA")
+                    bg.paste(img, mask=img.split()[-1] if img.mode in ("RGBA", "LA") else None)
+                    out_img = bg
+                elif img.mode == "P":
+                    out_img = img.convert("RGBA")
+
+                if self._max_dimension and max(out_img.size) > self._max_dimension:
+                    out_img = out_img.copy()
+                    out_img.thumbnail((self._max_dimension, self._max_dimension), Image.LANCZOS)
+
+                save_kwargs = {}
+                if not self._strip_metadata:
+                    exif = img.info.get("exif")
+                    if exif:
+                        save_kwargs["exif"] = exif
+                    icc = img.info.get("icc_profile")
+                    if icc:
+                        save_kwargs["icc_profile"] = icc
+
+                _save_image(out_img, dst, self._fmt, self._quality, save_kwargs)
+
+            if self._delete and src != dst:
+                src.unlink()
+            return src.name, True, f"→ {dst.name}"
+        except Exception as e:
+            return src.name, False, f"Error: {e}"
 
     def run(self):
         glob = "**/*" if self._recursive else "*"
@@ -224,50 +291,30 @@ class ConverterThread(QThread):
 
         total = len(files)
         converted = skipped = 0
+        done = 0
 
-        for i, src in enumerate(files, 1):
-            if self._cancelled:
-                break
-            self.progress.emit(i, total)
-
-            # Mirror subfolder structure under output folder
-            try:
-                rel = src.relative_to(self._src)
-            except ValueError:
-                rel = Path(src.name)
-
-            dst = self._out / rel.with_suffix(self._fmt["ext"])
-            dst.parent.mkdir(parents=True, exist_ok=True)
-
-            # Avoid collision
-            counter = 1
-            base_dst = dst
-            while dst.exists() and dst != src.with_suffix(self._fmt["ext"]):
-                dst = base_dst.with_stem(f"{base_dst.stem}_{counter}")
-                counter += 1
-
-            try:
-                with Image.open(src) as img:
-                    out_img = img
-                    # JPEG doesn't support alpha; flatten to white background
-                    if self._fmt["pillow"] == "JPEG" and img.mode in ("RGBA", "LA", "P"):
-                        bg = Image.new("RGB", img.size, (255, 255, 255))
-                        if img.mode == "P":
-                            img = img.convert("RGBA")
-                        bg.paste(img, mask=img.split()[-1] if img.mode in ("RGBA", "LA") else None)
-                        out_img = bg
-                    elif img.mode == "P":
-                        out_img = img.convert("RGBA")
-
-                    _save_image(out_img, dst, self._fmt, self._quality)
-
-                if self._delete and src != dst:
-                    src.unlink()
-                self.file_done.emit(src.name, True, f"→ {dst.name}")
-                converted += 1
-            except Exception as e:
-                self.file_done.emit(src.name, False, f"Error: {e}")
-                skipped += 1
+        if self._workers <= 1:
+            for src in files:
+                if self._cancelled:
+                    break
+                name, success, message = self._convert_one(src)
+                done += 1
+                self.progress.emit(done, total)
+                self.file_done.emit(name, success, message)
+                converted += success
+                skipped += not success
+        else:
+            with ThreadPoolExecutor(max_workers=self._workers) as pool:
+                futures = {pool.submit(self._convert_one, src): src for src in files}
+                for future in as_completed(futures):
+                    if self._cancelled:
+                        break
+                    name, success, message = future.result()
+                    done += 1
+                    self.progress.emit(done, total)
+                    self.file_done.emit(name, success, message)
+                    converted += success
+                    skipped += not success
 
         self.finished.emit(converted, skipped)
 
@@ -280,6 +327,7 @@ class MainWindow(QMainWindow):
         self.resize(760, 660)
         self.setStyleSheet(STYLESHEET)
         self._thread: ConverterThread | None = None
+        self.setAcceptDrops(True)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -406,6 +454,43 @@ class MainWindow(QMainWindow):
         opts_lay.addStretch()
         root.addWidget(opts_grp)
 
+        # Advanced options
+        adv_grp = QGroupBox("Advanced")
+        adv_lay = QHBoxLayout(adv_grp)
+        adv_lay.setContentsMargins(8, 12, 8, 8)
+        adv_lay.setSpacing(16)
+
+        self._resize_chk = QCheckBox("Resize on convert — max dimension:")
+        self._resize_chk.toggled.connect(self._on_resize_toggled)
+        self._resize_spin = QSpinBox()
+        self._resize_spin.setRange(16, 20000)
+        self._resize_spin.setValue(1920)
+        self._resize_spin.setSuffix(" px")
+        self._resize_spin.setEnabled(False)
+        adv_lay.addWidget(self._resize_chk)
+        adv_lay.addWidget(self._resize_spin)
+        adv_lay.addSpacing(16)
+
+        self._strip_meta_chk = QCheckBox("Strip metadata (EXIF/ICC)")
+        adv_lay.addWidget(self._strip_meta_chk)
+        adv_lay.addSpacing(16)
+
+        self._parallel_chk = QCheckBox("Parallel workers:")
+        self._parallel_chk.toggled.connect(self._on_parallel_toggled)
+        self._workers_spin = QSpinBox()
+        self._workers_spin.setRange(2, 16)
+        self._workers_spin.setValue(4)
+        self._workers_spin.setEnabled(False)
+        adv_lay.addWidget(self._parallel_chk)
+        adv_lay.addWidget(self._workers_spin)
+        adv_lay.addStretch()
+        root.addWidget(adv_grp)
+
+        if not HEIC_SUPPORTED:
+            heic_note = QLabel("HEIC/HEIF input requires the pillow-heif package (not installed).")
+            heic_note.setStyleSheet(f"color: {FG_DIM}; font-size: 8pt; font-style: italic;")
+            root.addWidget(heic_note)
+
         # Buttons
         btn_row = QHBoxLayout()
         self._convert_btn = QPushButton("Convert")
@@ -434,6 +519,29 @@ class MainWindow(QMainWindow):
 
         # Initialize quality widget state to match default format
         self._on_fmt_changed(self._fmt_combo.currentText())
+
+    # ------------------------------------------------------------------
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+        path = Path(urls[0].toLocalFile())
+        if path.is_dir():
+            self._src_edit.setText(str(path))
+        elif path.is_file():
+            self._src_edit.setText(str(path.parent))
+        event.acceptProposedAction()
+
+    # ------------------------------------------------------------------
+    def _on_resize_toggled(self, checked: bool):
+        self._resize_spin.setEnabled(checked)
+
+    def _on_parallel_toggled(self, checked: bool):
+        self._workers_spin.setEnabled(checked)
 
     # ------------------------------------------------------------------
     def _browse_src(self):
@@ -498,6 +606,9 @@ class MainWindow(QMainWindow):
             recursive=self._recursive_chk.isChecked(),
             delete_originals=self._delete_chk.isChecked(),
             skip_same_fmt=self._skip_same_chk.isChecked(),
+            max_dimension=self._resize_spin.value() if self._resize_chk.isChecked() else None,
+            strip_metadata=self._strip_meta_chk.isChecked(),
+            workers=self._workers_spin.value() if self._parallel_chk.isChecked() else 1,
         )
         self._thread.progress.connect(self._on_progress)
         self._thread.file_done.connect(self._on_file_done)
