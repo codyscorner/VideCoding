@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import shutil
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -10,9 +11,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QIcon
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageFilter
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 def get_settings_file():
     """Get the settings file path based on the executable/script name."""
@@ -52,6 +53,12 @@ PADDING_COLORS = {
 }
 
 SUPPORTED_FORMATS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')
+
+RESIZE_MODE_FIT_PAD = "Fit (Pad to Canvas)"
+RESIZE_MODE_FIT_NOPAD = "Fit (No Padding)"
+RESIZE_MODE_FILL_CROP = "Fill (Crop to Aspect)"
+RESIZE_MODE_STRETCH = "Stretch (Ignore Aspect)"
+RESIZE_MODES = [RESIZE_MODE_FIT_PAD, RESIZE_MODE_FIT_NOPAD, RESIZE_MODE_FILL_CROP, RESIZE_MODE_STRETCH]
 
 # Resolution presets for image-to-video (I2V) workflows
 RESOLUTION_PRESETS = [
@@ -267,20 +274,39 @@ def resize_with_padding(img, target_size, padding_color_rgb):
     return new_img
 
 
+def resize_with_crop(img, target_size):
+    """Resize image to cover target size (preserving aspect ratio), then center-crop to exact dimensions."""
+    target_width, target_height = target_size
+    original_width, original_height = img.size
+
+    ratio = max(target_width / original_width, target_height / original_height)
+    new_width = max(1, round(original_width * ratio))
+    new_height = max(1, round(original_height * ratio))
+
+    resized_img = img.resize((new_width, new_height), Image.LANCZOS)
+
+    left = (new_width - target_width) // 2
+    top = (new_height - target_height) // 2
+    return resized_img.crop((left, top, left + target_width, top + target_height))
+
+
 class ResizeWorker(QThread):
     """Worker thread for resizing images."""
     progress = pyqtSignal(int)
     status = pyqtSignal(str)
     finished_signal = pyqtSignal()
 
-    def __init__(self, folder_path, output_folder, target_size, preserve_ratio, use_padding, padding_color):
+    def __init__(self, folder_path, output_folder, target_size, resize_mode, padding_color,
+                 sharpen=False, preserve_exif=False, skip_small=False):
         super().__init__()
         self.folder_path = folder_path
         self.output_folder = output_folder
         self.target_size = target_size
-        self.preserve_ratio = preserve_ratio
-        self.use_padding = use_padding
+        self.resize_mode = resize_mode
         self.padding_color = padding_color
+        self.sharpen = sharpen
+        self.preserve_exif = preserve_exif
+        self.skip_small = skip_small
 
     def run(self):
         image_files = [f for f in os.listdir(self.folder_path) if f.lower().endswith(SUPPORTED_FORMATS)]
@@ -290,27 +316,51 @@ class ResizeWorker(QThread):
             self.finished_signal.emit()
             return
 
+        target_width, target_height = self.target_size
+
         for i, filename in enumerate(image_files):
             try:
                 img_path = os.path.join(self.folder_path, filename)
-                img = ImageOps.exif_transpose(Image.open(img_path))
-
-                if self.preserve_ratio and self.use_padding:
-                    img_resized = resize_with_padding(img, self.target_size, self.padding_color)
-                elif self.preserve_ratio:
-                    img.thumbnail(self.target_size, Image.LANCZOS)
-                    img_resized = img
-                else:
-                    img_resized = img.resize(self.target_size, Image.LANCZOS)
-
                 save_path = os.path.join(self.output_folder, filename)
 
+                raw_img = Image.open(img_path)
+                exif_bytes = raw_img.info.get('exif') if self.preserve_exif else None
+                img = ImageOps.exif_transpose(raw_img)
+                orig_width, orig_height = img.size
+
+                if self.skip_small and orig_width <= target_width and orig_height <= target_height:
+                    shutil.copyfile(img_path, save_path)
+                    self.status.emit(f"↷ Skipped (already ≤ target): {filename}")
+                    self.progress.emit(int((i + 1) / len(image_files) * 100))
+                    continue
+
+                if self.resize_mode == RESIZE_MODE_FIT_PAD:
+                    img_resized = resize_with_padding(img, self.target_size, self.padding_color)
+                elif self.resize_mode == RESIZE_MODE_FIT_NOPAD:
+                    img.thumbnail(self.target_size, Image.LANCZOS)
+                    img_resized = img
+                elif self.resize_mode == RESIZE_MODE_FILL_CROP:
+                    img_resized = resize_with_crop(img, self.target_size)
+                else:  # Stretch
+                    img_resized = img.resize(self.target_size, Image.LANCZOS)
+
+                if self.sharpen:
+                    img_resized = img_resized.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
+
+                save_kwargs = {}
                 if filename.lower().endswith(('.jpg', '.jpeg')):
                     if img_resized.mode == 'RGBA':
                         img_resized = img_resized.convert('RGB')
-                    img_resized.save(save_path, quality=95)
-                else:
-                    img_resized.save(save_path)
+                    save_kwargs['quality'] = 95
+
+                if exif_bytes:
+                    save_kwargs['exif'] = exif_bytes
+
+                try:
+                    img_resized.save(save_path, **save_kwargs)
+                except Exception:
+                    save_kwargs.pop('exif', None)
+                    img_resized.save(save_path, **save_kwargs)
 
                 self.status.emit(f"✓ Resized: {filename}")
 
@@ -334,8 +384,26 @@ class ImageResizerApp(QMainWindow):
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
         self.worker = None
+        self.setAcceptDrops(True)
         self.setup_ui()
         self.load_settings()
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+        path = urls[0].toLocalFile()
+        if not path:
+            return
+        if os.path.isdir(path):
+            self.folder_input.setText(path)
+        elif os.path.isfile(path):
+            self.folder_input.setText(os.path.dirname(path))
+        event.acceptProposedAction()
 
     def setup_ui(self):
         central_widget = QWidget()
@@ -419,15 +487,24 @@ class ImageResizerApp(QMainWindow):
         options_group = QGroupBox("Resize Options")
         options_layout = QVBoxLayout(options_group)
 
-        self.preserve_ratio_check = QCheckBox("Preserve aspect ratio")
-        self.preserve_ratio_check.setChecked(True)
-        self.preserve_ratio_check.stateChanged.connect(self.toggle_padding_options)
-        options_layout.addWidget(self.preserve_ratio_check)
+        mode_layout = QHBoxLayout()
+        mode_label = QLabel("Resize mode:")
+        mode_label.setFixedWidth(95)
+        mode_layout.addWidget(mode_label)
+        self.resize_mode_combo = QComboBox()
+        self.resize_mode_combo.addItems(RESIZE_MODES)
+        self.resize_mode_combo.currentTextChanged.connect(self.toggle_padding_options)
+        mode_layout.addWidget(self.resize_mode_combo, 1)
+        options_layout.addLayout(mode_layout)
 
-        self.padding_check = QCheckBox("Add padding to fill canvas")
-        self.padding_check.setChecked(True)
-        self.padding_check.stateChanged.connect(self.toggle_padding_options)
-        options_layout.addWidget(self.padding_check)
+        self.sharpen_check = QCheckBox("Sharpen after downscale")
+        options_layout.addWidget(self.sharpen_check)
+
+        self.preserve_exif_check = QCheckBox("Preserve EXIF metadata")
+        options_layout.addWidget(self.preserve_exif_check)
+
+        self.skip_small_check = QCheckBox("Skip images already at/below target size")
+        options_layout.addWidget(self.skip_small_check)
 
         # Color selection
         color_layout = QHBoxLayout()
@@ -515,7 +592,7 @@ class ImageResizerApp(QMainWindow):
         self.preset_combo.blockSignals(False)
 
     def toggle_padding_options(self):
-        enabled = self.preserve_ratio_check.isChecked() and self.padding_check.isChecked()
+        enabled = self.resize_mode_combo.currentText() == RESIZE_MODE_FIT_PAD
         self.color_combo.setEnabled(enabled)
         if enabled:
             self.update_color_preview()
@@ -544,9 +621,11 @@ class ImageResizerApp(QMainWindow):
             os.makedirs(output_folder)
 
         target_size = (self.width_spin.value(), self.height_spin.value())
-        preserve_ratio = self.preserve_ratio_check.isChecked()
-        use_padding = self.padding_check.isChecked()
+        resize_mode = self.resize_mode_combo.currentText()
         padding_color = hex_to_rgb(PADDING_COLORS[self.color_combo.currentText()])
+        sharpen = self.sharpen_check.isChecked()
+        preserve_exif = self.preserve_exif_check.isChecked()
+        skip_small = self.skip_small_check.isChecked()
 
         # Clear log and reset progress
         self.log_list.clear()
@@ -555,12 +634,10 @@ class ImageResizerApp(QMainWindow):
         # Log settings
         self.log_list.addItem(f"Output folder: {output_folder}")
         self.log_list.addItem(f"Target size: {target_size[0]}x{target_size[1]}")
-        if preserve_ratio and use_padding:
-            self.log_list.addItem(f"Mode: Preserve ratio with {self.color_combo.currentText()} padding")
-        elif preserve_ratio:
-            self.log_list.addItem("Mode: Preserve ratio (fit within bounds)")
+        if resize_mode == RESIZE_MODE_FIT_PAD:
+            self.log_list.addItem(f"Mode: {resize_mode} ({self.color_combo.currentText()})")
         else:
-            self.log_list.addItem("Mode: Stretch to fit")
+            self.log_list.addItem(f"Mode: {resize_mode}")
         self.log_list.addItem("─" * 40)
 
         # Save settings before processing
@@ -570,7 +647,10 @@ class ImageResizerApp(QMainWindow):
         self.start_btn.setEnabled(False)
 
         # Start worker thread
-        self.worker = ResizeWorker(folder_path, output_folder, target_size, preserve_ratio, use_padding, padding_color)
+        self.worker = ResizeWorker(
+            folder_path, output_folder, target_size, resize_mode, padding_color,
+            sharpen=sharpen, preserve_exif=preserve_exif, skip_small=skip_small
+        )
         self.worker.progress.connect(self.progress_bar.setValue)
         self.worker.status.connect(self.add_log)
         self.worker.finished_signal.connect(self.on_finished)
@@ -591,9 +671,11 @@ class ImageResizerApp(QMainWindow):
             "preset_index": self.preset_combo.currentIndex(),
             "width": self.width_spin.value(),
             "height": self.height_spin.value(),
-            "preserve_ratio": self.preserve_ratio_check.isChecked(),
-            "use_padding": self.padding_check.isChecked(),
+            "resize_mode": self.resize_mode_combo.currentText(),
             "padding_color": self.color_combo.currentText(),
+            "sharpen": self.sharpen_check.isChecked(),
+            "preserve_exif": self.preserve_exif_check.isChecked(),
+            "skip_small": self.skip_small_check.isChecked(),
         }
         try:
             with open(SETTINGS_FILE, 'w') as f:
@@ -621,8 +703,22 @@ class ImageResizerApp(QMainWindow):
                 self.width_spin.blockSignals(False)
                 self.height_spin.blockSignals(False)
 
-                self.preserve_ratio_check.setChecked(settings.get("preserve_ratio", True))
-                self.padding_check.setChecked(settings.get("use_padding", True))
+                resize_mode = settings.get("resize_mode")
+                if resize_mode is None:
+                    # Migrate from old preserve_ratio/use_padding booleans
+                    if settings.get("preserve_ratio", True) and settings.get("use_padding", True):
+                        resize_mode = RESIZE_MODE_FIT_PAD
+                    elif settings.get("preserve_ratio", True):
+                        resize_mode = RESIZE_MODE_FIT_NOPAD
+                    else:
+                        resize_mode = RESIZE_MODE_STRETCH
+                mode_index = self.resize_mode_combo.findText(resize_mode)
+                if mode_index >= 0:
+                    self.resize_mode_combo.setCurrentIndex(mode_index)
+
+                self.sharpen_check.setChecked(settings.get("sharpen", False))
+                self.preserve_exif_check.setChecked(settings.get("preserve_exif", False))
+                self.skip_small_check.setChecked(settings.get("skip_small", False))
 
                 color = settings.get("padding_color", "Black")
                 index = self.color_combo.findText(color)
