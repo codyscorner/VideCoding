@@ -1,20 +1,25 @@
 """
 MP4 Metadata Editor
-Drag and drop one or more MP4 files to update their metadata.
+Drag and drop one or more MP4/M4A/MKV files to update their metadata.
 Only fields that are filled in will be written — blank fields are ignored.
-Version: 1.1.0
+Version: 1.2.0
 """
 
+import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
+from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton,
     QLineEdit, QTextEdit, QListWidget, QListWidgetItem,
     QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QScrollArea, QSizePolicy, QStatusBar,
+    QScrollArea, QSizePolicy, QStatusBar, QComboBox, QCheckBox,
     QFileDialog, QMessageBox, QDialog, QDialogButtonBox,
 )
 from PyQt6.QtCore import Qt, QMimeData, pyqtSignal
@@ -23,12 +28,16 @@ from PyQt6.QtGui import QIcon, QColor, QDragEnterEvent, QDropEvent
 try:
     import mutagen.mp4
 except ImportError:
-    import subprocess
     subprocess.check_call([sys.executable, "-m", "pip", "install", "mutagen"])
     import mutagen.mp4
 
 APP_TITLE = "MP4 Metadata Editor"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
+
+SUPPORTED_EXTS = (".mp4", ".m4a", ".mkv")
+PRESETS_FILE = Path(__file__).parent / "tag_presets.json"
+
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # Metadata field definitions: (label, mutagen_key, is_integer, multiline)
 FIELDS = [
@@ -202,7 +211,24 @@ QStatusBar {{
 """
 
 
+def _mkv_tag_name(label: str) -> str:
+    return label.lower().replace(" ", "_")
+
+
+def derive_title_from_filename(path: str) -> str:
+    name = os.path.splitext(os.path.basename(path))[0]
+    name = re.sub(r"^\s*\d+[\s._-]+", "", name)
+    name = re.sub(r"[_\-.]+", " ", name)
+    return re.sub(r"\s+", " ", name).strip()
+
+
 def write_metadata(filepath: str, fields: dict) -> tuple[bool, str]:
+    if filepath.lower().endswith(".mkv"):
+        return _write_metadata_mkv(filepath, fields)
+    return _write_metadata_mp4(filepath, fields)
+
+
+def _write_metadata_mp4(filepath: str, fields: dict) -> tuple[bool, str]:
     try:
         audio = mutagen.mp4.MP4(filepath)
         if audio.tags is None:
@@ -228,6 +254,93 @@ def write_metadata(filepath: str, fields: dict) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def _write_metadata_mkv(filepath: str, fields: dict) -> tuple[bool, str]:
+    metadata_args = []
+    changed = 0
+    for label, key, is_int, _ in FIELDS:
+        value = fields.get(key, "").strip()
+        if not value:
+            continue
+        if is_int:
+            try:
+                int(value)
+            except ValueError:
+                return False, f"'{label}' must be a whole number."
+        metadata_args += ["-metadata", f"{_mkv_tag_name(label)}={value}"]
+        changed += 1
+    if changed == 0:
+        return False, "No fields to write (all blank)."
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".mkv")
+    os.close(fd)
+    try:
+        cmd = ["ffmpeg", "-y", "-i", filepath, "-map", "0", "-c", "copy"] + metadata_args + [tmp_path]
+        result = subprocess.run(cmd, capture_output=True, text=True, creationflags=_NO_WINDOW)
+        if result.returncode != 0:
+            return False, "ffmpeg error: " + result.stderr.strip()[-300:]
+        shutil.move(tmp_path, filepath)
+        return True, f"Updated {changed} field(s)."
+    except FileNotFoundError:
+        return False, "ffmpeg not found — install ffmpeg and add it to PATH to edit MKV files."
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+def read_metadata(filepath: str) -> dict:
+    if filepath.lower().endswith(".mkv"):
+        return _read_metadata_mkv(filepath)
+    return _read_metadata_mp4(filepath)
+
+
+def _read_metadata_mp4(filepath: str) -> dict:
+    result = {}
+    try:
+        audio = mutagen.mp4.MP4(filepath)
+        tags = audio.tags or {}
+        for _, key, _, _ in FIELDS:
+            if key in tags and tags[key]:
+                result[key] = str(tags[key][0])
+    except Exception:
+        pass
+    return result
+
+
+def _read_metadata_mkv(filepath: str) -> dict:
+    result = {}
+    try:
+        cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_entries", "format_tags", filepath]
+        proc = subprocess.run(cmd, capture_output=True, text=True, creationflags=_NO_WINDOW)
+        data = json.loads(proc.stdout or "{}")
+        tags = data.get("format", {}).get("tags", {}) or {}
+        lower_tags = {k.lower(): v for k, v in tags.items()}
+        for label, key, _, _ in FIELDS:
+            tag_name = _mkv_tag_name(label)
+            if tag_name in lower_tags:
+                result[key] = lower_tags[tag_name]
+    except Exception:
+        pass
+    return result
+
+
+def load_presets() -> dict:
+    if PRESETS_FILE.exists():
+        try:
+            return json.loads(PRESETS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def save_presets(presets: dict) -> None:
+    PRESETS_FILE.write_text(json.dumps(presets, indent=2), encoding="utf-8")
+
+
 class DropZoneLabel(QLabel):
     files_dropped = pyqtSignal(list)
 
@@ -246,7 +359,7 @@ class DropZoneLabel(QLabel):
         paths = [
             u.toLocalFile()
             for u in event.mimeData().urls()
-            if u.toLocalFile().lower().endswith(".mp4")
+            if u.toLocalFile().lower().endswith(SUPPORTED_EXTS)
         ]
         if paths:
             self.files_dropped.emit(paths)
@@ -278,6 +391,38 @@ class ResultDialog(QDialog):
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+
+class MetadataPreviewDialog(QDialog):
+    def __init__(self, parent, filename: str, values: dict):
+        super().__init__(parent)
+        self.setWindowTitle(f"Current Metadata — {filename}")
+        self.setMinimumSize(480, 420)
+        self.setStyleSheet(parent.styleSheet())
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 12)
+
+        title = QLabel(filename)
+        title.setObjectName("header")
+        layout.addWidget(title)
+
+        txt = QTextEdit()
+        txt.setReadOnly(True)
+        lines = [f"<b>{label}:</b> {values[key]}" for label, key, _, _ in FIELDS if values.get(key)]
+        txt.setHtml("<br>".join(lines) if lines else "<i>No metadata tags found.</i>")
+        layout.addWidget(txt, stretch=1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        load_btn = QPushButton("Load Into Fields")
+        load_btn.clicked.connect(self.accept)
+        btn_row.addWidget(load_btn)
+        close_btn = QPushButton("Close")
+        close_btn.setObjectName("secondary_btn")
+        close_btn.clicked.connect(self.reject)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
 
 
 class MainWindow(QMainWindow):
@@ -317,7 +462,7 @@ class MainWindow(QMainWindow):
 
         # Drop zone
         self.drop_label = DropZoneLabel(
-            "\u2295  Drag & drop MP4 files here  \u2014  or click to browse"
+            "\u2295  Drag & drop MP4 / M4A / MKV files here  \u2014  or click to browse"
         )
         self.drop_label.setFixedHeight(62)
         self.drop_label.files_dropped.connect(self._add_files)
@@ -341,9 +486,36 @@ class MainWindow(QMainWindow):
         clear_files_btn.setObjectName("secondary_btn")
         clear_files_btn.clicked.connect(self._clear_files)
         file_btn_row.addWidget(clear_files_btn)
+
+        view_meta_btn = QPushButton("View Current Metadata")
+        view_meta_btn.setObjectName("secondary_btn")
+        view_meta_btn.clicked.connect(self._view_metadata)
+        file_btn_row.addWidget(view_meta_btn)
         file_btn_row.addStretch()
         files_layout.addLayout(file_btn_row)
         layout.addWidget(files_group)
+
+        # Presets
+        presets_row = QHBoxLayout()
+        presets_row.addWidget(QLabel("Preset:"))
+        self.preset_combo = QComboBox()
+        self.preset_combo.setEditable(True)
+        self.preset_combo.setMinimumWidth(160)
+        presets_row.addWidget(self.preset_combo, stretch=1)
+        save_preset_btn = QPushButton("Save Preset")
+        save_preset_btn.setObjectName("secondary_btn")
+        save_preset_btn.clicked.connect(self._save_preset)
+        presets_row.addWidget(save_preset_btn)
+        load_preset_btn = QPushButton("Load Preset")
+        load_preset_btn.setObjectName("secondary_btn")
+        load_preset_btn.clicked.connect(self._load_preset)
+        presets_row.addWidget(load_preset_btn)
+        delete_preset_btn = QPushButton("Delete Preset")
+        delete_preset_btn.setObjectName("secondary_btn")
+        delete_preset_btn.clicked.connect(self._delete_preset)
+        presets_row.addWidget(delete_preset_btn)
+        layout.addLayout(presets_row)
+        self._refresh_presets()
 
         # Metadata fields in scrollable area
         fields_group = QGroupBox("Metadata Fields")
@@ -396,6 +568,11 @@ class MainWindow(QMainWindow):
         fields_outer.addWidget(scroll)
         layout.addWidget(fields_group, stretch=1)
 
+        self.autofill_title_chk = QCheckBox(
+            "Auto-fill Title from filename (per file — overrides the Title field above)"
+        )
+        layout.addWidget(self.autofill_title_chk)
+
         # Bottom buttons
         bottom_row = QHBoxLayout()
         clear_fields_btn = QPushButton("Clear All Fields")
@@ -424,15 +601,15 @@ class MainWindow(QMainWindow):
         paths = [
             u.toLocalFile()
             for u in event.mimeData().urls()
-            if u.toLocalFile().lower().endswith(".mp4")
+            if u.toLocalFile().lower().endswith(SUPPORTED_EXTS)
         ]
         self._add_files(paths)
 
     # ── File management ───────────────────────────────────────────────────────
     def _browse(self):
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Select MP4 files", "",
-            "MP4 files (*.mp4);;All files (*.*)"
+            self, "Select media files", "",
+            "Media files (*.mp4 *.m4a *.mkv);;All files (*.*)"
         )
         self._add_files(list(paths))
 
@@ -466,10 +643,85 @@ class MainWindow(QMainWindow):
             else:
                 widget.clear()
 
+    def _load_fields(self, values: dict):
+        for key, widget in self.field_widgets.items():
+            val = values.get(key, "")
+            if isinstance(widget, QTextEdit):
+                widget.setPlainText(val)
+            else:
+                widget.setText(val)
+
+    def _view_metadata(self):
+        selected = self.file_list.selectedItems()
+        if len(selected) != 1:
+            QMessageBox.information(
+                self, "Select one file",
+                "Select exactly one queued file to view its current metadata."
+            )
+            return
+        idx = self.file_list.row(selected[0])
+        path = self.queued_files[idx]
+        current = read_metadata(path)
+        dlg = MetadataPreviewDialog(self, os.path.basename(path), current)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._load_fields(current)
+            self.status_bar.showMessage("Loaded current metadata into fields for editing.")
+
+    def _refresh_presets(self):
+        presets = load_presets()
+        current_text = self.preset_combo.currentText()
+        self.preset_combo.clear()
+        self.preset_combo.addItems(sorted(presets.keys()))
+        self.preset_combo.setCurrentText(current_text)
+
+    def _save_preset(self):
+        name = self.preset_combo.currentText().strip()
+        if not name:
+            QMessageBox.warning(self, "Name required", "Enter a name for this preset.")
+            return
+        fields = {}
+        for key, widget in self.field_widgets.items():
+            val = widget.toPlainText() if isinstance(widget, QTextEdit) else widget.text()
+            if val.strip():
+                fields[key] = val
+        if not fields:
+            QMessageBox.warning(self, "Nothing to save", "Fill in at least one field before saving a preset.")
+            return
+        presets = load_presets()
+        presets[name] = fields
+        save_presets(presets)
+        self._refresh_presets()
+        self.preset_combo.setCurrentText(name)
+        self.status_bar.showMessage(f"Saved preset '{name}'.")
+
+    def _load_preset(self):
+        name = self.preset_combo.currentText().strip()
+        presets = load_presets()
+        if name not in presets:
+            QMessageBox.warning(self, "Not found", f"No preset named '{name}'.")
+            return
+        self._load_fields(presets[name])
+        self.status_bar.showMessage(f"Loaded preset '{name}'.")
+
+    def _delete_preset(self):
+        name = self.preset_combo.currentText().strip()
+        presets = load_presets()
+        if name not in presets:
+            QMessageBox.warning(self, "Not found", f"No preset named '{name}'.")
+            return
+        if QMessageBox.question(
+            self, "Delete preset", f"Delete preset '{name}'?"
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        del presets[name]
+        save_presets(presets)
+        self._refresh_presets()
+        self.status_bar.showMessage(f"Deleted preset '{name}'.")
+
     # ── Apply metadata ────────────────────────────────────────────────────────
     def _apply(self):
         if not self.queued_files:
-            QMessageBox.warning(self, "No files", "Add at least one MP4 file first.")
+            QMessageBox.warning(self, "No files", "Add at least one media file first.")
             return
         fields = {}
         for key, widget in self.field_widgets.items():
@@ -477,7 +729,8 @@ class MainWindow(QMainWindow):
                 fields[key] = widget.toPlainText()
             else:
                 fields[key] = widget.text()
-        if not any(v.strip() for v in fields.values()):
+        auto_fill_title = self.autofill_title_chk.isChecked()
+        if not auto_fill_title and not any(v.strip() for v in fields.values()):
             QMessageBox.warning(
                 self, "Nothing to write",
                 "Fill in at least one metadata field before applying."
@@ -486,15 +739,19 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Writing metadata\u2026")
         threading.Thread(
             target=self._apply_thread,
-            args=(list(self.queued_files), fields),
+            args=(list(self.queued_files), fields, auto_fill_title),
             daemon=True
         ).start()
 
-    def _apply_thread(self, files: list[str], fields: dict):
+    def _apply_thread(self, files: list[str], fields: dict, auto_fill_title: bool = False):
         results = []
         ok = fail = 0
         for path in files:
-            success, msg = write_metadata(path, fields)
+            file_fields = fields
+            if auto_fill_title:
+                file_fields = dict(fields)
+                file_fields["\xa9nam"] = derive_title_from_filename(path)
+            success, msg = write_metadata(path, file_fields)
             results.append((success, os.path.basename(path), msg))
             if success:
                 ok += 1
