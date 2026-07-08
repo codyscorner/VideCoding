@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
     QCheckBox, QRadioButton, QButtonGroup, QProgressBar, QPlainTextEdit,
     QGroupBox, QVBoxLayout, QHBoxLayout,
-    QFileDialog, QMessageBox,
+    QFileDialog, QMessageBox, QSlider,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
@@ -18,6 +18,7 @@ from PyQt6.QtGui import QIcon
 from config import ConfigManager
 from face_detector import ImagePeopleSorter
 from ui.styles import STYLESHEET, COLORS
+from ui.review_dialog import ReviewDialog
 
 
 def _cleanup_all_children():
@@ -44,6 +45,8 @@ class MainWindow(QMainWindow):
         self._is_processing = False
         self._cancel_requested = False
         self._message_queue = queue.Queue()
+        self._review_event = threading.Event()
+        self._review_overrides = {}
 
         self.setWindowTitle(f"Image People Sorter v{self.version}")
         self.setMinimumSize(750, 580)
@@ -98,14 +101,15 @@ class MainWindow(QMainWindow):
         dst_row.addWidget(self.dest_edit, stretch=1)
         dst_row.addWidget(dst_browse)
         dst_layout.addLayout(dst_row)
-        info = QLabel("Images will be sorted into 'People' and 'No_People' subfolders")
+        info = QLabel("Images will be sorted into 'People', 'Unsure', and 'No_People' subfolders")
         info.setObjectName("subtitle")
         dst_layout.addWidget(info)
         layout.addWidget(dst_group)
 
         # Options
         opt_group = QGroupBox("Options")
-        opt_layout = QHBoxLayout(opt_group)
+        opt_vlayout = QVBoxLayout(opt_group)
+        opt_layout = QHBoxLayout()
         self.recursive_check = QCheckBox("Search subfolders recursively")
         self.recursive_check.setChecked(True)
         opt_layout.addWidget(self.recursive_check)
@@ -120,6 +124,37 @@ class MainWindow(QMainWindow):
         opt_layout.addWidget(self.copy_radio)
         opt_layout.addWidget(self.move_radio)
         opt_layout.addStretch()
+        opt_vlayout.addLayout(opt_layout)
+
+        opt_layout2 = QHBoxLayout()
+        self.review_check = QCheckBox("Review results before saving (veto false positives)")
+        opt_layout2.addWidget(self.review_check)
+        opt_layout2.addSpacing(30)
+        self.csv_check = QCheckBox("Save CSV report of decisions")
+        self.csv_check.setChecked(True)
+        opt_layout2.addWidget(self.csv_check)
+        opt_layout2.addStretch()
+        opt_vlayout.addLayout(opt_layout2)
+
+        conf_layout = QHBoxLayout()
+        conf_layout.addWidget(QLabel("Confidence Threshold:"))
+        self.confidence_slider = QSlider(Qt.Orientation.Horizontal)
+        self.confidence_slider.setRange(5, 95)
+        self.confidence_slider.setValue(30)
+        self.confidence_slider.valueChanged.connect(self._on_confidence_changed)
+        conf_layout.addWidget(self.confidence_slider, stretch=1)
+        self.confidence_value_label = QLabel("30%")
+        self.confidence_value_label.setMinimumWidth(40)
+        conf_layout.addWidget(self.confidence_value_label)
+        opt_vlayout.addLayout(conf_layout)
+        conf_hint = QLabel(
+            "Lower = more sensitive to distant/unclear people (more false positives). "
+            "Borderline detections land in an Unsure folder instead of People."
+        )
+        conf_hint.setObjectName("subtitle")
+        conf_hint.setWordWrap(True)
+        opt_vlayout.addWidget(conf_hint)
+
         layout.addWidget(opt_group)
 
         # Buttons
@@ -173,13 +208,22 @@ class MainWindow(QMainWindow):
         copy_mode = self.config.get("copy_mode", True)
         self.copy_radio.setChecked(copy_mode)
         self.move_radio.setChecked(not copy_mode)
+        self.confidence_slider.setValue(self.config.get("confidence_threshold", 30))
+        self.review_check.setChecked(self.config.get("review_mode", False))
+        self.csv_check.setChecked(self.config.get("write_csv_report", True))
 
     def _save_config(self):
         self.config.set("default_source_folder", self.source_edit.text())
         self.config.set("default_destination_folder", self.dest_edit.text())
         self.config.set("recursive_search", self.recursive_check.isChecked())
         self.config.set("copy_mode", self.copy_radio.isChecked())
+        self.config.set("confidence_threshold", self.confidence_slider.value())
+        self.config.set("review_mode", self.review_check.isChecked())
+        self.config.set("write_csv_report", self.csv_check.isChecked())
         self.config.save()
+
+    def _on_confidence_changed(self, value: int):
+        self.confidence_value_label.setText(f"{value}%")
 
     def _start_sort(self):
         source = self.source_edit.text().strip()
@@ -210,6 +254,9 @@ class MainWindow(QMainWindow):
             'dest': dest,
             'recursive': self.recursive_check.isChecked(),
             'copy_mode': self.copy_radio.isChecked(),
+            'confidence_threshold': self.confidence_slider.value() / 100.0,
+            'review_mode': self.review_check.isChecked(),
+            'write_csv_report': self.csv_check.isChecked(),
         }
 
         thread = threading.Thread(target=self._sort_worker, args=(options,), daemon=True)
@@ -219,6 +266,7 @@ class MainWindow(QMainWindow):
     def _sort_worker(self, options: dict):
         try:
             self._message_queue.put(('status', "Starting sort operation..."))
+            review_callback = self._request_review if options['review_mode'] else None
             sorter = ImagePeopleSorter(
                 status_callback=lambda msg: self._message_queue.put(('status', msg)),
                 progress_callback=lambda cur, tot, fname, fp: self._message_queue.put(
@@ -226,8 +274,11 @@ class MainWindow(QMainWindow):
                 ),
                 cancel_check=lambda: self._cancel_requested,
                 copy_mode=options['copy_mode'],
+                confidence_threshold=options['confidence_threshold'],
+                review_callback=review_callback,
+                write_csv_report=options['write_csv_report'],
             )
-            results, people_count, no_people_count = sorter.sort_images(
+            results, people_count, no_people_count, unsure_count = sorter.sort_images(
                 options['source'], options['dest'], options['recursive']
             )
             if self._cancel_requested:
@@ -237,6 +288,7 @@ class MainWindow(QMainWindow):
                 self._message_queue.put(('complete', {
                     'people_count': people_count,
                     'no_people_count': no_people_count,
+                    'unsure_count': unsure_count,
                     'error_count': error_count,
                     'copy_mode': options['copy_mode'],
                 }))
@@ -244,6 +296,15 @@ class MainWindow(QMainWindow):
             self._message_queue.put(('error', {'type': 'validation', 'message': str(e)}))
         except Exception as e:
             self._message_queue.put(('error', {'type': 'unexpected', 'message': str(e)}))
+
+    def _request_review(self, entries: list) -> dict:
+        """Called on the background sort thread. Queues a review request for
+        the main thread and blocks until the modal dialog is closed."""
+        self._review_event.clear()
+        self._review_overrides = {}
+        self._message_queue.put(('review_request', entries))
+        self._review_event.wait()
+        return self._review_overrides
 
     def _process_messages(self):
         status_lines = []
@@ -261,6 +322,13 @@ class MainWindow(QMainWindow):
                 elif msg_type == 'progress':
                     self.progress_bar.setValue(data['current'])
                     self.progress_label.setText(f"{data['current']}%: {data['filename']}")
+
+                elif msg_type == 'review_request':
+                    # Flush pending status lines before the modal dialog blocks the UI
+                    if status_lines:
+                        self.status_log.appendPlainText('\n'.join(status_lines))
+                        status_lines = []
+                    self._show_review_dialog(data)
 
                 elif msg_type in ('complete', 'cancelled', 'error'):
                     terminal_event = (msg_type, data)
@@ -283,6 +351,18 @@ class MainWindow(QMainWindow):
             elif msg_type == 'error':
                 self._on_error(data)
 
+    def _show_review_dialog(self, entries: list):
+        """Runs on the main thread (called from the poll timer). Blocks
+        modally while the background sort thread waits on _review_event."""
+        try:
+            dialog = ReviewDialog(entries, parent=self)
+            dialog.exec()
+            self._review_overrides = dialog.get_overrides()
+        except Exception:
+            self._review_overrides = {}
+        finally:
+            self._review_event.set()
+
     def _on_complete(self, data: dict):
         self._is_processing = False
         self.sort_btn.setEnabled(True)
@@ -290,19 +370,20 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(100)
         self.progress_label.setText("Complete!")
         action = "copied" if data['copy_mode'] else "moved"
+        summary = (
+            f"People: {data['people_count']} images {action}\n"
+            f"Unsure: {data['unsure_count']} images {action}\n"
+            f"No People: {data['no_people_count']} images {action}"
+        )
         if data['error_count'] == 0:
             QMessageBox.information(
                 self, "Success",
-                f"Successfully sorted images!\n\n"
-                f"People: {data['people_count']} images {action}\n"
-                f"No People: {data['no_people_count']} images {action}"
+                f"Successfully sorted images!\n\n{summary}"
             )
         else:
             QMessageBox.warning(
                 self, "Completed with errors",
-                f"Sorted images with {data['error_count']} errors.\n\n"
-                f"People: {data['people_count']} images {action}\n"
-                f"No People: {data['no_people_count']} images {action}\n\n"
+                f"Sorted images with {data['error_count']} errors.\n\n{summary}\n\n"
                 f"Check status log for details."
             )
 
