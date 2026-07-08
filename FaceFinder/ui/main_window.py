@@ -15,8 +15,8 @@ from PIL import Image, ImageGrab
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
-    QCheckBox, QSlider, QProgressBar, QListWidget,
-    QGroupBox, QVBoxLayout, QHBoxLayout,
+    QCheckBox, QSlider, QProgressBar, QListWidget, QListWidgetItem,
+    QGroupBox, QVBoxLayout, QHBoxLayout, QComboBox, QInputDialog,
     QFileDialog, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
@@ -53,12 +53,12 @@ def _load_image_as_rgb(image_path: str, max_size: int = 1500) -> np.ndarray:
 
 
 def _process_single_image(args) -> Optional[str]:
-    file_path_str, ref_encoding, tolerance = args
+    file_path_str, ref_encodings, tolerance = args
     try:
         image = _load_image_as_rgb(file_path_str)
         encodings = face_recognition.face_encodings(image)
         for enc in encodings:
-            if face_recognition.compare_faces([ref_encoding], enc, tolerance=tolerance)[0]:
+            if any(face_recognition.compare_faces(ref_encodings, enc, tolerance=tolerance)):
                 return file_path_str
     except Exception:
         pass
@@ -103,23 +103,48 @@ class MainWindow(QMainWindow):
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(subtitle)
 
-        # Reference image
-        ref_group = QGroupBox("Reference Image  (drag & drop or Ctrl+V to paste)")
+        # Reference images (one or more — any match against any reference counts)
+        ref_group = QGroupBox("Reference Images  (Ctrl+V to paste — add multiple for better recall)")
         ref_layout = QVBoxLayout(ref_group)
+        self.ref_list = QListWidget()
+        self.ref_list.setMaximumHeight(90)
+        self.ref_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        ref_layout.addWidget(self.ref_list)
         ref_row = QHBoxLayout()
-        self.ref_edit = QLineEdit()
-        ref_browse = QPushButton("Browse...")
-        ref_browse.setMinimumWidth(100)
-        ref_browse.clicked.connect(self._browse_reference)
+        ref_add = QPushButton("Add...")
+        ref_add.setMinimumWidth(80)
+        ref_add.clicked.connect(self._browse_reference)
         paste_btn = QPushButton("Paste")
         paste_btn.setObjectName("secondary_btn")
         paste_btn.setMinimumWidth(60)
         paste_btn.clicked.connect(self._paste_from_clipboard)
-        ref_row.addWidget(self.ref_edit, stretch=1)
+        ref_remove = QPushButton("Remove Selected")
+        ref_remove.setObjectName("cancel_btn")
+        ref_remove.clicked.connect(self._remove_selected_references)
+        ref_row.addWidget(ref_add)
         ref_row.addWidget(paste_btn)
-        ref_row.addWidget(ref_browse)
+        ref_row.addWidget(ref_remove)
+        ref_row.addStretch()
         ref_layout.addLayout(ref_row)
         layout.addWidget(ref_group)
+
+        # Saved search profiles
+        profile_group = QGroupBox("Saved Profiles")
+        profile_layout = QHBoxLayout(profile_group)
+        self.profile_combo = QComboBox()
+        self.profile_combo.setMinimumWidth(160)
+        profile_layout.addWidget(self.profile_combo, stretch=1)
+        load_profile_btn = QPushButton("Load")
+        load_profile_btn.clicked.connect(self._load_profile)
+        save_profile_btn = QPushButton("Save As...")
+        save_profile_btn.clicked.connect(self._save_profile)
+        delete_profile_btn = QPushButton("Delete")
+        delete_profile_btn.setObjectName("cancel_btn")
+        delete_profile_btn.clicked.connect(self._delete_profile)
+        profile_layout.addWidget(load_profile_btn)
+        profile_layout.addWidget(save_profile_btn)
+        profile_layout.addWidget(delete_profile_btn)
+        layout.addWidget(profile_group)
 
         # Search folder
         folder_group = QGroupBox("Search Folder")
@@ -194,23 +219,136 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+V"), self).activated.connect(self._paste_from_clipboard)
 
     def _load_config(self):
-        self.ref_edit.setText(self.config.get("default_reference_image", ""))
+        refs = list(self.config.get("reference_images", []))
+        legacy = self.config.get("default_reference_image", "")
+        if not refs and legacy:
+            refs = [legacy]
+        for path in refs:
+            self._add_reference(path, save=False)
+
         self.folder_edit.setText(self.config.get("default_search_folder", ""))
         tol = self.config.get("tolerance", 0.6)
         self.tolerance_slider.setValue(int(tol * 100))
         self.recursive_check.setChecked(self.config.get("recursive_search", True))
+        self._refresh_profile_combo()
+
+    # ------------------------------------------------------------------ #
+    # Reference images
+    # ------------------------------------------------------------------ #
+
+    def _reference_paths(self) -> List[str]:
+        return [self.ref_list.item(i).data(Qt.ItemDataRole.UserRole)
+                for i in range(self.ref_list.count())]
+
+    def _add_reference(self, path: str, save: bool = True):
+        if path in self._reference_paths():
+            return
+        item = QListWidgetItem(Path(path).name)
+        item.setData(Qt.ItemDataRole.UserRole, path)
+        item.setToolTip(path)
+        self.ref_list.addItem(item)
+        if save:
+            self._save_references()
+
+    def _save_references(self):
+        refs = self._reference_paths()
+        self.config.set("reference_images", refs)
+        if refs:
+            self.config.set("default_reference_image", refs[0])
+        self.config.save()
+
+    def _remove_selected_references(self):
+        for item in self.ref_list.selectedItems():
+            self.ref_list.takeItem(self.ref_list.row(item))
+        self._save_references()
+
+    # ------------------------------------------------------------------ #
+    # Saved profiles
+    # ------------------------------------------------------------------ #
+
+    def _refresh_profile_combo(self):
+        current = self.profile_combo.currentText()
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.clear()
+        profiles = self.config.get("profiles", {})
+        self.profile_combo.addItems(sorted(profiles.keys()))
+        idx = self.profile_combo.findText(current)
+        if idx >= 0:
+            self.profile_combo.setCurrentIndex(idx)
+        self.profile_combo.blockSignals(False)
+
+    def _save_profile(self):
+        refs = self._reference_paths()
+        if not refs:
+            QMessageBox.warning(self, "Save Profile", "Add at least one reference image first.")
+            return
+        name, ok = QInputDialog.getText(self, "Save Profile", "Profile name:")
+        name = name.strip()
+        if not ok or not name:
+            return
+        profiles = self.config.get("profiles", {})
+        profiles[name] = {
+            "reference_images": refs,
+            "tolerance": self.tolerance_slider.value() / 100,
+            "recursive_search": self.recursive_check.isChecked(),
+            "search_folder": self.folder_edit.text().strip(),
+        }
+        self.config.set("profiles", profiles)
+        self.config.save()
+        self._refresh_profile_combo()
+        idx = self.profile_combo.findText(name)
+        if idx >= 0:
+            self.profile_combo.setCurrentIndex(idx)
+        self._add_result(f"Saved profile: {name}")
+
+    def _load_profile(self):
+        name = self.profile_combo.currentText()
+        profiles = self.config.get("profiles", {})
+        profile = profiles.get(name)
+        if not profile:
+            return
+        self.ref_list.clear()
+        for path in profile.get("reference_images", []):
+            self._add_reference(path, save=False)
+        self._save_references()
+        self.tolerance_slider.setValue(int(profile.get("tolerance", 0.6) * 100))
+        self.recursive_check.setChecked(profile.get("recursive_search", True))
+        folder = profile.get("search_folder", "")
+        if folder:
+            self.folder_edit.setText(folder)
+            self.config.set("default_search_folder", folder)
+            self.config.save()
+        self._add_result(f"Loaded profile: {name}")
+
+    def _delete_profile(self):
+        name = self.profile_combo.currentText()
+        if not name:
+            return
+        profiles = self.config.get("profiles", {})
+        if name not in profiles:
+            return
+        reply = QMessageBox.question(
+            self, "Delete Profile", f"Delete saved profile '{name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        del profiles[name]
+        self.config.set("profiles", profiles)
+        self.config.save()
+        self._refresh_profile_combo()
 
     def _on_tolerance_changed(self, value: int):
         self.tolerance_label.setText(f"{value / 100:.2f}")
 
     def _browse_reference(self):
-        current = self.ref_edit.text().strip()
-        start = str(Path(current).parent) if current and Path(current).exists() else str(Path.home())
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Reference Image", start,
+        refs = self._reference_paths()
+        start = str(Path(refs[-1]).parent) if refs and Path(refs[-1]).exists() else str(Path.home())
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Select Reference Image(s)", start,
             "Images (*.jpg *.jpeg *.png *.bmp *.gif *.tiff *.webp);;All files (*.*)"
         )
-        if path:
+        for path in paths:
             self._set_reference(path)
 
     def _browse_folder(self):
@@ -224,9 +362,7 @@ class MainWindow(QMainWindow):
             self._add_result(f"Search folder: {folder}")
 
     def _set_reference(self, path: str):
-        self.ref_edit.setText(path)
-        self.config.set("default_reference_image", path)
-        self.config.save()
+        self._add_reference(path)
         self._add_result(f"Reference image: {Path(path).name}")
 
     def _paste_from_clipboard(self):
@@ -258,16 +394,17 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Clipboard Error", f"Failed to paste from clipboard:\n{e}")
 
     def _start_search(self):
-        ref_path = self.ref_edit.text().strip()
+        ref_paths = self._reference_paths()
         folder = self.folder_edit.text().strip()
-        if not ref_path:
-            QMessageBox.critical(self, "Error", "Please select a reference image")
+        if not ref_paths:
+            QMessageBox.critical(self, "Error", "Please add at least one reference image")
             return
         if not folder:
             QMessageBox.critical(self, "Error", "Please select a search folder")
             return
-        if not Path(ref_path).exists():
-            QMessageBox.critical(self, "Error", "Reference image not found")
+        missing = [p for p in ref_paths if not Path(p).exists()]
+        if missing:
+            QMessageBox.critical(self, "Error", f"Reference image not found:\n{missing[0]}")
             return
         if not Path(folder).exists():
             QMessageBox.critical(self, "Error", "Search folder not found")
@@ -285,7 +422,7 @@ class MainWindow(QMainWindow):
 
         self._search_thread = threading.Thread(
             target=self._perform_search,
-            args=(ref_path, folder),
+            args=(ref_paths, folder),
             daemon=True
         )
         self._search_thread.start()
@@ -294,22 +431,31 @@ class MainWindow(QMainWindow):
         self._search_cancelled = True
         self._add_result("Cancelling search...")
 
-    def _perform_search(self, ref_path: str, folder: str):
+    def _perform_search(self, ref_paths: List[str], folder: str):
         try:
-            logger.info(f"=== Starting search === ref={ref_path} folder={folder}")
-            self._update_progress(0, 1, "Loading reference image...")
-            self._add_result(f"Loading reference image: {ref_path}")
+            logger.info(f"=== Starting search === refs={ref_paths} folder={folder}")
+            self._update_progress(0, 1, "Loading reference image(s)...")
 
-            ref_image = _load_image_as_rgb(ref_path)
-            self._add_result("Detecting face in reference image...")
-            ref_encodings = face_recognition.face_encodings(ref_image)
+            ref_encodings = []
+            for ref_path in ref_paths:
+                self._add_result(f"Loading reference image: {ref_path}")
+                try:
+                    ref_image = _load_image_as_rgb(ref_path)
+                    encs = face_recognition.face_encodings(ref_image)
+                except Exception as e:
+                    encs = []
+                    logger.error(f"Failed to load reference {ref_path}: {e}")
+                if encs:
+                    ref_encodings.append(encs[0])
+                    self._add_result(f"  Found a face in {Path(ref_path).name}")
+                else:
+                    self._add_result(f"  No face found in {Path(ref_path).name} — skipped")
 
             if not ref_encodings:
-                self._search_done.emit([], "No face found in reference image")
+                self._search_done.emit([], "No face found in any reference image")
                 return
 
-            self._add_result(f"Found {len(ref_encodings)} face(s) in reference image")
-            ref_encoding = ref_encodings[0]
+            self._add_result(f"Using {len(ref_encodings)} reference face encoding(s)")
 
             self._update_progress(0, 1, "Scanning for images...")
             image_files = self._collect_images(folder)
@@ -324,7 +470,7 @@ class MainWindow(QMainWindow):
             matches: List[str] = []
             matched_set: set = set()
             processed = 0
-            work_items = [(str(fp), ref_encoding, tolerance) for fp in image_files]
+            work_items = [(str(fp), ref_encodings, tolerance) for fp in image_files]
 
             with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
                 futures = {executor.submit(_process_single_image, item): item[0] for item in work_items}
