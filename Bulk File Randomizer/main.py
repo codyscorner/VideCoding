@@ -23,7 +23,10 @@ def main():
     app = QApplication(sys.argv)
     config_manager = ConfigManager(get_config_file())
     window = MainWindow(config_manager, VERSION)
-    icon_path = Path(__file__).parent / "app_icon.ico"
+    if getattr(sys, 'frozen', False):
+        icon_path = Path(sys.executable).parent / "app_icon.ico"
+    else:
+        icon_path = Path(__file__).parent / "app_icon.ico"
     if icon_path.exists():
         window.setWindowIcon(QIcon(str(icon_path)))
     window.show()
