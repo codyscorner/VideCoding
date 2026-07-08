@@ -6,19 +6,20 @@ import json
 import random
 import shutil
 import sys
+import threading
 from pathlib import Path
 
 import make_icons
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QTextCharFormat
+from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
+from PyQt6.QtGui import QColor, QIcon, QTextCharFormat
 from PyQt6.QtWidgets import (
-    QApplication, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QPushButton, QTextEdit, QVBoxLayout,
-    QWidget,
+    QApplication, QDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QMainWindow, QPushButton, QSpinBox, QTextEdit,
+    QVBoxLayout, QWidget,
 )
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 BG_DARK      = "#0d0d1a"
 BG_MID       = "#12122a"
@@ -108,15 +109,27 @@ QTextEdit {{
 
 
 class IconWorker(QThread):
-    log_line  = pyqtSignal(str, str)   # (message, color)
-    progress  = pyqtSignal(int, int, str)  # (current, total, name)
-    finished  = pyqtSignal()
+    log_line     = pyqtSignal(str, str)   # (message, color)
+    progress     = pyqtSignal(int, int, str)  # (current, total, name)
+    request_pick = pyqtSignal(str, list)  # (app name, candidate png paths) — blocks until resolve_pick()
+    finished     = pyqtSignal()
 
-    def __init__(self, apps: list, comfy_url: str, output_path: str):
+    def __init__(self, apps: list, comfy_url: str, output_path: str,
+                 num_candidates: int = 1, padding_pct: int = 0, corner_radius_pct: int = 0):
         super().__init__()
-        self.apps        = apps
-        self.comfy_url   = comfy_url
-        self.output_path = Path(output_path)
+        self.apps              = apps
+        self.comfy_url         = comfy_url
+        self.output_path       = Path(output_path)
+        self.num_candidates    = max(1, num_candidates)
+        self.padding_pct       = padding_pct
+        self.corner_radius_pct = corner_radius_pct
+        self._pick_event       = threading.Event()
+        self._pick_result      = 0
+
+    def resolve_pick(self, index: int):
+        """Called from the main thread once the user has chosen a candidate."""
+        self._pick_result = index
+        self._pick_event.set()
 
     def run(self):
         # Override module-level globals so helper functions use user config
@@ -143,41 +156,74 @@ class IconWorker(QThread):
             self.log_line.emit(f"\n[{idx}/{total}] {name}", ACCENT)
             self.log_line.emit("-" * 40, TEXT_DIM)
 
-            workflow = json.loads(json.dumps(base_workflow))
-            workflow["91"]["inputs"]["value"]             = app["prompt"]
-            workflow["86:3"]["inputs"]["seed"]            = random.randint(1, 2**31)
-            workflow["86:58"]["inputs"]["width"]          = 512
-            workflow["86:58"]["inputs"]["height"]         = 512
-            workflow["60"]["inputs"]["filename_prefix"]   = f"icon_{name}"
+            candidates = []  # list of (png_path, seed)
+            for c in range(self.num_candidates):
+                seed = random.randint(1, 2**31)
+                workflow = json.loads(json.dumps(base_workflow))
+                workflow["91"]["inputs"]["value"]             = app["prompt"]
+                workflow["86:3"]["inputs"]["seed"]            = seed
+                workflow["86:58"]["inputs"]["width"]          = 512
+                workflow["86:58"]["inputs"]["height"]         = 512
+                workflow["60"]["inputs"]["filename_prefix"]   = f"icon_{name}_{c + 1}"
 
-            try:
-                prompt_id = make_icons.submit_prompt(workflow)
-            except Exception as e:
-                self.log_line.emit(f"  ERROR submitting prompt: {e}", ERROR_COL)
+                try:
+                    prompt_id = make_icons.submit_prompt(workflow)
+                except Exception as e:
+                    self.log_line.emit(f"  ERROR submitting prompt (candidate {c + 1}): {e}", ERROR_COL)
+                    continue
+
+                self.log_line.emit(
+                    f"  Waiting for ComfyUI… (candidate {c + 1}/{self.num_candidates})", TEXT_DIM
+                )
+                if not make_icons.wait_for_completion(prompt_id):
+                    self.log_line.emit(f"  SKIPPED candidate {c + 1} — timed out", WARNING_COL)
+                    continue
+
+                filename = make_icons.get_output_filename(prompt_id)
+                if not filename:
+                    self.log_line.emit(f"  SKIPPED candidate {c + 1} — no output filename found", WARNING_COL)
+                    continue
+
+                src_png = self.output_path / filename
+                cand_png = output_dir / f"{name}_candidate_{c + 1}.png"
+                try:
+                    shutil.copy2(src_png, cand_png)
+                    candidates.append((cand_png, seed))
+                except Exception as e:
+                    self.log_line.emit(f"  ERROR copying candidate {c + 1}: {e}", ERROR_COL)
+
+            if not candidates:
+                self.log_line.emit("  SKIPPED — no candidates generated", WARNING_COL)
                 continue
 
-            self.log_line.emit("  Waiting for ComfyUI…", TEXT_DIM)
-            if not make_icons.wait_for_completion(prompt_id):
-                self.log_line.emit("  SKIPPED — timed out", WARNING_COL)
-                continue
+            if len(candidates) > 1:
+                self.log_line.emit("  Pick a candidate to continue…", TEXT_DIM)
+                self._pick_event.clear()
+                self.request_pick.emit(name, [str(p) for p, _ in candidates])
+                self._pick_event.wait()
+                chosen_idx = min(self._pick_result, len(candidates) - 1)
+            else:
+                chosen_idx = 0
 
-            filename = make_icons.get_output_filename(prompt_id)
-            if not filename:
-                self.log_line.emit("  SKIPPED — no output filename found", WARNING_COL)
-                continue
-
-            src_png = self.output_path / filename
+            chosen_png, chosen_seed = candidates[chosen_idx]
             dst_png = output_dir / f"{name}.png"
             try:
-                shutil.copy2(src_png, dst_png)
-                self.log_line.emit(f"  PNG  -> {dst_png.name}", SUCCESS)
+                shutil.copy2(chosen_png, dst_png)
+                self.log_line.emit(f"  PNG  -> {dst_png.name} (candidate {chosen_idx + 1})", SUCCESS)
             except Exception as e:
-                self.log_line.emit(f"  ERROR copying PNG: {e}", ERROR_COL)
+                self.log_line.emit(f"  ERROR copying chosen PNG: {e}", ERROR_COL)
                 continue
+
+            for p, _ in candidates:
+                if p != dst_png:
+                    try:
+                        p.unlink(missing_ok=True)
+                    except Exception:
+                        pass
 
             ico_path = output_dir / f"{name}.ico"
             try:
-                make_icons.convert_to_ico(dst_png, ico_path)
+                make_icons.convert_to_ico(dst_png, ico_path, self.padding_pct, self.corner_radius_pct)
                 self.log_line.emit(f"  ICO  -> {ico_path.name}", SUCCESS)
             except Exception as e:
                 self.log_line.emit(f"  ERROR converting ICO: {e}", ERROR_COL)
@@ -190,9 +236,44 @@ class IconWorker(QThread):
             else:
                 self.log_line.emit(f"  WARN — project folder not found: {project_folder}", WARNING_COL)
 
+            make_icons.append_prompt_history(name, app["prompt"], chosen_seed)
+
         self.log_line.emit(f"\n{'=' * 40}", TEXT_DIM)
         self.log_line.emit(f"Done! {total} icon(s) generated.", ACCENT)
         self.finished.emit()
+
+
+class CandidatePickerDialog(QDialog):
+    """Modal grid of generated candidate PNGs — pick one to keep."""
+
+    def __init__(self, app_name: str, candidate_paths: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Pick an icon for {app_name}")
+        self.setMinimumSize(420, 320)
+        self.selected_index = 0
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Choose the best candidate for {app_name}:"))
+
+        self.list = QListWidget()
+        self.list.setViewMode(QListWidget.ViewMode.IconMode)
+        self.list.setIconSize(QSize(128, 128))
+        self.list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.list.setMovement(QListWidget.Movement.Static)
+        for i, path in enumerate(candidate_paths):
+            item = QListWidgetItem(QIcon(path), f"#{i + 1}")
+            self.list.addItem(item)
+        if candidate_paths:
+            self.list.setCurrentRow(0)
+        layout.addWidget(self.list)
+
+        btn = QPushButton("Use Selected")
+        btn.clicked.connect(self.accept)
+        layout.addWidget(btn)
+
+    def accept(self):
+        self.selected_index = max(0, self.list.currentRow())
+        super().accept()
 
 
 class IconMakerApp(QMainWindow):
@@ -232,10 +313,15 @@ class IconMakerApp(QMainWindow):
         btn_none = QPushButton("Deselect All")
         btn_none.setObjectName("secondary")
         btn_none.setFixedWidth(90)
+        btn_history = QPushButton("View History")
+        btn_history.setObjectName("secondary")
+        btn_history.setFixedWidth(90)
+        btn_history.clicked.connect(self._view_history)
         btn_all.clicked.connect(self._select_all)
         btn_none.clicked.connect(self._deselect_all)
         list_header.addWidget(btn_all)
         list_header.addWidget(btn_none)
+        list_header.addWidget(btn_history)
         layout.addLayout(list_header)
 
         # App list
@@ -257,6 +343,32 @@ class IconMakerApp(QMainWindow):
         self.output_edit = QLineEdit(str(make_icons.COMFY_OUTPUT))
         cfg_layout.addWidget(self.output_edit, 3)
         layout.addLayout(cfg_layout)
+
+        # Generation options row
+        opts_layout = QHBoxLayout()
+        opts_layout.addWidget(QLabel("Candidates per app:"))
+        self.candidates_spin = QSpinBox()
+        self.candidates_spin.setRange(1, 4)
+        self.candidates_spin.setValue(1)
+        opts_layout.addWidget(self.candidates_spin)
+        opts_layout.addSpacing(12)
+        opts_layout.addWidget(QLabel("Padding %:"))
+        self.padding_spin = QSpinBox()
+        self.padding_spin.setRange(0, 40)
+        self.padding_spin.setValue(0)
+        opts_layout.addWidget(self.padding_spin)
+        opts_layout.addSpacing(12)
+        opts_layout.addWidget(QLabel("Corner Radius %:"))
+        self.radius_spin = QSpinBox()
+        self.radius_spin.setRange(0, 50)
+        self.radius_spin.setValue(0)
+        opts_layout.addWidget(self.radius_spin)
+        opts_layout.addStretch()
+        btn_scan = QPushButton("Scan for Missing Icons")
+        btn_scan.setObjectName("secondary")
+        btn_scan.clicked.connect(self._scan_missing_icons)
+        opts_layout.addWidget(btn_scan)
+        layout.addLayout(opts_layout)
 
         # Generate button + progress label
         gen_row = QHBoxLayout()
@@ -300,6 +412,34 @@ class IconMakerApp(QMainWindow):
         self.btn_generate.setEnabled(True)
         self.lbl_progress.setText("Done.")
 
+    def _on_request_pick(self, app_name: str, candidate_paths: list):
+        dlg = CandidatePickerDialog(app_name, candidate_paths, self)
+        dlg.exec()
+        self._worker.resolve_pick(dlg.selected_index)
+
+    def _view_history(self):
+        item = self.app_list.currentItem()
+        if item is None:
+            self._log("Select an app in the list first.", WARNING_COL)
+            return
+        name = item.text()
+        history = make_icons.load_prompt_history().get(name, [])
+        if not history:
+            self._log(f"No prompt history for {name}.", TEXT_DIM)
+            return
+        self._log(f"\nHistory for {name}:", ACCENT)
+        for entry in history:
+            self._log(f"  [{entry['timestamp']}] seed={entry['seed']}  {entry['prompt']}", TEXT_DIM)
+
+    def _scan_missing_icons(self):
+        missing = make_icons.find_projects_missing_icon()
+        if not missing:
+            self._log("\nNo projects found missing an app_icon.ico.", SUCCESS)
+            return
+        self._log(f"\n{len(missing)} project(s) missing an app_icon.ico:", WARNING_COL)
+        for name in missing:
+            self._log(f"  - {name}", TEXT_DIM)
+
     def _start_generation(self):
         selected = []
         for i in range(self.app_list.count()):
@@ -318,9 +458,15 @@ class IconMakerApp(QMainWindow):
         comfy_url   = self.url_edit.text().strip() or make_icons.COMFY_URL
         output_path = self.output_edit.text().strip() or str(make_icons.COMFY_OUTPUT)
 
-        self._worker = IconWorker(selected, comfy_url, output_path)
+        self._worker = IconWorker(
+            selected, comfy_url, output_path,
+            num_candidates=self.candidates_spin.value(),
+            padding_pct=self.padding_spin.value(),
+            corner_radius_pct=self.radius_spin.value(),
+        )
         self._worker.log_line.connect(self._log)
         self._worker.progress.connect(self._on_progress)
+        self._worker.request_pick.connect(self._on_request_pick)
         self._worker.finished.connect(self._on_finished)
         self._worker.start()
 
