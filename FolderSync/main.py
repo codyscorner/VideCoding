@@ -5,11 +5,12 @@ from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
 from config import ConfigManager
+from profiles import ProfileManager
 from ui.main_window import MainWindow
 from ui.styles import STYLESHEET
 
 BASE_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 def main() -> None:
@@ -22,7 +23,8 @@ def main() -> None:
         app.setWindowIcon(QIcon(str(icon_path)))
 
     config = ConfigManager(BASE_DIR / "foldersync_config.json")
-    window = MainWindow(config, BASE_DIR, VERSION)
+    profiles = ProfileManager(BASE_DIR / "sync_profiles.json")
+    window = MainWindow(config, profiles, BASE_DIR, VERSION)
     window.show()
     sys.exit(app.exec())
 

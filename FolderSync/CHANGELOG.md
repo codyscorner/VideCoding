@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.1.0] — 2026-07-08
+
+### Added
+- Optional hash verify (BLAKE2b) for matched-size files to catch content differences
+- Reverse Diff mode: find files in Destination missing from Source, with confirm-then-delete
+- Reason column in results table
+- Named sync profiles (save/load/delete Source/Destination/options)
+- Post-sync/delete summary report with CSV export
+- Watch mode: auto-sync when the Source folder changes (debounced)
+
 ## [1.0.0] — 2026-06-27
 
 ### Added
