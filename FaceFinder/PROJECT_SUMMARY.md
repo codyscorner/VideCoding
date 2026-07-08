@@ -2,14 +2,15 @@
 
 A tool for searching matching faces in image collections using face recognition.
 
-## Version 1.3.0
+## Version 1.4.0
 
-**Export CSV + Bulk Copy** — Export match results to CSV with metadata; copy all paths to clipboard in one click.
+**Multi-reference search, move/copy to folder, saved profiles** — add multiple reference images for better recall, select and move/copy matches straight from the results grid, and save named search profiles to reload later.
 
 ## Features
 
 ### Core Features
 - Face recognition-based image search
+- Multiple reference images per search — a match against any reference counts
 - Reference image comparison against entire folders
 - Adjustable face match tolerance (0.1 - 1.0)
 - Recursive subfolder scanning
@@ -119,10 +120,11 @@ To distribute, zip the entire `dist/FaceFinder` folder.
 ## Configuration
 
 Configuration is stored in `main_config.json` and includes:
-- Default reference image path
+- Reference image paths (list)
 - Default search folder
 - Tolerance setting
 - Recursive search preference
+- Saved search profiles
 
 ## Requirements
 
@@ -180,6 +182,12 @@ Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
 
+### v1.4.0
+- **Multiple reference images per search** — add any number of reference images (Add.../Paste); a photo counts as a match if a face matches *any* reference, improving recall for one person across different angles/lighting
+- **Move/Copy to Folder** (Results viewer) — click thumbnails to select (or Select All), then Copy or Move the selected (or all) matches to a destination folder in one action; name collisions are auto-numbered
+- **Saved search profiles** — save the current reference images, tolerance, recursive setting, and search folder under a name; reload any saved profile from a dropdown
+- Results viewer already had a thumbnail grid (added in v1.2.0) — confirmed as covering that roadmap item
+
 ### v1.3.0
 - Export CSV button in ResultsViewer — columns: File Name, Full Path, File Size (bytes), Modified Date
 - Copy All Paths button — joins all match paths with newlines and copies to system clipboard
@@ -202,7 +210,7 @@ Contributions with AI assistance by Claude (Anthropic)
 
 ## Future Enhancements
 
-- [ ] Multiple reference images per search (better recall for one person)
-- [ ] Thumbnail results grid instead of just paths
-- [ ] Move/copy matches directly to a folder from results
-- [ ] Saved searches / per-person reference profiles
+- [x] Multiple reference images per search (better recall for one person)
+- [x] Thumbnail results grid instead of just paths
+- [x] Move/copy matches directly to a folder from results
+- [x] Saved searches / per-person reference profiles

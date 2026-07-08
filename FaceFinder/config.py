@@ -10,9 +10,11 @@ class ConfigManager:
 
     DEFAULT_CONFIG = {
         "default_reference_image": "",
+        "reference_images": [],
         "default_search_folder": "",
         "tolerance": 0.6,
-        "recursive_search": True
+        "recursive_search": True,
+        "profiles": {}
     }
 
     def __init__(self, config_path: Path):
