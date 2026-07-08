@@ -14,6 +14,9 @@ A PyQt6 desktop app that archives any folder into a dated 7-Zip file, verifies i
 - **Elapsed time log** — every log entry stamped with `[hh:mm:ss]` from backup start
 - **Persistent settings** — source folder, destination, prefix, and compression level saved between runs
 - **Run logs** — each session writes a timestamped log to `logs\`
+- **Incremental mode** — optionally skip the backup entirely if the source folder hasn't changed since the last run (compares a size+mtime manifest, no full re-hash needed)
+- **Backup rotation** — optionally keep only the N most recent archives for a given prefix; older ones (and their `.sha256` sidecars) are deleted automatically after a successful run
+- **Completion notifications** — an optional Windows tray notification on backup complete, skipped, or failed
 
 ## Requirements
 
@@ -51,7 +54,11 @@ The EXE is output to `dist\FolderBackupArchiver.exe`.
    - *Store* — photos, videos, already-compressed files (fastest)
    - *Fast / Normal* — general purpose
    - *Maximum / Ultra* — documents and text (slowest, smallest)
-5. Click **Start Backup**
+5. **Options**:
+   - *Skip backup if source is unchanged since last run* — if enabled, the app hashes the source folder's file list (path, size, mtime) before archiving; if it matches the manifest saved from the last successful backup of that same folder, the run is skipped with no archive created
+   - *Keep last N backups* — set to 0 to keep everything; otherwise, after a successful run, older archives sharing the same prefix are deleted, keeping only the N most recent
+   - *Show a notification when the backup finishes or fails* — pops a Windows tray notification in addition to the in-app dialog, useful if the window is minimized
+6. Click **Start Backup**
 
 ## Output Files
 
@@ -72,3 +79,7 @@ The EXE is output to `dist\FolderBackupArchiver.exe`.
 | `archive_prefix` | Last used archive name prefix |
 | `compression_level` | Last used compression (`store`/`fast`/`normal`/`maximum`/`ultra`) |
 | `7zip_path` | Auto-detected path to `7za.exe` |
+| `incremental_enabled` | Whether "skip if unchanged" is turned on |
+| `rotation_keep_n` | Number of backups to keep per prefix (`0` = keep all) |
+| `notifications_enabled` | Whether tray notifications are turned on |
+| `source_manifests` | Per-source-folder manifest hash used by incremental mode |

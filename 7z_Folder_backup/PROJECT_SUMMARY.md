@@ -264,7 +264,7 @@ Documentation
 
 ## Future Enhancements
 
-- [ ] Incremental mode: skip archiving if source unchanged since last backup (manifest hash compare)
-- [ ] Backup rotation: keep last N archives, auto-delete older
-- [ ] Scheduled/silent CLI mode for Task Scheduler
-- [ ] Email or toast notification on completion/verification failure
+- [x] Incremental mode: skip archiving if source unchanged since last backup (manifest hash compare)
+- [x] Backup rotation: keep last N archives, auto-delete older
+- [ ] Scheduled/silent CLI mode for Task Scheduler — intentionally skipped; this stays a manual, on-demand backup tool by design
+- [x] Toast notification on completion/skip/failure (Windows tray notification via QSystemTrayIcon; email was considered but skipped to avoid SMTP credential setup)
