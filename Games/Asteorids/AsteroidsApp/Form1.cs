@@ -15,6 +15,7 @@ public class MainForm : Form
         MinimumSize = new Size(1280, 720);
         BackColor = Color.Black;
         StartPosition = FormStartPosition.CenterScreen;
+        try { Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!); } catch { }
 
         _webView = new Microsoft.Web.WebView2.WinForms.WebView2
         {

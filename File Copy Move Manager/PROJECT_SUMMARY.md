@@ -1,8 +1,8 @@
 # File Copy Move Manager - Project Summary
 
 ## Created: December 8, 2025
-## Last Updated: June 29, 2026
-## Version: 3.4.0
+## Last Updated: June 30, 2026
+## Version: 3.4.1
 
 ---
 
@@ -415,7 +415,7 @@ File Copy Move Manager is a **production-ready** application that perfectly comp
 
 **Status**: ✓ Active and Feature-Rich
 
-**Version**: 3.3.1
+**Version**: 3.4.1
 
 **Created**: December 8, 2025
-**Last Updated**: June 28, 2026
+**Last Updated**: June 30, 2026

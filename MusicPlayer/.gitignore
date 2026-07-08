@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller build artifacts (deployed to P:\Apps\VibeCoded\Music Player\)
+build/
+dist/
+*.spec
+
+# Note: never ignore *.md — they are planning/changelog docs and are committed.
