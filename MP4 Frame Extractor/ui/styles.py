@@ -88,6 +88,12 @@ QPushButton#browse_btn {{
     padding: 6px 12px;
     font-size: 10pt;
 }}
+QLabel#preview {{
+    background-color: {COLORS['bg_medium']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 3px;
+    color: {COLORS['fg_dim']};
+}}
 QListWidget {{
     background-color: {COLORS['bg_medium']};
     color: {COLORS['fg_primary']};
