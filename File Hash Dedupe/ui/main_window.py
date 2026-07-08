@@ -4,11 +4,13 @@ import os
 import atexit
 import threading
 import queue
+from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
-    QCheckBox, QSpinBox, QProgressBar, QListWidget,
+    QCheckBox, QSpinBox, QProgressBar, QListWidget, QComboBox,
+    QRadioButton, QButtonGroup,
     QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFileDialog, QMessageBox,
 )
@@ -16,8 +18,9 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
 
 from config import ConfigManager
-from hasher import FileDeduplicator
+from hasher import FileDeduplicator, ScanResult, ALGORITHMS, KEEP_RULES, write_csv_report
 from ui.styles import STYLESHEET, COLORS
+from ui.preview_dialog import PreviewDialog
 
 
 def _cleanup_all_children():
@@ -44,9 +47,14 @@ class MainWindow(QMainWindow):
         self._is_processing = False
         self._cancel_requested = False
         self._message_queue = queue.Queue()
+        self._deduplicator: FileDeduplicator = None
+        self._pending_source_folder = None
+        self._pending_target_folder = None
+        self._pending_permanent_delete = False
+        self._pending_compare_mode = False
 
         self.setWindowTitle(f"File Hash Dedupe v{self.version}")
-        self.setMinimumSize(700, 550)
+        self.setMinimumSize(750, 620)
         self.setStyleSheet(STYLESHEET)
 
         geom = self.config.window_geometry
@@ -55,9 +63,9 @@ class MainWindow(QMainWindow):
                 from PyQt6.QtCore import QByteArray
                 self.restoreGeometry(QByteArray.fromHex(geom.encode()))
             except Exception:
-                self.resize(750, 600)
+                self.resize(800, 650)
         else:
-            self.resize(750, 600)
+            self.resize(800, 650)
 
         self._build_ui()
         self._load_config()
@@ -84,8 +92,23 @@ class MainWindow(QMainWindow):
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(subtitle)
 
-        # Source folder
+        # Mode
+        mode_group = QGroupBox("Mode")
+        mode_layout = QHBoxLayout(mode_group)
+        self.single_radio = QRadioButton("Dedupe one folder")
+        self.single_radio.setChecked(True)
+        self.compare_radio = QRadioButton("Compare two folders (dedupe B against A)")
+        self.mode_button_group = QButtonGroup(self)
+        self.mode_button_group.addButton(self.single_radio)
+        self.mode_button_group.addButton(self.compare_radio)
+        self.single_radio.toggled.connect(self._on_mode_changed)
+        mode_layout.addWidget(self.single_radio)
+        mode_layout.addWidget(self.compare_radio)
+        layout.addWidget(mode_group)
+
+        # Source folder (Folder A)
         src_group = QGroupBox("Source Folder")
+        self.src_group = src_group
         src_layout = QVBoxLayout(src_group)
         src_row = QHBoxLayout()
         self.source_edit = QLineEdit()
@@ -100,6 +123,21 @@ class MainWindow(QMainWindow):
         src_layout.addWidget(self.source_info_label)
         layout.addWidget(src_group)
 
+        # Target folder (Folder B) — only shown in compare mode
+        target_group = QGroupBox("Target Folder (B) — duplicates removed here")
+        self.target_group = target_group
+        target_layout = QVBoxLayout(target_group)
+        target_row = QHBoxLayout()
+        self.target_edit = QLineEdit()
+        target_browse_btn = QPushButton("Browse...")
+        target_browse_btn.setMinimumWidth(100)
+        target_browse_btn.clicked.connect(self._browse_target)
+        target_row.addWidget(self.target_edit, stretch=1)
+        target_row.addWidget(target_browse_btn)
+        target_layout.addLayout(target_row)
+        layout.addWidget(target_group)
+        target_group.setVisible(False)
+
         # Options
         opt_group = QGroupBox("Options")
         opt_layout = QVBoxLayout(opt_group)
@@ -112,6 +150,22 @@ class MainWindow(QMainWindow):
         self.permanent_delete_check.setStyleSheet("color: #ff6b6b; font-weight: bold;")
         self.permanent_delete_check.toggled.connect(self._on_permanent_delete_toggled)
         opt_layout.addWidget(self.permanent_delete_check)
+
+        self.csv_report_check = QCheckBox("Write CSV report of duplicate groups")
+        opt_layout.addWidget(self.csv_report_check)
+
+        algo_row = QHBoxLayout()
+        algo_row.addWidget(QLabel("Hash algorithm:"))
+        self.algorithm_combo = QComboBox()
+        self.algorithm_combo.addItems(list(ALGORITHMS.keys()))
+        algo_row.addWidget(self.algorithm_combo)
+        algo_row.addSpacing(20)
+        algo_row.addWidget(QLabel("Keep:"))
+        self.keep_rule_combo = QComboBox()
+        self.keep_rule_combo.addItems(KEEP_RULES)
+        algo_row.addWidget(self.keep_rule_combo)
+        algo_row.addStretch()
+        opt_layout.addLayout(algo_row)
 
         cpu_count = os.cpu_count() or 4
         workers_row = QHBoxLayout()
@@ -156,7 +210,20 @@ class MainWindow(QMainWindow):
         status_layout.addWidget(self.status_list)
         layout.addWidget(status_group, stretch=1)
 
+    def _on_mode_changed(self, single_checked: bool):
+        compare_mode = not single_checked
+        self.target_group.setVisible(compare_mode)
+        self.keep_rule_combo.setEnabled(not compare_mode)
+        if compare_mode:
+            self.src_group.setTitle("Reference Folder (A) — never modified")
+            self.source_info_label.setText("Files here are the reference set and will never be moved or deleted")
+        else:
+            self.src_group.setTitle("Source Folder")
+            self._on_permanent_delete_toggled(self.permanent_delete_check.isChecked())
+
     def _on_permanent_delete_toggled(self, checked: bool):
+        if self.compare_radio.isChecked():
+            return
         if checked:
             self.source_info_label.setText("⚠  Duplicates will be permanently deleted — cannot be undone")
         else:
@@ -169,17 +236,36 @@ class MainWindow(QMainWindow):
         if folder:
             self.source_edit.setText(folder)
 
+    def _browse_target(self):
+        existing = self.target_edit.text().strip()
+        start = existing if existing and os.path.isdir(existing) else str(Path.home())
+        folder = QFileDialog.getExistingDirectory(self, "Select Target Folder", start)
+        if folder:
+            self.target_edit.setText(folder)
+
     def _load_config(self):
         if self.config.source_folder:
             self.source_edit.setText(self.config.source_folder)
         self.recursive_check.setChecked(self.config.recursive)
         self.workers_spin.setValue(self.config.get('io_workers', self.workers_spin.value()))
+        self.target_edit.setText(self.config.get('target_folder', ''))
+        self.algorithm_combo.setCurrentText(self.config.get('algorithm', 'MD5'))
+        self.keep_rule_combo.setCurrentText(self.config.get('keep_rule', KEEP_RULES[0]))
+        self.csv_report_check.setChecked(self.config.get('csv_report', False))
+        if self.config.get('compare_mode', False):
+            self.compare_radio.setChecked(True)
+            self._on_mode_changed(False)
 
     def _save_config(self):
         self.config.source_folder = self.source_edit.text()
         self.config.recursive = self.recursive_check.isChecked()
         self.config.window_geometry = self.saveGeometry().toHex().data().decode()
         self.config.set('io_workers', self.workers_spin.value())
+        self.config.set('target_folder', self.target_edit.text())
+        self.config.set('algorithm', self.algorithm_combo.currentText())
+        self.config.set('keep_rule', self.keep_rule_combo.currentText())
+        self.config.set('csv_report', self.csv_report_check.isChecked())
+        self.config.set('compare_mode', self.compare_radio.isChecked())
         self.config.save()
 
     def _start_dedupe(self):
@@ -190,6 +276,20 @@ class MainWindow(QMainWindow):
         if not os.path.exists(source):
             QMessageBox.critical(self, "Validation Error", "Source folder does not exist")
             return
+
+        compare_mode = self.compare_radio.isChecked()
+        target = self.target_edit.text().strip()
+
+        if compare_mode:
+            if not target:
+                QMessageBox.critical(self, "Validation Error", "Please select a target folder")
+                return
+            if not os.path.exists(target):
+                QMessageBox.critical(self, "Validation Error", "Target folder does not exist")
+                return
+            if os.path.abspath(target) == os.path.abspath(source):
+                QMessageBox.critical(self, "Validation Error", "Reference and target folders must be different")
+                return
 
         permanent_delete = self.permanent_delete_check.isChecked()
 
@@ -211,33 +311,73 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.status_list.clear()
 
+        self._pending_source_folder = source
+        self._pending_target_folder = target
+        self._pending_permanent_delete = permanent_delete
+        self._pending_compare_mode = compare_mode
+
+        self._deduplicator = FileDeduplicator(
+            status_callback=lambda msg: self._message_queue.put(('status', msg)),
+            progress_callback=lambda cur, total, fname: self._message_queue.put(
+                ('progress', {'current': cur, 'total': total, 'filename': fname})
+            ),
+            cancel_check=lambda: self._cancel_requested,
+            max_workers=self.workers_spin.value()
+        )
+
         thread = threading.Thread(
-            target=self._dedupe_worker,
-            args=(source, self.recursive_check.isChecked(), self.workers_spin.value(), permanent_delete),
+            target=self._scan_worker,
+            args=(source, target, self.recursive_check.isChecked(),
+                  ALGORITHMS[self.algorithm_combo.currentText()],
+                  self.keep_rule_combo.currentText(), compare_mode),
             daemon=True
         )
         thread.start()
         self._poll_timer.start()
 
-    def _dedupe_worker(self, source: str, recursive: bool, io_workers: int, permanent_delete: bool = False):
+    def _scan_worker(self, source: str, target: str, recursive: bool, algorithm: str, keep_rule: str, compare_mode: bool):
         try:
-            deduplicator = FileDeduplicator(
-                status_callback=lambda msg: self._message_queue.put(('status', msg)),
-                progress_callback=lambda cur, total, fname: self._message_queue.put(
-                    ('progress', {'current': cur, 'total': total, 'filename': fname})
-                ),
-                cancel_check=lambda: self._cancel_requested,
-                max_workers=io_workers
-            )
-            results, total, unique, moved = deduplicator.find_and_move_duplicates(
-                source, recursive=recursive, permanent_delete=permanent_delete
-            )
+            if compare_mode:
+                scan_result = self._deduplicator.scan_compare(source, target, recursive=recursive, algorithm=algorithm)
+            else:
+                scan_result = self._deduplicator.scan(source, recursive=recursive, algorithm=algorithm, keep_rule=keep_rule)
+
+            if self._cancel_requested:
+                self._message_queue.put(('cancelled', None))
+            else:
+                self._message_queue.put(('scan_complete', scan_result))
+        except Exception as e:
+            self._message_queue.put(('error', {'type': 'unexpected', 'message': str(e)}))
+
+    def _execute_worker(self, scan_result: ScanResult, source: str, target: str,
+                         permanent_delete: bool, compare_mode: bool, write_csv: bool):
+        try:
+            if compare_mode:
+                results, total, unique, moved = self._deduplicator.execute_compare(
+                    scan_result, target, permanent_delete=permanent_delete
+                )
+                report_folder = target
+            else:
+                results, total, unique, moved = self._deduplicator.execute(
+                    scan_result, source, permanent_delete=permanent_delete
+                )
+                report_folder = source
+
+            if write_csv and scan_result.groups:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                csv_path = os.path.join(report_folder, f"dedupe_report_{timestamp}.csv")
+                try:
+                    write_csv_report(csv_path, scan_result.groups, scan_result.primary_map, results)
+                    self._message_queue.put(('status', f"CSV report written: {csv_path}"))
+                except OSError as e:
+                    self._message_queue.put(('status', f"Failed to write CSV report: {e}"))
+
             if self._cancel_requested:
                 self._message_queue.put(('cancelled', None))
             else:
                 self._message_queue.put(('complete', {
                     'total': total, 'unique': unique, 'moved': moved,
-                    'permanent_delete': permanent_delete
+                    'permanent_delete': permanent_delete, 'compare_mode': compare_mode
                 }))
         except Exception as e:
             self._message_queue.put(('error', {'type': 'unexpected', 'message': str(e)}))
@@ -254,6 +394,11 @@ class MainWindow(QMainWindow):
                 elif msg_type == 'progress':
                     self.progress_bar.setValue(data['current'])
                     self.progress_label.setText(f"{data['current']}%: {data['filename']}")
+
+                elif msg_type == 'scan_complete':
+                    self._poll_timer.stop()
+                    self._on_scan_complete(data)
+                    return
 
                 elif msg_type == 'complete':
                     self._poll_timer.stop()
@@ -273,20 +418,68 @@ class MainWindow(QMainWindow):
         except queue.Empty:
             pass
 
+    def _on_scan_complete(self, scan_result: ScanResult):
+        if not scan_result.groups:
+            self._is_processing = False
+            self.dedupe_btn.setEnabled(True)
+            self.cancel_btn.setEnabled(False)
+            self.progress_label.setText("No duplicates found")
+            noun = "matches" if self._pending_compare_mode else "duplicates"
+            QMessageBox.information(self, "No Duplicates", f"No {noun} were found.")
+            return
+
+        self.cancel_btn.setEnabled(False)
+        dialog = PreviewDialog(
+            self._deduplicator, scan_result,
+            compare_mode=self._pending_compare_mode,
+            permanent_delete=self._pending_permanent_delete,
+            parent=self
+        )
+        if dialog.exec():
+            final_scan_result = dialog.get_scan_result()
+            self.status_list.addItem("Review confirmed, applying changes...")
+            self.status_list.scrollToBottom()
+            self.cancel_btn.setEnabled(True)
+            thread = threading.Thread(
+                target=self._execute_worker,
+                args=(final_scan_result, self._pending_source_folder, self._pending_target_folder,
+                      self._pending_permanent_delete, self._pending_compare_mode,
+                      self.csv_report_check.isChecked()),
+                daemon=True
+            )
+            thread.start()
+            self._poll_timer.start()
+        else:
+            self._is_processing = False
+            self.dedupe_btn.setEnabled(True)
+            self.cancel_btn.setEnabled(False)
+            self.progress_label.setText("Cancelled")
+            self.status_list.addItem("Review cancelled, no files were changed")
+            self.status_list.scrollToBottom()
+
     def _on_complete(self, data: dict):
         self._is_processing = False
         self.dedupe_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.progress_bar.setValue(100)
         self.progress_label.setText("Complete!")
-        action_word = "deleted" if data.get('permanent_delete') else "moved to Dupes"
-        QMessageBox.information(
-            self, "Success",
-            f"Deduplication complete!\n\n"
-            f"Total files scanned: {data['total']}\n"
-            f"Unique files: {data['unique']}\n"
-            f"Duplicates {action_word}: {data['moved']}"
-        )
+        action_word = "deleted" if data.get('permanent_delete') else "moved"
+        if data.get('compare_mode'):
+            QMessageBox.information(
+                self, "Success",
+                f"Compare complete!\n\n"
+                f"Files scanned in target folder: {data['total']}\n"
+                f"Matches {action_word}: {data['moved']}"
+            )
+        else:
+            dest = "" if data.get('permanent_delete') else " to Dupes"
+            QMessageBox.information(
+                self, "Success",
+                f"Deduplication complete!\n\n"
+                f"Total files scanned: {data['total']}\n"
+                f"Unique files: {data['unique']}\n"
+                f"Duplicates {action_word}{dest}: {data['moved']}"
+            )
 
     def _on_cancelled(self):
         self._is_processing = False
