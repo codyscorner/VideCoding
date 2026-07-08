@@ -1,18 +1,27 @@
 """
-Calculator v1.0.0
+Calculator v1.1.0
 Dark Blue / Midnight theme PyQt6 Calculator
 """
 
+import re
 import sys
+import math
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
-    QVBoxLayout, QGridLayout, QPushButton, QLabel
+    QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QLabel,
+    QListWidget, QListWidgetItem
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont, QIcon
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
+
+_NUM_RE = re.compile(r'(\d*\.?\d+)$')
+
+BASE_W, BASE_H = 370, 580
+SCI_EXTRA_H = 78
+HIST_EXTRA_W = 210
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +53,7 @@ QMainWindow {
 
 #result_label {
     color: #e8eaf6;
-    font-size: 42px;
+    font-size: 36px;
     font-weight: bold;
     qproperty-alignment: AlignRight;
     background: transparent;
@@ -75,7 +84,7 @@ QPushButton:pressed {
     background-color: #252932;
 }
 
-/* ── Operator buttons (+, -, *, /) ── */
+/* ── Operator buttons (+, -, *, /, ^) ── */
 QPushButton[btnClass="operator"] {
     background-color: #2e3340;
     color: #90caf9;
@@ -119,10 +128,67 @@ QPushButton[btnClass="memory"]:hover {
     background-color: #223060;
 }
 
+/* ── Utility buttons (Copy / History / Scientific) ── */
+QPushButton[btnClass="util"] {
+    background-color: #1a2340;
+    color: #7986cb;
+    font-size: 13px;
+    font-weight: 500;
+    min-height: 32px;
+    border-radius: 8px;
+}
+QPushButton[btnClass="util"]:hover {
+    background-color: #223060;
+}
+QPushButton[btnClass="util"][active="true"] {
+    background-color: #3d5afe;
+    color: #ffffff;
+}
+
+/* ── Scientific function buttons ── */
+QPushButton[btnClass="sci"] {
+    background-color: #2a2f3d;
+    color: #b39ddb;
+    font-size: 16px;
+    min-height: 46px;
+}
+QPushButton[btnClass="sci"]:hover {
+    background-color: #363c4d;
+}
+
 /* ── Zero button (wide) ── */
 QPushButton#btn_zero {
     text-align: left;
     padding-left: 22px;
+}
+
+/* ── History panel ── */
+#history_panel {
+    background-color: #20242c;
+    border-radius: 14px;
+}
+#history_title {
+    color: #8a8fa8;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 4px 8px;
+    background: transparent;
+}
+QListWidget#history_list {
+    background-color: transparent;
+    border: none;
+    color: #e8eaf6;
+    font-size: 13px;
+}
+QListWidget#history_list::item {
+    padding: 6px 8px;
+    border-radius: 6px;
+}
+QListWidget#history_list::item:hover {
+    background-color: #2e3340;
+}
+QListWidget#history_list::item:selected {
+    background-color: #3d5afe;
 }
 """
 
@@ -136,19 +202,22 @@ class Calculator(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"Midnight Calculator  v{__version__}")
-        self.setFixedSize(QSize(370, 580))
         icon_path = Path(__file__).parent / "app_icon.ico"
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
 
         # State
-        self._expression = ""      # full expression string shown above result
-        self._current = "0"        # number being typed
-        self._result_shown = False # True after = is pressed
-        self._memory = 0.0         # memory register
+        self._expr = "0"           # the full expression being built/eval'd
+        self._fresh = True         # True right after '=' or AC — next digit starts new entry
+        self._memory = 0.0
+        self.sci_mode = False
+        self.history_visible = False
 
         self._build_ui()
         self._apply_style()
+        self._update_window_size()
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFocus()
 
     # ── UI Construction ──────────────────────────────────────────────────
     def _build_ui(self):
@@ -156,9 +225,15 @@ class Calculator(QMainWindow):
         central.setObjectName("container")
         self.setCentralWidget(central)
 
-        root = QVBoxLayout(central)
-        root.setContentsMargins(10, 10, 10, 10)
+        outer = QHBoxLayout(central)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(8)
+
+        left = QWidget()
+        root = QVBoxLayout(left)
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(6)
+        outer.addWidget(left)
 
         # Display
         display_widget = QWidget()
@@ -173,7 +248,7 @@ class Calculator(QMainWindow):
 
         self.result_label = QLabel("0")
         self.result_label.setObjectName("result_label")
-        self.result_label.setFont(QFont("Segoe UI", 40, QFont.Weight.Bold))
+        self.result_label.setFont(QFont("Segoe UI", 36, QFont.Weight.Bold))
         self.result_label.setMinimumHeight(70)
 
         disp_layout.addWidget(self.expr_label)
@@ -186,9 +261,28 @@ class Calculator(QMainWindow):
         grid = QGridLayout(btn_area)
         grid.setSpacing(8)
 
+        # Utility row — Copy / History / Scientific toggle
+        copy_btn = QPushButton("Copy")
+        copy_btn.setProperty("btnClass", "util")
+        copy_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        copy_btn.clicked.connect(self._copy_result)
+        grid.addWidget(copy_btn, 0, 0, 1, 2)
+
+        self.hist_btn = QPushButton("Hist")
+        self.hist_btn.setProperty("btnClass", "util")
+        self.hist_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.hist_btn.clicked.connect(self._toggle_history)
+        grid.addWidget(self.hist_btn, 0, 2, 1, 1)
+
+        self.sci_btn = QPushButton("Sci")
+        self.sci_btn.setProperty("btnClass", "util")
+        self.sci_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.sci_btn.clicked.connect(self._toggle_sci)
+        grid.addWidget(self.sci_btn, 0, 3, 1, 1)
+
         # Memory row
         mem_buttons = [
-            ("MC", 0, 0), ("MR", 0, 1), ("M-", 0, 2), ("M+", 0, 3),
+            ("MC", 1, 0), ("MR", 1, 1), ("M-", 1, 2), ("M+", 1, 3),
         ]
         for label, row, col in mem_buttons:
             btn = self._make_button(label, "memory")
@@ -197,29 +291,29 @@ class Calculator(QMainWindow):
         # Main button layout — row, col, rowspan, colspan
         main_buttons = [
             # label,      class,      row, col, rspan, cspan
-            ("AC",        "function", 1,   0,   1,     1),
-            ("+/-",       "function", 1,   1,   1,     1),
-            ("%",         "function", 1,   2,   1,     1),
-            ("/",         "operator", 1,   3,   1,     1),
+            ("AC",        "function", 2,   0,   1,     1),
+            ("+/-",       "function", 2,   1,   1,     1),
+            ("%",         "function", 2,   2,   1,     1),
+            ("/",         "operator", 2,   3,   1,     1),
 
-            ("7",         "digit",    2,   0,   1,     1),
-            ("8",         "digit",    2,   1,   1,     1),
-            ("9",         "digit",    2,   2,   1,     1),
-            ("*",         "operator", 2,   3,   1,     1),
+            ("7",         "digit",    3,   0,   1,     1),
+            ("8",         "digit",    3,   1,   1,     1),
+            ("9",         "digit",    3,   2,   1,     1),
+            ("*",         "operator", 3,   3,   1,     1),
 
-            ("4",         "digit",    3,   0,   1,     1),
-            ("5",         "digit",    3,   1,   1,     1),
-            ("6",         "digit",    3,   2,   1,     1),
-            ("-",         "operator", 3,   3,   1,     1),
+            ("4",         "digit",    4,   0,   1,     1),
+            ("5",         "digit",    4,   1,   1,     1),
+            ("6",         "digit",    4,   2,   1,     1),
+            ("-",         "operator", 4,   3,   1,     1),
 
-            ("1",         "digit",    4,   0,   1,     1),
-            ("2",         "digit",    4,   1,   1,     1),
-            ("3",         "digit",    4,   2,   1,     1),
-            ("+",         "operator", 4,   3,   1,     1),
+            ("1",         "digit",    5,   0,   1,     1),
+            ("2",         "digit",    5,   1,   1,     1),
+            ("3",         "digit",    5,   2,   1,     1),
+            ("+",         "operator", 5,   3,   1,     1),
 
-            ("0",         "digit",    5,   0,   1,     2),
-            (".",         "digit",    5,   2,   1,     1),
-            ("=",         "equals",   5,   3,   1,     1),
+            ("0",         "digit",    6,   0,   1,     2),
+            (".",         "digit",    6,   2,   1,     1),
+            ("=",         "equals",   6,   3,   1,     1),
         ]
 
         for item in main_buttons:
@@ -232,29 +326,84 @@ class Calculator(QMainWindow):
                 )
             grid.addWidget(btn, row, col, rspan, cspan)
 
+        # Scientific row — hidden until toggled on
+        self.sci_row = QWidget()
+        sci_grid = QGridLayout(self.sci_row)
+        sci_grid.setContentsMargins(0, 0, 0, 0)
+        sci_grid.setSpacing(8)
+        sci_buttons = [
+            ("(", "(", "sci"),
+            (")", ")", "sci"),
+            ("√", "√", "sci"),
+            ("xʸ", "^", "sci"),
+        ]
+        for col, (text, label, cls) in enumerate(sci_buttons):
+            btn = self._make_button(label, cls, text=text)
+            sci_grid.addWidget(btn, 0, col)
+        grid.addWidget(self.sci_row, 7, 0, 1, 4)
+        self.sci_row.setVisible(False)
+
         root.addWidget(btn_area)
 
-    def _make_button(self, label: str, cls: str) -> QPushButton:
+        # History panel — hidden until toggled on
+        self.history_panel = QWidget()
+        self.history_panel.setObjectName("history_panel")
+        hist_layout = QVBoxLayout(self.history_panel)
+        hist_layout.setContentsMargins(8, 8, 8, 8)
+        hist_title = QLabel("History")
+        hist_title.setObjectName("history_title")
+        self.history_list = QListWidget()
+        self.history_list.setObjectName("history_list")
+        self.history_list.itemClicked.connect(self._on_history_clicked)
+        hist_layout.addWidget(hist_title)
+        hist_layout.addWidget(self.history_list)
+        outer.addWidget(self.history_panel)
+        self.history_panel.setVisible(False)
+
+    def _make_button(self, label: str, cls: str, text: str = None) -> QPushButton:
         """Create a styled button and connect it to the handler."""
-        btn = QPushButton(label)
+        btn = QPushButton(text if text is not None else label)
         btn.setProperty("btnClass", cls)
-        # Connect all buttons to one dispatcher
+        btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn.clicked.connect(lambda _, l=label: self._on_button(l))
         return btn
 
     def _apply_style(self):
         QApplication.instance().setStyleSheet(QSS)
 
+    def _update_window_size(self):
+        w = BASE_W + (HIST_EXTRA_W if self.history_visible else 0)
+        h = BASE_H + (SCI_EXTRA_H if self.sci_mode else 0)
+        self.setFixedSize(QSize(w, h))
+
     # ── Display helpers ──────────────────────────────────────────────────
     def _set_display(self, value: str, expression: str = ""):
         self.result_label.setText(value)
         self.expr_label.setText(expression)
 
+    def _update_display(self):
+        self._set_display(self._expr if self._expr else "0", "")
+
     def _format(self, value: float) -> str:
-        """Return a clean string for a float — drop '.0' for integers."""
+        """Return a clean, comma-grouped string for a float — drop '.0' for integers."""
         if value == int(value) and abs(value) < 1e15:
             return f"{int(value):,}"
         return f"{value:,.10g}"
+
+    def _format_plain(self, value: float) -> str:
+        """Return a clean string with no comma grouping, safe to feed back into an expression."""
+        if value == int(value) and abs(value) < 1e15:
+            return str(int(value))
+        return f"{value:.10g}"
+
+    def _segment_start(self) -> int:
+        """Index of the start of the number/segment currently being typed."""
+        idx = -1
+        for ch in "+-*/^(":
+            pos = self._expr.rfind(ch)
+            if pos > idx:
+                idx = pos
+        return idx + 1
 
     # ── Button dispatcher ────────────────────────────────────────────────
     def _on_button(self, label: str):
@@ -263,14 +412,18 @@ class Calculator(QMainWindow):
             self._input_digit(label)
         elif label == ".":
             self._input_dot()
-        elif label in ("+", "-", "*", "/"):
+        elif label in ("+", "-", "*", "/", "^"):
             self._input_operator(label)
+        elif label in ("(", ")"):
+            self._input_paren(label)
+        elif label == "√":
+            self._input_sqrt()
         elif label == "=":
             self._calculate()
         elif label == "AC":
             self._clear_all()
         elif label == "+/-":
-            self._negate()
+            self._toggle_sign()
         elif label == "%":
             self._percent()
         elif label == "MC":
@@ -284,104 +437,243 @@ class Calculator(QMainWindow):
 
     # ── Input logic ──────────────────────────────────────────────────────
     def _input_digit(self, digit: str):
-        if self._result_shown:
-            self._current = digit
-            self._expression = ""
-            self._result_shown = False
-        elif self._current == "0":
-            self._current = digit
+        if self._fresh:
+            self._expr = digit
+            self._fresh = False
+        elif self._expr in ("", "0"):
+            self._expr = digit
         else:
-            if len(self._current) < 15:
-                self._current += digit
-        self._set_display(self._current, self._expression)
+            m = _NUM_RE.search(self._expr)
+            if m and m.group(1) == "0" and m.end() == len(self._expr):
+                self._expr = self._expr[:m.start()] + digit
+            else:
+                self._expr += digit
+        self._update_display()
 
     def _input_dot(self):
-        if self._result_shown:
-            self._current = "0."
-            self._expression = ""
-            self._result_shown = False
-        elif "." not in self._current:
-            self._current += "."
-        self._set_display(self._current, self._expression)
+        if self._fresh:
+            self._expr = "0."
+            self._fresh = False
+            self._update_display()
+            return
+        segment = self._expr[self._segment_start():]
+        if "." in segment:
+            return
+        if self._expr in ("", "0"):
+            self._expr = "0."
+        elif not segment:
+            self._expr += "0."
+        else:
+            self._expr += "."
+        self._update_display()
 
     def _input_operator(self, op: str):
-        # If we have a pending expression, evaluate first
-        if self._expression and not self._result_shown:
-            self._calculate(chain=True)
-        display_op = op
-        self._expression = f"{self._current} {display_op}"
-        self._current = "0"
-        self._result_shown = False
-        self._set_display(self._current, self._expression)
+        if self._fresh:
+            self._fresh = False
+        if not self._expr:
+            self._expr = "-" if op == "-" else "0"
+            self._update_display()
+            return
+        last = self._expr[-1]
+        if last in "+-*/^":
+            if op == "-" and last != "-":
+                self._expr += op
+            else:
+                self._expr = self._expr[:-1] + op
+        elif last == "(":
+            if op == "-":
+                self._expr += op
+        else:
+            self._expr += op
+        self._update_display()
 
-    def _calculate(self, chain: bool = False):
-        if not self._expression:
+    def _input_paren(self, p: str):
+        if p == "(":
+            if self._fresh or not self._expr or self._expr == "0":
+                self._expr = "("
+                self._fresh = False
+            elif self._expr[-1] not in "+-*/^(":
+                self._expr += "*("
+            else:
+                self._expr += "("
+        else:
+            opens = self._expr.count("(")
+            closes = self._expr.count(")")
+            if opens > closes and self._expr and self._expr[-1] not in "+-*/^(":
+                self._expr += ")"
+        self._update_display()
+
+    def _input_sqrt(self):
+        if self._fresh or not self._expr or self._expr == "0":
+            self._expr = "√("
+            self._fresh = False
+        elif self._expr[-1] not in "+-*/^(":
+            self._expr += "*√("
+        else:
+            self._expr += "√("
+        self._update_display()
+
+    def _eval_expr(self, expr_raw: str) -> float:
+        opens = expr_raw.count("(")
+        closes = expr_raw.count(")")
+        balanced = expr_raw + (")" * max(0, opens - closes))
+        py_expr = balanced.replace("√(", "sqrt(").replace("^", "**")
+        return eval(py_expr, {"__builtins__": {}}, {"sqrt": math.sqrt})
+
+    def _calculate(self):
+        if not self._expr or self._fresh:
             return
         try:
-            expr = f"{self._expression} {self._current}"
-            # Safe eval: only allow numbers and operators
-            result = eval(expr)  # expression is fully controlled by our UI
+            result = self._eval_expr(self._expr)
         except ZeroDivisionError:
-            self._set_display("Cannot ÷ 0", self._expression + " " + self._current)
-            self._expression = ""
-            self._current = "0"
-            self._result_shown = True
+            self._set_display("Cannot ÷ 0", self._expr)
+            self._expr = "0"
+            self._fresh = True
             return
         except Exception:
-            self._set_display("Error", "")
-            self._expression = ""
-            self._current = "0"
-            self._result_shown = True
+            self._set_display("Error", self._expr)
+            self._expr = "0"
+            self._fresh = True
             return
 
         formatted = self._format(result)
-        if chain:
-            self._current = str(result)
-        else:
-            shown_expr = f"{self._expression} {self._current} ="
-            self._set_display(formatted, shown_expr)
-            self._current = str(result)
-            self._result_shown = True
-            self._expression = ""
+        plain_result = self._format_plain(result)
+        self._add_history(self._expr, formatted, plain_result)
+        self._set_display(formatted, self._expr + " =")
+        self._expr = plain_result
+        self._fresh = True
 
     def _clear_all(self):
-        self._expression = ""
-        self._current = "0"
-        self._result_shown = False
+        self._expr = "0"
+        self._fresh = False
         self._set_display("0", "")
 
-    def _negate(self):
-        try:
-            val = float(self._current)
-            val = -val
-            self._current = str(val) if val != int(val) else str(int(val))
-            self._set_display(self._current, self._expression)
-        except ValueError:
-            pass
+    def _backspace(self):
+        if self._fresh:
+            return
+        if self._expr.endswith("√("):
+            self._expr = self._expr[:-2]
+        else:
+            self._expr = self._expr[:-1]
+        if not self._expr:
+            self._expr = "0"
+        self._update_display()
+
+    def _toggle_sign(self):
+        m = _NUM_RE.search(self._expr)
+        if not m:
+            return
+        start = m.start()
+        before = self._expr[:start]
+        if before.endswith("-") and (len(before) == 1 or before[-2] in "+-*/^("):
+            new_expr = before[:-1] + self._expr[start:]
+        else:
+            new_expr = before + "-" + self._expr[start:]
+        self._expr = new_expr
+        self._fresh = False
+        self._update_display()
 
     def _percent(self):
-        try:
-            val = float(self._current) / 100
-            self._current = str(val) if val != int(val) else str(int(val))
-            self._set_display(self._current, self._expression)
-        except ValueError:
-            pass
+        m = _NUM_RE.search(self._expr)
+        if not m:
+            return
+        val = float(m.group(1)) / 100
+        numeral = self._format_plain(val)
+        self._expr = self._expr[:m.start()] + numeral + self._expr[m.end():]
+        self._fresh = False
+        self._update_display()
 
     # ── Memory logic ─────────────────────────────────────────────────────
-    def _memory_op(self, op: str):
+    def _get_operand_value(self) -> float:
+        m = _NUM_RE.search(self._expr)
+        if m and m.end() == len(self._expr):
+            return float(m.group(1))
         try:
-            val = float(self._current)
-            if op == "+":
-                self._memory += val
-            else:
-                self._memory -= val
-        except ValueError:
-            pass
+            return self._eval_expr(self._expr)
+        except Exception:
+            return 0.0
+
+    def _memory_op(self, op: str):
+        val = self._get_operand_value()
+        if op == "+":
+            self._memory += val
+        else:
+            self._memory -= val
 
     def _recall_memory(self):
-        self._current = str(self._memory) if self._memory != int(self._memory) else str(int(self._memory))
-        self._result_shown = False
-        self._set_display(self._current, self._expression)
+        val_str = self._format_plain(self._memory)
+        m = _NUM_RE.search(self._expr)
+        if m and m.end() == len(self._expr) and not self._fresh:
+            self._expr = self._expr[:m.start()] + val_str
+        elif self._fresh or self._expr in ("", "0"):
+            self._expr = val_str
+        else:
+            self._expr += val_str
+        self._fresh = False
+        self._update_display()
+
+    # ── History panel ─────────────────────────────────────────────────────
+    def _add_history(self, expr_display: str, formatted_result: str, plain_result: str):
+        item = QListWidgetItem(f"{expr_display} = {formatted_result}")
+        item.setData(Qt.ItemDataRole.UserRole, plain_result)
+        self.history_list.insertItem(0, item)
+        while self.history_list.count() > 50:
+            self.history_list.takeItem(self.history_list.count() - 1)
+
+    def _on_history_clicked(self, item: QListWidgetItem):
+        val = item.data(Qt.ItemDataRole.UserRole)
+        self._expr = val
+        self._fresh = False
+        self._update_display()
+
+    def _toggle_history(self):
+        self.history_visible = not self.history_visible
+        self.history_panel.setVisible(self.history_visible)
+        self.hist_btn.setProperty("active", "true" if self.history_visible else "false")
+        self.hist_btn.style().unpolish(self.hist_btn)
+        self.hist_btn.style().polish(self.hist_btn)
+        self._update_window_size()
+
+    def _toggle_sci(self):
+        self.sci_mode = not self.sci_mode
+        self.sci_row.setVisible(self.sci_mode)
+        self.sci_btn.setProperty("active", "true" if self.sci_mode else "false")
+        self.sci_btn.style().unpolish(self.sci_btn)
+        self.sci_btn.style().polish(self.sci_btn)
+        self._update_window_size()
+
+    def _copy_result(self):
+        QApplication.clipboard().setText(self.result_label.text())
+
+    # ── Keyboard support ──────────────────────────────────────────────────
+    def keyPressEvent(self, event):
+        key = event.key()
+        text = event.text()
+
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._calculate()
+            return
+        if key == Qt.Key.Key_Backspace:
+            self._backspace()
+            return
+        if key == Qt.Key.Key_Escape:
+            self._clear_all()
+            return
+
+        if text in "0123456789":
+            self._input_digit(text)
+        elif text == ".":
+            self._input_dot()
+        elif text == "=":
+            self._calculate()
+        elif text in "+-*/^":
+            self._input_operator(text)
+        elif text in "()":
+            self._input_paren(text)
+        elif text == "%":
+            self._percent()
+        else:
+            super().keyPressEvent(event)
 
 
 # ---------------------------------------------------------------------------
