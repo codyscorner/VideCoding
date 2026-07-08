@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-from worker import PROMPT_SEPARATOR
+from worker import PROMPT_SEPARATOR, parse_prompts
 from ui.styles import COLORS
 
 
@@ -25,7 +25,9 @@ class PromptEditorDialog(QDialog):
 
         hint = QLabel(
             f'Separate prompts with:  <b>{PROMPT_SEPARATOR}</b>  on its own line.  '
-            f'Each prompt can span multiple lines.'
+            f'Each prompt can span multiple lines.  '
+            f'Add a weight to bias random selection: <b>---- PROMPT START x3 -----</b> '
+            f'(3x more likely to be picked than a weight-1 prompt).'
         )
         hint.setObjectName("subtitle")
         hint.setWordWrap(True)
@@ -64,9 +66,7 @@ class PromptEditorDialog(QDialog):
         self._editor.setPlainText(text)
 
     def _update_count(self):
-        text   = self._editor.toPlainText()
-        blocks = [b.strip() for b in text.split(PROMPT_SEPARATOR) if b.strip()]
-        n      = len(blocks)
+        n = len(parse_prompts(self._editor.toPlainText()))
         self._count_lbl.setText(f"{n} prompt{'s' if n != 1 else ''} detected")
 
     def _save(self):

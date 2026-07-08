@@ -14,11 +14,17 @@ from PyQt6.QtWidgets import (
     QSpinBox,
 )
 
+import csv
+
 from config import ConfigManager
-from worker import BatchStyleWorker, load_prompts, IMAGE_EXTS, OUTPUT_EXTS
+from worker import (
+    BatchStyleWorker, load_prompts, log_prompt_used, PromptEntry,
+    IMAGE_EXTS, OUTPUT_EXTS, PROMPT_LOG_NAME,
+)
 from ui.styles import COLORS
 from ui.settings_dialog import SettingsDialog
 from ui.prompt_editor import PromptEditorDialog
+from ui.pin_dialog import PinPromptDialog
 
 THUMB_SIZE = 120
 
@@ -451,13 +457,24 @@ class ThumbnailGrid(QListWidget):
             f"background-color: rgba(94,75,219,0.25); }}"
         )
 
-    def add_item(self, img: QImage, key: str, label: str, is_processed: bool = False):
+    def add_item(self, img: QImage, key: str, label: str, is_processed: bool = False,
+                 is_pinned: bool = False):
         pix    = QPixmap.fromImage(img)
         canvas = QPixmap(THUMB_SIZE, THUMB_SIZE)
         canvas.fill(Qt.GlobalColor.black)
         painter = QPainter(canvas)
         painter.drawPixmap((THUMB_SIZE - pix.width()) // 2,
                            (THUMB_SIZE - pix.height()) // 2, pix)
+        if is_pinned:
+            badge = 24
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setBrush(QColor(230, 150, 20, 235))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(3, 3, badge, badge)
+            painter.setPen(QColor(255, 255, 255))
+            f = QFont("Arial", 12, QFont.Weight.Bold)
+            painter.setFont(f)
+            painter.drawText(3, 3, badge, badge, Qt.AlignmentFlag.AlignCenter, "📌")
         if is_processed:
             badge = 26
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -502,11 +519,13 @@ class MainWindow(QMainWindow):
         self._config   = config
         self._base_dir = base_dir
         self._version  = version
-        self._prompts: list[str] = []
+        self._prompts: list[PromptEntry] = []
+        self._pinned: dict[str, str] = {}  # image stem -> pinned prompt text
         self._worker: BatchStyleWorker | None = None
         self._loader: ImageLoaderThread | None = None
         self._lib_loader: LibraryLoaderThread | None = None
         self._last_lib_dir: str = ""
+        self._reroll_worker: BatchStyleWorker | None = None
         self._processed_count: int = 0
         self._auto_mode = False
         self._auto_stop_requested = False
@@ -621,6 +640,8 @@ class MainWindow(QMainWindow):
         left_v = QVBoxLayout(left_w)
         left_v.setContentsMargins(0, 0, 0, 0)
         self._thumb_grid = ThumbnailGrid()
+        self._thumb_grid.itemDoubleClicked.connect(self._on_thumb_double_clicked)
+        self._thumb_grid.setToolTip("Double-click an image to pin a specific style to it")
         left_v.addWidget(self._thumb_grid)
         splitter.addWidget(left_w)
 
@@ -768,6 +789,12 @@ class MainWindow(QMainWindow):
         self._lib_view_btn.setEnabled(False)
         self._lib_view_btn.clicked.connect(self._view_selected)
 
+        self._lib_reroll_btn = QPushButton("🎲  Re-roll")
+        self._lib_reroll_btn.setFixedHeight(36)
+        self._lib_reroll_btn.setEnabled(False)
+        self._lib_reroll_btn.setToolTip("Re-process this image with a new random style (source must still be in the input folder)")
+        self._lib_reroll_btn.clicked.connect(self._reroll_selected)
+
         self._lib_delete_btn = QPushButton("🗑  Delete")
         self._lib_delete_btn.setObjectName("cancel_btn")
         self._lib_delete_btn.setFixedHeight(36)
@@ -782,6 +809,8 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(refresh_btn)
         toolbar.addSpacing(4)
         toolbar.addWidget(self._lib_view_btn)
+        toolbar.addSpacing(4)
+        toolbar.addWidget(self._lib_reroll_btn)
         toolbar.addSpacing(4)
         toolbar.addWidget(self._lib_delete_btn)
         layout.addLayout(toolbar)
@@ -875,7 +904,11 @@ class MainWindow(QMainWindow):
         processed = self._existing_output_stems()
         self._processed_count = len(processed)
         self._loader = ImageLoaderThread(input_dir, processed_stems=processed, show_all=show_all)
-        self._loader.image_ready.connect(self._thumb_grid.add_item)
+        self._loader.image_ready.connect(
+            lambda img, key, lbl, is_proc: self._thumb_grid.add_item(
+                img, key, lbl, is_proc, Path(key).stem in self._pinned
+            )
+        )
         self._loader.thumbnails_needed.connect(self._on_img_thumbs_needed)
         self._loader.gen_progress.connect(self._on_img_gen_progress)
         self._loader.progress.connect(self._on_img_load_progress)
@@ -917,11 +950,34 @@ class MainWindow(QMainWindow):
 
     def _refresh_prompt_list(self):
         self._prompt_list.clear()
-        for i, p in enumerate(self._prompts):
-            preview = p.replace("\n", " ")[:90]
-            self._prompt_list.addItem(f"{i+1}.  {preview}")
+        for i, entry in enumerate(self._prompts):
+            preview = entry.text.replace("\n", " ")[:90]
+            label = f"{i+1}.  {preview}"
+            if entry.weight != 1.0:
+                label += f"   [{entry.weight:g}x]"
+            self._prompt_list.addItem(label)
         n = len(self._prompts)
         self._prompt_count_lbl.setText(f"{n} style prompt{'s' if n != 1 else ''} loaded")
+
+    # ------------------------------------------------------------------ #
+    # Per-image prompt pinning
+    # ------------------------------------------------------------------ #
+
+    def _on_thumb_double_clicked(self, item: QListWidgetItem):
+        key = item.data(Qt.ItemDataRole.UserRole)
+        if not key:
+            return
+        stem = Path(key).stem
+        if not self._prompts:
+            self._append_log("No prompts loaded — configure a prompts file before pinning.")
+            return
+        dlg = PinPromptDialog(Path(key).name, self._prompts, self._pinned.get(stem), self)
+        if dlg.exec() and dlg.chosen is not None:
+            if dlg.chosen == "":
+                self._pinned.pop(stem, None)
+            else:
+                self._pinned[stem] = dlg.chosen
+            self._reload_images()
 
     # ------------------------------------------------------------------ #
     # Data loading — library tab
@@ -985,6 +1041,7 @@ class MainWindow(QMainWindow):
         has_sel = bool(keys)
         self._lib_view_btn.setEnabled(has_sel)
         self._lib_delete_btn.setEnabled(has_sel)
+        self._lib_reroll_btn.setEnabled(len(keys) == 1 and self._worker is None)
         total = self._lib_grid.count()
         if has_sel:
             n = len(keys)
@@ -1054,6 +1111,99 @@ class MainWindow(QMainWindow):
         )
 
     # ------------------------------------------------------------------ #
+    # Re-roll
+    # ------------------------------------------------------------------ #
+
+    def _last_prompt_index_for(self, image_name: str) -> int | None:
+        output_dir = Path(self._config.get("output_dir", ""))
+        log_path = output_dir / PROMPT_LOG_NAME
+        if not log_path.is_file():
+            return None
+        last = None
+        try:
+            with open(log_path, "r", newline="", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    if row.get("image") == image_name:
+                        last = row.get("prompt_index")
+        except OSError:
+            return None
+        try:
+            return int(last)
+        except (TypeError, ValueError):
+            return None
+
+    def _reroll_selected(self):
+        keys = self._lib_grid.selected_keys()
+        if len(keys) != 1:
+            return
+        out_path = Path(keys[0])
+        stem = out_path.stem
+        input_dir = Path(self._config.get("input_dir", ""))
+        source = next(
+            (p for ext in IMAGE_EXTS if (p := input_dir / f"{stem}{ext}").is_file()),
+            None,
+        )
+        if source is None:
+            QMessageBox.warning(
+                self, "Re-roll",
+                f"Source image for '{out_path.name}' was not found in the input folder — cannot re-roll."
+            )
+            return
+        if not self._prompts:
+            QMessageBox.warning(self, "Re-roll", "No prompts loaded — configure a prompts file in Settings.")
+            return
+
+        reply = QMessageBox.question(
+            self, "Re-roll",
+            f"Re-process {out_path.name} with a new random style?\n\nThis will overwrite the current output.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        prev_idx = self._last_prompt_index_for(out_path.name)
+        texts = [e.text for e in self._prompts]
+        n = len(texts)
+        if n == 1:
+            idx = 0
+        else:
+            available = [i for i in range(n) if (i + 1) != prev_idx]
+            weights = [self._prompts[i].weight for i in available]
+            idx = random.choices(available, weights=weights, k=1)[0]
+        new_prompt = texts[idx]
+
+        reroll_config = self._config.get_all()
+        reroll_config["skip_existing"] = False
+
+        self._lib_reroll_btn.setEnabled(False)
+        self._lib_delete_btn.setEnabled(False)
+        self._lib_view_btn.setEnabled(False)
+        self._lib_status_lbl.setText(f"Re-rolling {out_path.name}…")
+
+        self._reroll_worker = BatchStyleWorker(
+            config=reroll_config,
+            prompts=self._prompts,
+            image_paths=[source],
+            fixed_prompt=new_prompt,
+            prompt_mode="random",
+        )
+        self._reroll_worker.log.connect(self._append_log)
+        self._reroll_worker.all_done.connect(self._on_reroll_done)
+        self._reroll_worker.error.connect(self._on_reroll_error)
+        self._reroll_worker.start()
+
+    def _on_reroll_done(self):
+        self._append_log("Re-roll complete.")
+        self._reroll_worker = None
+        self._populate_library(force=True)
+
+    def _on_reroll_error(self, msg: str):
+        self._append_log(f"Re-roll ERROR: {msg}")
+        QMessageBox.critical(self, "Re-roll Error", msg)
+        self._reroll_worker = None
+        self._on_lib_selection_changed()
+
+    # ------------------------------------------------------------------ #
     # Dialogs
     # ------------------------------------------------------------------ #
 
@@ -1087,31 +1237,33 @@ class MainWindow(QMainWindow):
                 for i in range(batch_size)]
 
     def _pick_next_auto_prompt(self) -> str:
-        mode = self._prompt_order_combo.currentData()
-        n = len(self._prompts)
+        mode  = self._prompt_order_combo.currentData()
+        texts = [e.text for e in self._prompts]
+        n     = len(texts)
 
         if mode == "sequential":
             idx = self._auto_prompt_cursor % n
             self._auto_prompt_cursor += 1
             self._last_auto_prompt_idx = idx
-            return self._prompts[idx]
+            return texts[idx]
 
         if mode == "evens_odds":
-            evens = self._prompts[0::2]
-            odds  = self._prompts[1::2]
+            evens = texts[0::2]
+            odds  = texts[1::2]
             seq   = evens + odds
             idx   = self._auto_prompt_cursor % len(seq)
             self._auto_prompt_cursor += 1
             self._last_auto_prompt_idx = idx
             return seq[idx]
 
-        # random — no consecutive repeat
+        # weighted random — no consecutive repeat
         if n == 1:
             self._last_auto_prompt_idx = 0
         else:
             available = [i for i in range(n) if i != self._last_auto_prompt_idx]
-            self._last_auto_prompt_idx = random.choice(available)
-        return self._prompts[self._last_auto_prompt_idx]
+            weights   = [self._prompts[i].weight for i in available]
+            self._last_auto_prompt_idx = random.choices(available, weights=weights, k=1)[0]
+        return texts[self._last_auto_prompt_idx]
 
     def _start_auto(self):
         batch = self._get_next_auto_batch()
@@ -1168,12 +1320,16 @@ class MainWindow(QMainWindow):
         self._start_btn.setEnabled(False)
         self._cancel_btn.setEnabled(True)
 
+        pinned = {p.stem: text for p, text in
+                  ((p, self._pinned.get(p.stem)) for p in images) if text}
+
         self._worker = BatchStyleWorker(
             config=self._config.get_all(),
             prompts=self._prompts,
             image_paths=images,
             fixed_prompt=fixed_prompt,
             prompt_mode=self._prompt_order_combo.currentData(),
+            pinned=pinned,
         )
         self._worker.progress.connect(lambda cur, _: self._progress.setValue(cur))
         self._worker.log.connect(self._append_log)
@@ -1270,5 +1426,7 @@ class MainWindow(QMainWindow):
             self._lib_loader.wait(3000)
         if self._worker:
             self._worker.cancel()
+        if self._reroll_worker:
+            self._reroll_worker.cancel()
         self._config.save()
         super().closeEvent(event)

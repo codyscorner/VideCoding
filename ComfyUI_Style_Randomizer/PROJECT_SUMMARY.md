@@ -68,7 +68,25 @@ Your ComfyUI workflow must be exported in **API format** (enable Dev Mode in Com
 | `PrimitiveStringMultiline` or first non-negative `CLIPTextEncode` | Injected with the randomly chosen style prompt |
 | `KSampler` / any node with `seed` or `noise_seed` | Randomized each image |
 
+## Prompt Weighting
+
+Add an optional weight to a prompt block's separator to bias random selection: `---- PROMPT START x3 -----` makes that prompt 3x more likely to be picked than a default (1x) prompt. Weighting only affects the **Random** order mode (not Sequential or Evens → Odds). Weights show next to each prompt in the list as `[3x]`.
+
+## Per-Image Pinning
+
+Double-click any thumbnail in the Randomizer grid to pin a specific style to that image — it always uses that prompt instead of the random/sequential pick, shown with a 📌 badge. Pins are session-based (cleared on app restart) and can be removed from the same pin dialog. Pinned images are still skipped by "Skip already-processed" once they've been run.
+
+## Prompt Usage Log
+
+Every successful generation appends a row to `prompt_log.csv` in the output folder: timestamp, output filename, prompt index, weight, note (e.g. `pinned`), and a preview of the prompt text used. Useful for auditing which prompt produced which output.
+
 ## Changelog
+
+### v1.5.0
+- **Prompt weighting** — optional `x<N>` weight suffix on the prompt separator biases random selection
+- **Per-image prompt pinning** — double-click a thumbnail to pin a specific style; shown with a 📌 badge
+- **Re-roll button** (Library tab) — re-process a single output image with a new random style (excludes the previously used prompt when possible); requires the source image to still be in the input folder
+- **Prompt-used metadata log** — `prompt_log.csv` written to the output folder recording which prompt was used for each output
 
 ### v1.4.0
 - **Prompt order modes** — dropdown in the bottom bar lets you choose how styles are assigned per image:
@@ -102,7 +120,7 @@ Your ComfyUI workflow must be exported in **API format** (enable Dev Mode in Com
 
 ## Future Enhancements
 
-- [ ] Per-image prompt override: click a thumbnail, pin a specific prompt
-- [ ] Prompt weighting: mark some prompts as more likely
-- [ ] "Re-roll" button on a finished image to re-run with a new random prompt
-- [ ] Prompt-used metadata sidecar/CSV so you know which prompt made which output
+- [x] Per-image prompt override: click a thumbnail, pin a specific prompt
+- [x] Prompt weighting: mark some prompts as more likely
+- [x] "Re-roll" button on a finished image to re-run with a new random prompt
+- [x] Prompt-used metadata sidecar/CSV so you know which prompt made which output
