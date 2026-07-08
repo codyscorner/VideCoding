@@ -12,6 +12,10 @@ A fully functional desktop calculator with a Midnight Dark Blue theme, built wit
 - Division-by-zero error handling
 - Memory functions: MC, MR, M+, M-
 - Comma-formatted number output
+- Full keyboard input (digits, operators, Enter, Backspace, Esc)
+- Calculation history panel — click any past result to reuse it
+- Copy result to clipboard button
+- Scientific mode: parentheses, square root (√), power (xʸ)
 
 ## Requirements
 
@@ -44,3 +48,4 @@ pyinstaller MidnightCalculator.spec
 | Version | Date | Notes |
 |---------|------|-------|
 | v1.0.0 | 2026-03-18 | Initial release |
+| v1.1.0 | 2026-07-08 | History panel, keyboard input, copy-to-clipboard, scientific mode |

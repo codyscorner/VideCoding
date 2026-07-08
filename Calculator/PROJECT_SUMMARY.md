@@ -1,4 +1,4 @@
-Midnight Calculator v1.0.0
+Midnight Calculator v1.1.0
 =========================
 
 A fully functional desktop calculator with a Midnight Dark Blue theme,
@@ -15,6 +15,10 @@ FEATURES
 - Division-by-zero error handling
 - Memory functions: MC, MR, M+, M-
 - Comma-formatted number output
+- Full keyboard input (digits, operators, Enter, Backspace, Esc)
+- Calculation history panel — click any past result to reuse it
+- Copy result to clipboard button
+- Scientific mode: parentheses, square root (√), power (xʸ)
 
 
 FILES
@@ -44,21 +48,22 @@ BUILD EXE
 
 USAGE
 -----
-  - Click number buttons or use keyboard to input values
+  - Click number buttons or use the keyboard to input values
   - Press an operator (+, -, *, /) to chain calculations
-  - Press = to evaluate the expression
-  - AC clears everything
+  - Press = (or Enter) to evaluate the expression
+  - AC (or Esc) clears everything; Backspace deletes the last character
   - Memory buttons store and recall a value across calculations
+  - "Hist" toggles the history panel — click a past entry to reuse its result
+  - "Sci" toggles scientific mode: ( ) parentheses, √ square root, xʸ power
+  - "Copy" copies the displayed result to the clipboard
 
 
 VERSION HISTORY
 ---------------
   v1.0.0  2026-03-18  Initial release
+  v1.1.0  2026-07-08  History panel, keyboard input, copy-to-clipboard, scientific mode
 
 
 FUTURE ENHANCEMENTS
 --------------------
-  - Calculation history panel (click to reuse a result)
-  - Keyboard input support (if not already complete)
-  - Copy result to clipboard button
-  - Scientific mode (sqrt, exponents, parentheses)
+  (none currently planned)
