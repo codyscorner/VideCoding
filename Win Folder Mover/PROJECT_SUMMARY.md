@@ -95,3 +95,10 @@ Python · PyQt6 · PyInstaller
 
 ### v1.0.0 — April 11, 2026
 - Initial release
+
+## Future Enhancements
+
+- [ ] Multi-folder queue (line up several moves, run sequentially)
+- [ ] Dry-run mode with size/count/conflict report
+- [ ] Retry-locked-files pass at the end
+- [ ] Verify-after-move option (size or hash check before deleting source on cross-drive moves)

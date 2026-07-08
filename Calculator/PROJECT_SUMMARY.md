@@ -54,3 +54,11 @@ USAGE
 VERSION HISTORY
 ---------------
   v1.0.0  2026-03-18  Initial release
+
+
+FUTURE ENHANCEMENTS
+--------------------
+  - Calculation history panel (click to reuse a result)
+  - Keyboard input support (if not already complete)
+  - Copy result to clipboard button
+  - Scientific mode (sqrt, exponents, parentheses)

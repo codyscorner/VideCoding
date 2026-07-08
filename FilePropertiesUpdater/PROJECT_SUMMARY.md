@@ -32,3 +32,10 @@ FilePropertiesUpdater/
 ```bash
 pyinstaller MP4_Metadata_Editor.spec --clean --noconfirm
 ```
+
+## Future Enhancements
+
+- [ ] Show current metadata of a selected file before editing
+- [ ] Template/preset tags to apply repeatedly
+- [ ] Filename → tag auto-fill rules (e.g., parse title from filename)
+- [ ] Support MKV/M4A too

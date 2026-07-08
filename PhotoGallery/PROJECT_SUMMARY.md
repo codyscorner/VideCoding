@@ -51,3 +51,11 @@ Output: `dist/PhotoGallery/PhotoGallery.exe`
 ## Version
 
 1.1.0
+
+## Future Enhancements
+
+- [ ] Rating/flagging with filter (cull keepers from a shoot)
+- [ ] Basic edit ops: rotate, crop, save
+- [ ] Compare mode (two images side by side)
+- [ ] Delete-to-recycle-bin with confirm
+- [ ] Video thumbnails in the filmstrip

@@ -50,3 +50,11 @@ pyinstaller FileHashDedupe.spec --clean --noconfirm
 
 ### v1.0.0
 - Initial release
+
+## Future Enhancements
+
+- [ ] Preview/review screen before delete — pick which copy survives (keep oldest/newest/shortest path rules)
+- [ ] Size pre-filter pass (only hash same-size files — big speed win)
+- [ ] xxHash or BLAKE3 option, faster than MD5
+- [ ] CSV report of duplicate groups
+- [ ] Compare two folders mode (dedupe B against A without touching A)

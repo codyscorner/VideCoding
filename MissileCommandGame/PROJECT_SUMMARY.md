@@ -19,3 +19,10 @@ A browser-based recreation of the classic Missile Command arcade game. No instal
 ## Usage
 
 Open `index.html` in any modern web browser.
+
+## Future Enhancements
+
+- [ ] Persistent high-score table (localStorage)
+- [ ] Sound effects toggle
+- [ ] Pause key
+- [ ] Difficulty settings

@@ -31,3 +31,10 @@ Or open `LunarLanderApp/LunarLanderApp.csproj` in Visual Studio and run.
 - .NET 10
 - Microsoft.Web.WebView2 (NuGet)
 - Edge WebView2 Runtime (pre-installed on Windows 11)
+
+## Future Enhancements
+
+- [ ] Persistent high-score table (localStorage)
+- [ ] Sound effects toggle
+- [ ] Pause key
+- [ ] Difficulty settings

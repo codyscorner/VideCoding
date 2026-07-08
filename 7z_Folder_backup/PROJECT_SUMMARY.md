@@ -261,3 +261,10 @@ Logging system
 EXE build script
 
 Documentation
+
+## Future Enhancements
+
+- [ ] Incremental mode: skip archiving if source unchanged since last backup (manifest hash compare)
+- [ ] Backup rotation: keep last N archives, auto-delete older
+- [ ] Scheduled/silent CLI mode for Task Scheduler
+- [ ] Email or toast notification on completion/verification failure

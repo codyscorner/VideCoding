@@ -36,3 +36,10 @@ pyinstaller BulkFileRandomizer.spec --clean --noconfirm
 ```
 
 Output: `dist/BulkFileRandomizer/BulkFileRandomizer.exe`
+
+## Future Enhancements
+
+- [ ] Dry-run preview table (old name → new name) before copying
+- [ ] Move mode in addition to copy
+- [ ] Extension filter (only shuffle specific file types)
+- [ ] Seeded shuffle: re-use a seed to reproduce the same order

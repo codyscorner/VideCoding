@@ -88,3 +88,11 @@ Output: `P:\Apps\VibeCoded\AI Image Studio\AI Image Studio.exe`
 
 ### v1.x
 - Single-tab FLUX local diffusers app (deprecated)
+
+## Future Enhancements
+
+- [ ] Generation history with prompt recall (click a Library image to restore its prompt/settings)
+- [ ] Batch queue: line up multiple prompts and walk away
+- [ ] Favorites/rating in the Library tab
+- [ ] Img2img variations tab (feed a Library image back in with strength slider)
+- [ ] Side-by-side A/B compare of two generations

@@ -65,3 +65,10 @@ Root Folder/
 - Persistent root folder setting
 - Named subfolders with conflict-safe filenames
 - Clickable Explorer link on completion
+
+## Future Enhancements
+
+- [ ] Batch queue: paste multiple URLs, download all
+- [ ] Full-resolution image option (grab original instead of gallery size)
+- [ ] CSV/JSON manifest of downloaded images with captions
+- [ ] Retry/resume on network failure
