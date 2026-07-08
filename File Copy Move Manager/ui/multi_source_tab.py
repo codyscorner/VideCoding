@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer
 
 from config import ConfigManager
-from file_operations import FileCopier, FileScanner, FileValidator
+from file_operations import FileCopier, FileScanner, FileValidator, format_file_size
 from folder_organization import FolderStructure, FolderOrganizer
 from ui.styles import COLORS
 
@@ -701,6 +701,7 @@ class MultiSourceTab(QWidget):
             folder_structure = FolderStructure.FLAT
 
         grand_copied = grand_skipped = grand_errors = 0
+        grand_bytes = 0
 
         # ── Watchdog + copier registry ────────────────────────────────────────
         _copier_lock = threading.Lock()
@@ -731,7 +732,7 @@ class MultiSourceTab(QWidget):
 
         def _run_source(src_idx: int, source: str):
             if self._cancel_requested:
-                return 0, 0, 0
+                return 0, 0, 0, 0
 
             self._queue_msg('source_start', {
                 'index': src_idx, 'total': total_sources, 'path': source,
@@ -820,33 +821,37 @@ class MultiSourceTab(QWidget):
                 copied  = sum(1 for r in results if r.success and r.destination_file is not None)
                 skipped = sum(1 for r in results if r.success and r.destination_file is None) + pre_skip
                 errors  = sum(1 for r in results if not r.success)
-                return copied, skipped, errors
+                copied_bytes = sum(r.file_size for r in results if r.success and r.destination_file is not None)
+                return copied, skipped, errors, copied_bytes
 
             except Exception as e:
                 self._logger.error(f"Multi-source error on {source}: {e}")
                 self._queue_msg('status', f"[{src_idx}/{total_sources}] ERROR: {e}")
-                return 0, 0, 1
+                return 0, 0, 1, 0
 
         # Sources processed one at a time — no simultaneous USB/disk streams
         for src_idx, source in enumerate(sources, 1):
             if self._cancel_requested:
                 break
             try:
-                copied, skipped, errors = _run_source(src_idx, source)
+                copied, skipped, errors, copied_bytes = _run_source(src_idx, source)
             except Exception as e:
-                copied, skipped, errors = 0, 0, 1
+                copied, skipped, errors, copied_bytes = 0, 0, 1, 0
                 self._queue_msg('status', f"[{src_idx}/{total_sources}] FATAL: {e}")
 
             grand_copied  += copied
             grand_skipped += skipped
             grand_errors  += errors
+            grand_bytes   += copied_bytes
 
             self._queue_msg('source_complete', {
                 'index': src_idx, 'total': total_sources, 'path': source,
                 'copied': copied, 'skipped': skipped, 'errors': errors,
+                'copied_bytes': copied_bytes,
                 'grand_copied': grand_copied,
                 'grand_skipped': grand_skipped,
                 'grand_errors': grand_errors,
+                'grand_bytes': grand_bytes,
             })
 
         _watchdog_stop.set()
@@ -856,10 +861,12 @@ class MultiSourceTab(QWidget):
         if self._cancel_requested:
             self._queue_msg('all_cancelled', {
                 'copied': grand_copied, 'skipped': grand_skipped, 'errors': grand_errors,
+                'total_bytes': grand_bytes,
             })
         else:
             self._queue_msg('all_complete', {
                 'copied': grand_copied, 'skipped': grand_skipped, 'errors': grand_errors,
+                'total_bytes': grand_bytes,
                 'start_time': start_time, 'end_time': end_time,
             })
 
@@ -917,8 +924,9 @@ class MultiSourceTab(QWidget):
                             f"Completed {self._completed_sources} / {total} sources"
                         )
                         verb = "moved" if self.mode == 'move' else "copied"
+                        size_str = format_file_size(data.get('copied_bytes', 0))
                         self._add_status(
-                            f"  ✓ [{idx}/{total}]  {verb}={c}  skipped={s}  errors={e}  —  {path}"
+                            f"  ✓ [{idx}/{total}]  {verb}={c} ({size_str})  skipped={s}  errors={e}  —  {path}"
                         )
 
                     elif msg_type == 'fatal_error':
@@ -1014,6 +1022,8 @@ class MultiSourceTab(QWidget):
         copied  = data['copied']
         skipped = data['skipped']
         errors  = data['errors']
+        total_bytes = data.get('total_bytes', 0)
+        size_str = format_file_size(total_bytes)
         elapsed = data['end_time'] - data['start_time']
         elapsed_str = self._format_elapsed(elapsed)
 
@@ -1023,12 +1033,12 @@ class MultiSourceTab(QWidget):
         verb = "Moved" if self.mode == 'move' else "Copied"
         self.source_progress_label.setText(f"All sources complete  —  Elapsed: {elapsed_str}")
         self._add_status(
-            f"═══ All sources complete  —  Elapsed: {elapsed_str}  —  {verb}: {copied}  Skipped: {skipped}  Errors: {errors} ═══"
+            f"═══ All sources complete  —  Elapsed: {elapsed_str}  —  {verb}: {copied} ({size_str})  Skipped: {skipped}  Errors: {errors} ═══"
         )
         if self._log_path:
             self._add_status(f"Log file (per-file skip reasons): {self._log_path}")
 
-        summary = f"Total {verb}: {copied}\nTotal Skipped: {skipped}\nTotal Errors: {errors}\nElapsed: {elapsed_str}"
+        summary = f"Total {verb}: {copied} ({size_str})\nTotal Skipped: {skipped}\nTotal Errors: {errors}\nElapsed: {elapsed_str}"
         action = "move" if self.mode == 'move' else "copy"
         if errors == 0 and copied > 0:
             QMessageBox.information(self, "Complete", summary)
@@ -1045,6 +1055,7 @@ class MultiSourceTab(QWidget):
         self.run_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         copied, skipped, errors = data['copied'], data['skipped'], data['errors']
+        size_str = format_file_size(data.get('total_bytes', 0))
         self.copied_label.setText(str(copied))
         self.skipped_label.setText(str(skipped))
         self.errors_label.setText(str(errors))
@@ -1052,11 +1063,11 @@ class MultiSourceTab(QWidget):
         if self._watchdog_fired:
             self.source_progress_label.setText("Auto-cancelled — drive unresponsive")
             reason = "Auto-cancelled: drive appeared unresponsive (no disk I/O for 45 seconds).\nCheck the drive and try again."
-            self._add_status(f"Auto-cancelled (watchdog)  —  {verb}: {copied}  Skipped: {skipped}  Errors: {errors}")
+            self._add_status(f"Auto-cancelled (watchdog)  —  {verb}: {copied} ({size_str})  Skipped: {skipped}  Errors: {errors}")
             QMessageBox.warning(self, "Auto-Cancelled (Watchdog)",
-                f"{reason}\n\n{verb} so far: {copied}\nSkipped: {skipped}")
+                f"{reason}\n\n{verb} so far: {copied} ({size_str})\nSkipped: {skipped}")
         else:
             self.source_progress_label.setText("Cancelled")
-            self._add_status(f"Operation cancelled  —  {verb}: {copied}  Skipped: {skipped}  Errors: {errors}")
+            self._add_status(f"Operation cancelled  —  {verb}: {copied} ({size_str})  Skipped: {skipped}  Errors: {errors}")
             QMessageBox.information(self, "Cancelled",
-                f"Operation cancelled.\n\n{verb} so far: {copied}\nSkipped: {skipped}")
+                f"Operation cancelled.\n\n{verb} so far: {copied} ({size_str})\nSkipped: {skipped}")

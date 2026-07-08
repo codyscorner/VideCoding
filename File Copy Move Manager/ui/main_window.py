@@ -20,7 +20,7 @@ from PyQt6.QtGui import QIcon
 
 from config import ConfigManager
 from profiles import ProfileManager
-from file_operations import FileCopier, FileScanner, FileValidator
+from file_operations import FileCopier, FileScanner, FileValidator, format_file_size
 from folder_organization import FolderStructure, FolderOrganizer
 from ui.styles import STYLESHEET, COLORS, get_stylesheet
 from ui.preview_dialog import PreviewDialog
@@ -690,10 +690,12 @@ class MainWindow(QMainWindow):
             copied = sum(1 for r in results if r.success and r.destination_file is not None)
             skipped = sum(1 for r in results if r.success and r.destination_file is None)
             errors = sum(1 for r in results if not r.success)
+            total_bytes = sum(r.file_size for r in results if r.success and r.destination_file is not None)
             end_time = time.time()
             self._queue_msg('counters', {'copied': copied, 'skipped': skipped, 'errors': errors})
             self._queue_msg('complete', {
                 'copied_count': copied, 'skipped_count': skipped, 'error_count': errors,
+                'total_bytes': total_bytes,
                 'options': options, 'start_time': start_time, 'end_time': end_time,
             })
 
@@ -791,6 +793,8 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(False)
         opts = data['options']
         copied, skipped, errors = data['copied_count'], data['skipped_count'], data['error_count']
+        total_bytes = data.get('total_bytes', 0)
+        size_str = format_file_size(total_bytes)
         start_t, end_t = data['start_time'], data['end_time']
         elapsed = end_t - start_t
 
@@ -816,16 +820,17 @@ class MainWindow(QMainWindow):
         verb = "Moved" if opts.get('operation_mode') == 'move' else "Copied"
         self.copied_label.setText(str(copied))
         self.skipped_label.setText(str(skipped))
-        self.progress_label.setText(f"Complete! {verb}: {copied}  Skipped: {skipped}")
+        self.progress_label.setText(f"Complete! {verb}: {copied} ({size_str})  Skipped: {skipped}")
 
         import datetime as _dt
         start_str = _dt.datetime.fromtimestamp(start_t).strftime("%H:%M:%S.") + f"{int(start_t % 1 * 100):02d}"
         end_str   = _dt.datetime.fromtimestamp(end_t).strftime("%H:%M:%S.") + f"{int(end_t % 1 * 100):02d}"
         elapsed_str = self._format_elapsed(elapsed)
         self._add_status(f"End: {end_str}  |  Elapsed: {elapsed_str}")
+        self._add_status(f"Total {verb.lower()}: {copied} files  |  {size_str}")
         self._add_status(f"Log file (per-file skip reasons): {self._log_path}")
 
-        summary = f"Total {verb}: {copied}\nTotal Skipped: {skipped}\nElapsed: {elapsed_str}"
+        summary = f"Total {verb}: {copied} ({size_str})\nTotal Skipped: {skipped}\nElapsed: {elapsed_str}"
         action = "process" if opts.get('operation_mode') == 'move' else "copy"
         if errors == 0 and copied > 0:
             QMessageBox.information(self, "Complete", summary)

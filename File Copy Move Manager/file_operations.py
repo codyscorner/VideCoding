@@ -14,6 +14,16 @@ from dataclasses import dataclass, field
 from folder_organization import FolderOrganizer, FolderStructure
 
 
+def format_file_size(size_bytes: float) -> str:
+    """Format a byte count in human-readable units (e.g. "1.23 MB")."""
+    size = float(size_bytes)
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size < 1024.0:
+            return f"{size:.2f} {unit}"
+        size /= 1024.0
+    return f"{size:.2f} PB"
+
+
 @dataclass
 class FileOperationResult:
     """Result of a file operation"""
@@ -246,20 +256,8 @@ class FileCopier:
         return truncated
 
     def _format_file_size(self, size_bytes: int) -> str:
-        """
-        Format file size in human-readable format
-
-        Args:
-            size_bytes: File size in bytes
-
-        Returns:
-            Formatted string (e.g., "1.23 MB")
-        """
-        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if size_bytes < 1024.0:
-                return f"{size_bytes:.2f} {unit}"
-            size_bytes /= 1024.0
-        return f"{size_bytes:.2f} PB"
+        """Format file size in human-readable format (e.g. "1.23 MB")."""
+        return format_file_size(size_bytes)
 
     def copy_files(
         self,
@@ -424,7 +422,11 @@ class FileCopier:
             copied_count = sum(1 for r in results if r.success and r.destination_file is not None)
             skipped_count = sum(1 for r in results if r.success and r.destination_file is None)
             error_count = sum(1 for r in results if not r.success)
-            self._log_status(f"Operation completed: {copied_count} {op_verb_past}, {skipped_count} skipped, {error_count} errors")
+            total_bytes = sum(r.file_size for r in results if r.success and r.destination_file is not None)
+            self._log_status(
+                f"Operation completed: {copied_count} {op_verb_past} ({format_file_size(total_bytes)}), "
+                f"{skipped_count} skipped, {error_count} errors"
+            )
 
         return results
 

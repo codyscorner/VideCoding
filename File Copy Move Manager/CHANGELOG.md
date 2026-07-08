@@ -5,6 +5,18 @@ All notable changes to File Copy Move Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.1] - 2026-06-30
+
+### Added
+- **Total bytes copied is now reported on completion** — every run now shows how much data was actually copied/moved (auto-scaled B / KB / MB / GB / TB), so you can compare the size of one run against another. It appears in:
+  - the **completion popup** (e.g. `Total Copied: 142 (3.71 GB)`),
+  - the **status window** (a dedicated `Total copied: N files | 3.71 GB` line, the `Complete!` progress line, and the multi-source `All sources complete` banner),
+  - the **per-source line** in the multi-source tab (each source shows its own copied size),
+  - the **log file** (`Operation completed:` line now includes the byte total).
+- Size totals also appear when a run is cancelled or auto-cancelled by the watchdog, reflecting the data copied up to that point.
+
+---
+
 ## [3.4.0] - 2026-06-29
 
 ### Added
