@@ -44,3 +44,10 @@ Requires ComfyUI running locally (default: `http://127.0.0.1:8000`). Configure t
 - Generate button, progress label, append-only log
 - QThread worker — UI stays responsive during generation
 - Dark theme: BG `#0d0d1a`, accent `#5e4bdb`
+
+## Future Enhancements
+
+- [ ] Prompt history per app (remember what generated the icon you kept)
+- [ ] Generate N candidates per app and pick from a grid
+- [ ] PNG padding/rounding controls before ICO conversion
+- [ ] Auto-detect projects in the repo that lack an `app_icon.ico`

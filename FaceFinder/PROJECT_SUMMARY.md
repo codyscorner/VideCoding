@@ -199,3 +199,10 @@ Contributions with AI assistance by Claude (Anthropic)
 - Parallel processing with 10 worker processes
 - Adjustable tolerance slider
 - Yellow/black theme
+
+## Future Enhancements
+
+- [ ] Multiple reference images per search (better recall for one person)
+- [ ] Thumbnail results grid instead of just paths
+- [ ] Move/copy matches directly to a folder from results
+- [ ] Saved searches / per-person reference profiles

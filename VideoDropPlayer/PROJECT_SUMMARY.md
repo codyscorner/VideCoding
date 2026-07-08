@@ -71,3 +71,11 @@ pyinstaller VideoDropPlayer.spec --noconfirm
 ## Version
 
 1.3.2
+
+## Future Enhancements
+
+- [ ] Remember last position per file (resume where you left off)
+- [ ] Playback speed control
+- [ ] A-B loop for a section
+- [ ] Screenshot current frame
+- [ ] Delete-current-file hotkey (useful when culling clips)

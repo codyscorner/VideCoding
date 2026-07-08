@@ -35,3 +35,11 @@ One-way folder sync utility. Compares Source and Destination by filename + files
 - Cancel support during both compare and copy
 - Persistent config (last paths, window size)
 - PyInstaller spec for windowed EXE build
+
+## Future Enhancements
+
+- [ ] Optional hash verify for matched-size files
+- [ ] Reverse-diff view: files in Destination that aren't in Source (with optional delete)
+- [ ] Sync profiles (saved source/dest pairs)
+- [ ] Post-sync summary report with CSV export
+- [ ] Watch mode: auto-sync when source changes

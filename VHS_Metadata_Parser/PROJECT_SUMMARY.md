@@ -61,3 +61,10 @@ pyinstaller VHS_Metadata_Parser.spec
 - Initial release with PyQt5
 - Tabbed metadata viewer
 - Drag & drop and file browser support
+
+## Future Enhancements
+
+- [ ] Batch mode: parse a folder, table of key settings per file
+- [ ] Diff view: compare workflow metadata of two files
+- [ ] Search across a folder ("which videos used LoRA X?")
+- [ ] Export summary CSV

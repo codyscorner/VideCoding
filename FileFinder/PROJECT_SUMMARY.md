@@ -95,3 +95,10 @@ for root, dirs, files in os.walk(drive):
 
 - **Phase 6: Build:**   
   Build the app using PyInstaller to create an executable file.
+
+## Future Enhancements
+
+- [ ] Search file contents (text match) as an option
+- [ ] Right-click actions on results: open, open folder, copy path, delete
+- [ ] Saved search presets
+- [ ] Multiple root folders in one search
