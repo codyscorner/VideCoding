@@ -40,6 +40,13 @@ pyinstaller FileHashDedupe.spec --clean --noconfirm
 
 ## Version History
 
+### v1.3.0
+- Preview/review screen before any move or delete — shows every duplicate group with the chosen primary highlighted; keep rule (First alphabetical / Oldest / Newest / Shortest path) can be changed live in the dialog to recompute the survivor without re-hashing
+- Size pre-filter pass — files are only hashed if another file shares their exact size, skipping the hash for files that can't possibly have a duplicate (big speed win on large folders)
+- Hash algorithm choice: MD5 (default) or BLAKE2b, both stdlib — no new dependency
+- CSV report option — writes `dedupe_report_<timestamp>.csv` (group hash, role, path, size, action) alongside the run
+- Compare two folders mode — dedupe Folder B against Folder A without ever touching A; matches are found by content hash and only removed from B
+
 ### v1.2.0
 - Added permanent delete mode — skip Dupes folder and delete duplicates directly
 - Fixed UI freeze when processing large duplicate sets (throttled status logging + capped message queue drain per tick)
@@ -53,8 +60,8 @@ pyinstaller FileHashDedupe.spec --clean --noconfirm
 
 ## Future Enhancements
 
-- [ ] Preview/review screen before delete — pick which copy survives (keep oldest/newest/shortest path rules)
-- [ ] Size pre-filter pass (only hash same-size files — big speed win)
-- [ ] xxHash or BLAKE3 option, faster than MD5
-- [ ] CSV report of duplicate groups
-- [ ] Compare two folders mode (dedupe B against A without touching A)
+- [x] Preview/review screen before delete — pick which copy survives (keep oldest/newest/shortest path rules)
+- [x] Size pre-filter pass (only hash same-size files — big speed win)
+- [x] BLAKE2b option, faster than MD5 (stdlib, no added dependency — chosen instead of xxHash/BLAKE3 to avoid new packages)
+- [x] CSV report of duplicate groups
+- [x] Compare two folders mode (dedupe B against A without touching A)
