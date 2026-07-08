@@ -1,7 +1,8 @@
-"""IMDB Photo Downloader — GUI v1.0.0"""
+"""IMDB Photo Downloader — GUI v1.1.0"""
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
+import csv
 import json
 import re
 import subprocess
@@ -15,9 +16,13 @@ from playwright.sync_api import sync_playwright
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QListWidget, QFileDialog, QProgressBar,
+    QLabel, QLineEdit, QPlainTextEdit, QPushButton, QListWidget, QFileDialog,
+    QProgressBar, QCheckBox,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+
+MAX_RETRIES = 3
+RETRY_BACKOFF_BASE = 1.0  # seconds, doubles each retry
 
 # ------------------------------------------------------------------ #
 # Colors / style
@@ -131,81 +136,190 @@ def save_settings(settings: dict):
 
 
 # ------------------------------------------------------------------ #
+# Pure helpers (unit-testable without a browser)
+# ------------------------------------------------------------------ #
+
+def extract_id(url: str) -> tuple[str, str]:
+    m = re.search(r"(tt|nm)\d+", url)
+    if not m:
+        raise ValueError(f"Could not find an IMDB title or name ID in: {url}")
+    imdb_id = m.group()
+    return imdb_id, "name" if imdb_id.startswith("nm") else "title"
+
+
+def parse_url_queue(text: str) -> list[str]:
+    """Split a multi-line textbox into a deduped, ordered list of non-blank URLs."""
+    seen = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line and line not in seen:
+            seen.append(line)
+    return seen
+
+
+def parse_gallery_images(html: str) -> list[dict]:
+    """Extract (full_res_url, caption, mediaviewer_url) entries from a gallery page's HTML."""
+    soup = BeautifulSoup(html, "html.parser")
+    found = []
+    seen_urls = set()
+    for img in soup.find_all("img"):
+        src = img.get("src", "") or img.get("data-src", "")
+        if "media-amazon.com" not in src or "_V1_" not in src:
+            continue
+        full = re.sub(r"\._V1_.*\.(jpg|jpeg|png)", r"._V1_.\1", src)
+        if full in seen_urls:
+            continue
+        seen_urls.add(full)
+        caption = (img.get("alt") or "").strip()
+        mediaviewer_url = ""
+        link = img.find_parent("a")
+        if link:
+            href = link.get("href", "")
+            if "/mediaviewer/" in href:
+                mediaviewer_url = href
+        found.append({"url": full, "caption": caption, "mediaviewer_url": mediaviewer_url})
+    return found
+
+
+def extract_full_res_from_mediaviewer(html: str, fallback_url: str) -> str:
+    """Given a mediaviewer page's HTML, find the largest available image URL."""
+    soup = BeautifulSoup(html, "html.parser")
+    og = soup.find("meta", attrs={"property": "og:image"})
+    if og and og.get("content"):
+        return og["content"]
+    return fallback_url
+
+
+def write_manifest(out_dir: Path, rows: list[dict]) -> None:
+    """Write manifest.csv and manifest.json describing each downloaded/skipped/failed image."""
+    csv_path = out_dir / "manifest.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["index", "filename", "source_url", "caption", "status"])
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+    json_path = out_dir / "manifest.json"
+    json_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+
+
+def download_with_retry(url: str, dest: Path, retries: int = MAX_RETRIES) -> bool:
+    """Download a URL to dest, retrying with exponential backoff on failure."""
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=30, stream=True)
+            r.raise_for_status()
+            dest.write_bytes(r.content)
+            return True
+        except Exception:
+            if attempt < retries - 1:
+                time.sleep(RETRY_BACKOFF_BASE * (2 ** attempt))
+    return False
+
+
+# ------------------------------------------------------------------ #
 # Worker thread
 # ------------------------------------------------------------------ #
 
 class DownloadWorker(QThread):
-    log      = pyqtSignal(str)
-    progress = pyqtSignal(int, int)
-    finished = pyqtSignal(int, int, int, str)  # downloaded, skipped, failed, out_dir
-    error    = pyqtSignal(str)
+    log         = pyqtSignal(str)
+    progress    = pyqtSignal(int, int)
+    url_started = pyqtSignal(int, int, str)   # queue index, total, url
+    url_done    = pyqtSignal(int, int, int, str)  # downloaded, skipped, failed, out_dir
+    finished    = pyqtSignal(int, int, int, str)  # aggregate downloaded, skipped, failed, last_out_dir
+    error       = pyqtSignal(str)
 
-    def __init__(self, url: str, root_dir: Path):
+    def __init__(self, urls: list[str], root_dir: Path, full_res: bool = False):
         super().__init__()
-        self._url = url
+        self._urls = urls
         self._root_dir = root_dir
+        self._full_res = full_res
         self._cancelled = False
 
     def cancel(self):
         self._cancelled = True
 
     def run(self):
-        try:
-            imdb_id, id_type = self._extract_id(self._url)
-        except ValueError as e:
-            self.error.emit(str(e))
-            return
+        total_downloaded = total_skipped = total_failed = 0
+        last_out_dir = ""
 
-        try:
-            title_name, image_urls = self._scrape(imdb_id, id_type)
-        except Exception as e:
-            self.error.emit(f"Scrape failed: {e}")
-            return
-
-        if not image_urls:
-            self.error.emit("No images found on that page.")
-            return
-
-        # Named subfolder under root
-        safe = re.sub(r'[<>:"/\\|?*]', "_", title_name)
-        out = self._root_dir / safe
-        out.mkdir(parents=True, exist_ok=True)
-        self.log.emit(f"Saving to: {out}")
-
-        downloaded = skipped = failed = 0
-        total = len(image_urls)
-
-        for i, img_url in enumerate(image_urls, 1):
+        for qi, url in enumerate(self._urls, 1):
             if self._cancelled:
                 self.log.emit("Cancelled.")
                 break
 
-            dest = out / f"{safe}_{i:04d}.jpg"
-            if dest.exists():
-                skipped += 1
-                self.log.emit(f"[{i}/{total}] Skip: {dest.name}")
-            else:
-                if self._download(img_url, dest):
-                    downloaded += 1
-                    self.log.emit(f"[{i}/{total}] OK: {dest.name}")
+            self.url_started.emit(qi, len(self._urls), url)
+
+            try:
+                imdb_id, id_type = extract_id(url)
+            except ValueError as e:
+                self.error.emit(str(e))
+                continue
+
+            try:
+                title_name, images = self._scrape(imdb_id, id_type)
+            except Exception as e:
+                self.error.emit(f"Scrape failed for {url}: {e}")
+                continue
+
+            if not images:
+                self.error.emit(f"No images found on {url}.")
+                continue
+
+            safe = re.sub(r'[<>:"/\\|?*]', "_", title_name)
+            out = self._root_dir / safe
+            out.mkdir(parents=True, exist_ok=True)
+            self.log.emit(f"Saving to: {out}")
+
+            downloaded = skipped = failed = 0
+            manifest_rows = []
+            total = len(images)
+
+            for i, entry in enumerate(images, 1):
+                if self._cancelled:
+                    self.log.emit("Cancelled.")
+                    break
+
+                dest = out / f"{safe}_{i:04d}.jpg"
+                status = ""
+                if dest.exists():
+                    skipped += 1
+                    status = "skipped"
+                    self.log.emit(f"[{i}/{total}] Skip: {dest.name}")
                 else:
-                    failed += 1
-                    self.log.emit(f"[{i}/{total}] FAIL")
+                    if download_with_retry(entry["url"], dest):
+                        downloaded += 1
+                        status = "downloaded"
+                        self.log.emit(f"[{i}/{total}] OK: {dest.name}")
+                    else:
+                        failed += 1
+                        status = "failed"
+                        self.log.emit(f"[{i}/{total}] FAIL")
 
-            self.progress.emit(i, total)
-            time.sleep(0.15)
+                manifest_rows.append({
+                    "index": i,
+                    "filename": dest.name,
+                    "source_url": entry["url"],
+                    "caption": entry.get("caption", ""),
+                    "status": status,
+                })
 
-        self.finished.emit(downloaded, skipped, failed, str(out))
+                self.progress.emit(i, total)
+                time.sleep(0.15)
 
-    def _extract_id(self, url: str) -> tuple[str, str]:
-        m = re.search(r"(tt|nm)\d+", url)
-        if not m:
-            raise ValueError("Could not find an IMDB title or name ID in that URL.")
-        imdb_id = m.group()
-        return imdb_id, "name" if imdb_id.startswith("nm") else "title"
+            write_manifest(out, manifest_rows)
+            self.log.emit(f"Manifest written: {out / 'manifest.csv'}")
 
-    def _scrape(self, imdb_id: str, id_type: str) -> tuple[str, list[str]]:
-        image_urls = []
+            total_downloaded += downloaded
+            total_skipped += skipped
+            total_failed += failed
+            last_out_dir = str(out)
+            self.url_done.emit(downloaded, skipped, failed, str(out))
+
+        self.finished.emit(total_downloaded, total_skipped, total_failed, last_out_dir)
+
+    def _scrape(self, imdb_id: str, id_type: str) -> tuple[str, list[dict]]:
+        images: list[dict] = []
         title_name = imdb_id
         base = "name" if id_type == "name" else "title"
 
@@ -249,31 +363,19 @@ class DownloadWorker(QThread):
 
             def collect(pg):
                 # Scroll to bottom repeatedly to trigger lazy loading
-                prev_count = 0
+                prev_html = ""
                 for _ in range(20):
                     pg.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                     pg.wait_for_timeout(800)
-                    soup = BeautifulSoup(pg.content(), "html.parser")
-                    count = len([
-                        img for img in soup.find_all("img")
-                        if "media-amazon.com" in img.get("src", "") and "_V1_" in img.get("src", "")
-                    ])
-                    if count == prev_count:
+                    html = pg.content()
+                    if html == prev_html:
                         break  # no new images loaded
-                    prev_count = count
+                    prev_html = html
+                return parse_gallery_images(prev_html)
 
-                found = []
-                for img in soup.find_all("img"):
-                    src = img.get("src", "") or img.get("data-src", "")
-                    if "media-amazon.com" in src and "_V1_" in src:
-                        full = re.sub(r"\._V1_.*\.(jpg|jpeg|png)", r"._V1_.\1", src)
-                        if full not in found:
-                            found.append(full)
-                return found
-
-            urls = collect(page)
-            image_urls.extend(urls)
-            self.log.emit(f"Page 1/{total_pages} — {len(urls)} images")
+            entries = collect(page)
+            images.extend(entries)
+            self.log.emit(f"Page 1/{total_pages} — {len(entries)} images")
 
             for pg_num in range(2, total_pages + 1):
                 if self._cancelled:
@@ -282,25 +384,39 @@ class DownloadWorker(QThread):
                     f"https://www.imdb.com/{base}/{imdb_id}/mediaindex/?page={pg_num}",
                     wait_until="domcontentloaded"
                 )
-                urls = collect(page)
-                image_urls.extend(urls)
-                self.log.emit(f"Page {pg_num}/{total_pages} — {len(urls)} images")
+                entries = collect(page)
+                images.extend(entries)
+                self.log.emit(f"Page {pg_num}/{total_pages} — {len(entries)} images")
                 time.sleep(0.5)
+
+            if self._full_res:
+                self.log.emit("Fetching full-resolution images (visiting each photo page)...")
+                for entry in images:
+                    if self._cancelled:
+                        break
+                    if not entry["mediaviewer_url"]:
+                        continue
+                    try:
+                        mv_url = entry["mediaviewer_url"]
+                        if mv_url.startswith("/"):
+                            mv_url = f"https://www.imdb.com{mv_url}"
+                        page.goto(mv_url, wait_until="domcontentloaded")
+                        page.wait_for_timeout(500)
+                        entry["url"] = extract_full_res_from_mediaviewer(page.content(), entry["url"])
+                    except Exception:
+                        pass  # keep gallery-resolution fallback already in entry["url"]
 
             browser.close()
 
-        image_urls = list(dict.fromkeys(image_urls))
-        self.log.emit(f"Total unique images: {len(image_urls)}")
-        return title_name, image_urls
-
-    def _download(self, url: str, dest: Path) -> bool:
-        try:
-            r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=30, stream=True)
-            r.raise_for_status()
-            dest.write_bytes(r.content)
-            return True
-        except Exception:
-            return False
+        # de-dupe by final url, preserving order
+        deduped = []
+        seen = set()
+        for entry in images:
+            if entry["url"] not in seen:
+                seen.add(entry["url"])
+                deduped.append(entry)
+        self.log.emit(f"Total unique images: {len(deduped)}")
+        return title_name, deduped
 
 
 # ------------------------------------------------------------------ #
@@ -333,18 +449,23 @@ class MainWindow(QMainWindow):
         title.setStyleSheet(f"font-size: 16pt; font-weight: bold; color: {ACCENT};")
         root.addWidget(title)
 
-        sub = QLabel("Paste an IMDB title or actor/actress URL — photos save to a named subfolder")
+        sub = QLabel("Paste one or more IMDB title/actor URLs (one per line) — each saves to its own named subfolder")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sub.setStyleSheet(f"color: {FG_DIM}; font-size: 9pt;")
         root.addWidget(sub)
 
-        # URL input
-        self._url_edit = QLineEdit()
+        # URL queue input
+        self._url_edit = QPlainTextEdit()
         self._url_edit.setPlaceholderText(
-            "https://www.imdb.com/title/tt2543796/  or  https://www.imdb.com/name/nm1760388/"
+            "https://www.imdb.com/title/tt2543796/\nhttps://www.imdb.com/name/nm1760388/\n..."
         )
-        self._url_edit.returnPressed.connect(self._start)
+        self._url_edit.setFixedHeight(80)
         root.addWidget(self._url_edit)
+
+        # Full-resolution option
+        self._full_res_chk = QCheckBox("Grab full-resolution images (slower — visits each photo page)")
+        self._full_res_chk.setStyleSheet(f"color: {FG_DIM};")
+        root.addWidget(self._full_res_chk)
 
         # Root folder row
         root_row = QHBoxLayout()
@@ -424,9 +545,9 @@ class MainWindow(QMainWindow):
             save_settings(self._settings)
 
     def _start(self):
-        url = self._url_edit.text().strip()
-        if not url:
-            self._status.setText("Paste an IMDB URL first.")
+        urls = parse_url_queue(self._url_edit.toPlainText())
+        if not urls:
+            self._status.setText("Paste at least one IMDB URL first.")
             return
 
         root_dir_str = self._root_edit.text().strip()
@@ -443,9 +564,10 @@ class MainWindow(QMainWindow):
         self._cancel_btn.setEnabled(True)
         self._status.setText("Working...")
 
-        self._worker = DownloadWorker(url, root_dir)
+        self._worker = DownloadWorker(urls, root_dir, full_res=self._full_res_chk.isChecked())
         self._worker.log.connect(self._on_log)
         self._worker.progress.connect(self._on_progress)
+        self._worker.url_started.connect(self._on_url_started)
         self._worker.finished.connect(self._on_finished)
         self._worker.error.connect(self._on_error)
         self._worker.start()
@@ -460,13 +582,16 @@ class MainWindow(QMainWindow):
         self._log.addItem(msg)
         self._log.scrollToBottom()
 
+    def _on_url_started(self, index: int, total: int, url: str):
+        self._on_log(f"— URL {index}/{total}: {url}")
+
     def _on_progress(self, current: int, total: int):
         self._progress.setRange(0, total)
         self._progress.setValue(current)
         self._status.setText(f"Downloading... {current}/{total}")
 
     def _on_finished(self, downloaded: int, skipped: int, failed: int, out_dir: str):
-        self._last_out_dir = Path(out_dir)
+        self._last_out_dir = Path(out_dir) if out_dir else None
         self._progress.setRange(0, 1)
         self._progress.setValue(1)
         self._go_btn.setEnabled(True)
@@ -475,7 +600,8 @@ class MainWindow(QMainWindow):
             f"Done — Downloaded: {downloaded}  Skipped: {skipped}  Failed: {failed}"
         )
         self._on_log(f"✅ Complete — {downloaded} downloaded, {skipped} skipped, {failed} failed")
-        self._folder_link.setText(f"📁 {out_dir}  (click to open in Explorer)")
+        if out_dir:
+            self._folder_link.setText(f"📁 {out_dir}  (click to open in Explorer)")
 
     def _on_error(self, msg: str):
         self._go_btn.setEnabled(True)
