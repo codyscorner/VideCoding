@@ -13,6 +13,9 @@ A desktop application that automatically sorts images based on people detection.
 - **Progress Tracking**: Real-time progress bar and status log
 - **Cancel Support**: Stop processing at any time with immediate worker cleanup
 - **Dark Theme UI**: Modern dark-themed interface
+- **Confidence Threshold Slider**: Tune the YOLO body-detection sensitivity (5%-95%); borderline scores land in a third "Unsure" bucket instead of forcing a People/No_People call
+- **Review Mode**: Optional thumbnail grid to veto false positives before any file is copied/moved
+- **CSV Decision Report**: `sort_report.csv` written to the destination folder listing every file's category, detection pass, confidence, and outcome
 
 ## Detection Pipeline
 
@@ -24,6 +27,8 @@ Slower CPU-parallel HOG scan with 2× upsampling — runs only on images Pass 1a
 
 ### Pass 2 — YOLOv8 body detection (GPU)
 Runs only on images both HOG passes missed. Uses YOLOv8n to detect the "person" class at any pose, orientation, and lighting — cyclists, dancers, people from behind, distant figures, side profiles. Runs on GPU if CUDA is available, otherwise CPU. Requires `ultralytics` package.
+
+Detections are bucketed by the confidence slider: scores at or above `threshold + 0.15` are People, scores between `threshold` and `threshold + 0.15` are Unsure, and anything below `threshold` is No_People. Face-pass detections (Pass 1a/1b) have no continuous confidence score and always land in People.
 
 ## Supported Image Formats
 
@@ -47,8 +52,10 @@ Runs only on images both HOG passes missed. Uses YOLOv8n to detect the "person" 
 
 ```
 Destination Folder/
-├── People/      # Images with detected people
-└── No_People/   # Images without people
+├── People/         # Images with confidently detected people
+├── Unsure/         # Borderline YOLO body-detection scores near the confidence threshold
+├── No_People/      # Images without people
+└── sort_report.csv # Per-file decision log (if "Save CSV report" is checked)
 ```
 
 ## Requirements
@@ -84,6 +91,13 @@ Default: 14 HOG workers (suited for 16-core CPUs like AMD Ryzen 9 series). YOLOv
 
 ## Changelog
 
+### v2.1.0
+- **Review mode**: optional "Review results before saving" checkbox shows a modal thumbnail grid of every People/Unsure detection before any file is copied/moved; unchecking an image sends it to No_People instead
+- **Confidence threshold slider**: tunes YOLO body-detection sensitivity (5%-95%, default 30%), replacing the previously hardcoded constant
+- **Third bucket — Unsure folder**: YOLO detections scoring between the threshold and threshold+0.15 land in a new `Unsure` subfolder instead of being forced into People or No_People
+- **CSV decision report**: `sort_report.csv` written to the destination folder (toggleable via "Save CSV report of decisions" checkbox) with filename, category, detection pass, confidence, dest path, and success/error per file
+- Refactored `face_detector.py` around a single `DetectionEntry` per image so review and CSV reporting share one source of truth instead of parallel bookkeeping
+
 ### v2.0.0
 - **Three-pass detection**: added Pass 1b (HOG upsample=2) and Pass 2 (YOLOv8n person detection) to replace the skipped CNN pass
 - **YOLOv8 integration**: catches people at any pose/orientation the face passes miss; GPU-accelerated
@@ -99,7 +113,7 @@ Default: 14 HOG workers (suited for 16-core CPUs like AMD Ryzen 9 series). YOLOv
 
 ## Future Enhancements
 
-- [ ] Review mode: thumbnail grid of "person" results to veto false positives before moving
-- [ ] Confidence threshold slider
-- [ ] Third bucket: "unsure" folder for borderline scores
-- [ ] CSV report of decisions per file
+- [x] Review mode: thumbnail grid of "person" results to veto false positives before moving
+- [x] Confidence threshold slider
+- [x] Third bucket: "unsure" folder for borderline scores
+- [x] CSV report of decisions per file

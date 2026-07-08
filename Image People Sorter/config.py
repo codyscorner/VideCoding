@@ -10,6 +10,9 @@ DEFAULT_CONFIG = {
     "default_destination_folder": "",
     "recursive_search": True,
     "copy_mode": True,  # True = Copy, False = Move
+    "confidence_threshold": 30,  # percent (0-100), maps to YOLO confidence 0.0-1.0
+    "review_mode": False,
+    "write_csv_report": True,
 }
 
 

@@ -1,6 +1,6 @@
 """
 Image People Sorter - Main Entry Point
-Version: 1.2.0
+Version: 2.1.0
 """
 
 import multiprocessing
@@ -13,7 +13,7 @@ from PyQt6.QtGui import QIcon
 from config import ConfigManager
 from ui.main_window import MainWindow
 
-VERSION = "1.4.0"
+VERSION = "2.1.0"
 
 
 def get_script_dir() -> Path:

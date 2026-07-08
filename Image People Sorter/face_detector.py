@@ -36,6 +36,19 @@ class SortResult:
     has_people: bool
     success: bool
     error_message: Optional[str] = None
+    category: str = "no_people"  # 'people' | 'no_people' | 'unsure'
+    detection_pass: str = "none"
+    confidence: Optional[float] = None
+
+
+@dataclass
+class DetectionEntry:
+    """Detection outcome for a single image, before file operations happen"""
+    path: str
+    category: str  # 'people' | 'no_people' | 'unsure'
+    confidence: Optional[float]
+    detection_pass: str  # 'face-fast' | 'face-deep' | 'yolo' | 'none' | 'error'
+    error: Optional[str] = None
 
 
 # Standalone functions for multiprocessing (must be at module level)
@@ -107,13 +120,21 @@ class ImagePeopleSorter:
         cancel_check: Optional[Callable[[], bool]] = None,
         copy_mode: bool = True,
         max_workers_hog: int = MAX_WORKERS_HOG,
-        max_workers_body: int = 0  # unused, kept for API compat
+        max_workers_body: int = 0,  # unused, kept for API compat
+        confidence_threshold: float = YOLO_CONFIDENCE,
+        unsure_margin: float = 0.15,
+        review_callback: Optional[Callable[[List[DetectionEntry]], "dict[str, str]"]] = None,
+        write_csv_report: bool = True,
     ):
         self.status_callback = status_callback
         self.progress_callback = progress_callback
         self.cancel_check = cancel_check
         self.copy_mode = copy_mode
         self.max_workers_hog = max_workers_hog
+        self.confidence_threshold = confidence_threshold
+        self.unsure_margin = unsure_margin
+        self.review_callback = review_callback
+        self.write_csv_report = write_csv_report
 
     def _log_status(self, message: str) -> None:
         if self.status_callback:
@@ -161,23 +182,25 @@ class ImagePeopleSorter:
         source_folder: str,
         dest_folder: str,
         recursive: bool = True
-    ) -> Tuple[List[SortResult], int, int]:
+    ) -> Tuple[List[SortResult], int, int, int]:
         """
-        Sort images into People and No_People folders using two-pass detection.
+        Sort images into People, Unsure, and No_People folders using three-pass detection.
 
-        Pass 1: HOG face scan (fast, frontal faces)
-        Pass 2: OpenCV body scan (slower, catches people from behind/side/distance)
+        Pass 1a/1b: HOG face scan (fast, then deep, frontal/partial faces)
+        Pass 2: YOLOv8 body detection (GPU, catches any pose/orientation)
 
         Returns:
-            Tuple of (results list, people count, no people count)
+            Tuple of (results list, people count, no people count, unsure count)
         """
         if not os.path.exists(source_folder):
             raise ValueError(f"Source folder does not exist: {source_folder}")
 
         people_folder = os.path.join(dest_folder, "People")
         no_people_folder = os.path.join(dest_folder, "No_People")
+        unsure_folder = os.path.join(dest_folder, "Unsure")
         os.makedirs(people_folder, exist_ok=True)
         os.makedirs(no_people_folder, exist_ok=True)
+        os.makedirs(unsure_folder, exist_ok=True)
 
         mode_str = "recursively" if recursive else "in root folder only"
         self._log_status(f"Scanning source folder {mode_str}...")
@@ -185,7 +208,7 @@ class ImagePeopleSorter:
 
         if not image_files:
             self._log_status("No image files found in source folder")
-            return [], 0, 0
+            return [], 0, 0, 0
 
         total_files = len(image_files)
         self._log_status(f"Found {total_files} images to process")
@@ -210,7 +233,7 @@ class ImagePeopleSorter:
                     if self.cancel_check and self.cancel_check():
                         executor.shutdown(wait=False, cancel_futures=True)
                         self._log_status("Operation cancelled during Pass 1a")
-                        return [], 0, 0
+                        return [], 0, 0, 0
 
                     try:
                         image_path, has_people, error = future.result()
@@ -222,14 +245,14 @@ class ImagePeopleSorter:
                     filename = os.path.basename(image_path)
 
                     if error:
-                        detection_results[image_path] = (False, error)
+                        detection_results[image_path] = ('no_people', None, error, 'error')
                         error_count += 1
                         if error_count <= 3:
                             self._log_status(f"Error ({filename}): {error}")
                         elif error_count == 4:
                             self._log_status("(further errors suppressed)")
                     elif has_people:
-                        detection_results[image_path] = (True, None)
+                        detection_results[image_path] = ('people', None, None, 'face-fast')
                         hog_found += 1
                         self._log_status(f"[Face] Found: {filename}")
                     else:
@@ -241,7 +264,7 @@ class ImagePeopleSorter:
 
             except BrokenExecutor:
                 self._log_status("Operation cancelled during Pass 1a")
-                return [], 0, 0
+                return [], 0, 0, 0
 
         self._log_status(
             f"Pass 1a complete: {hog_found} faces found, "
@@ -266,7 +289,7 @@ class ImagePeopleSorter:
                         if self.cancel_check and self.cancel_check():
                             executor.shutdown(wait=False, cancel_futures=True)
                             self._log_status("Operation cancelled during Pass 1b")
-                            return [], 0, 0
+                            return [], 0, 0, 0
 
                         try:
                             image_path, has_people, error = future.result()
@@ -278,9 +301,9 @@ class ImagePeopleSorter:
                         filename = os.path.basename(image_path)
 
                         if error:
-                            detection_results[image_path] = (False, error)
+                            detection_results[image_path] = ('no_people', None, error, 'error')
                         elif has_people:
-                            detection_results[image_path] = (True, None)
+                            detection_results[image_path] = ('people', None, None, 'face-deep')
                             hog_deep_found += 1
                             self._log_status(f"[Face+] Found: {filename}")
                         else:
@@ -292,7 +315,7 @@ class ImagePeopleSorter:
 
                 except BrokenExecutor:
                     self._log_status("Operation cancelled during Pass 1b")
-                    return [], 0, 0
+                    return [], 0, 0, 0
 
             self._log_status(
                 f"Pass 1b complete: {hog_deep_found} additional faces found, "
@@ -314,33 +337,41 @@ class ImagePeopleSorter:
                 warnings.filterwarnings('ignore', category=UserWarning)
 
                 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-                self._log_status(f"Pass 2: YOLO body scan ({body_total} images, device={device})...")
+                self._log_status(
+                    f"Pass 2: YOLO body scan ({body_total} images, device={device}, "
+                    f"confidence>={self.confidence_threshold:.2f})..."
+                )
 
                 model = YOLO(YOLO_MODEL)
+                unsure_found = 0
 
                 for i, image_path in enumerate(needs_body_scan):
                     if self.cancel_check and self.cancel_check():
                         self._log_status("Operation cancelled during Pass 2")
-                        return [], 0, 0
+                        return [], 0, 0, 0
 
                     filename = os.path.basename(image_path)
                     try:
                         results = model(image_path, classes=[0], verbose=False, device=device)
                         confs = [float(c) for r in results for c in r.boxes.conf]
-                        has_people = any(c >= YOLO_CONFIDENCE for c in confs)
+                        max_conf = max(confs) if confs else 0.0
                     except Exception as e:
-                        detection_results[image_path] = (False, str(e))
+                        detection_results[image_path] = ('no_people', None, str(e), 'error')
                         if self.progress_callback:
                             progress = 55 + int(((i + 1) / body_total) * 30)
                             self.progress_callback(progress, 100, f"YOLO scan: {filename}", 100)
                         continue
 
-                    if has_people:
-                        detection_results[image_path] = (True, None)
+                    if max_conf >= self.confidence_threshold + self.unsure_margin:
+                        detection_results[image_path] = ('people', max_conf, None, 'yolo')
                         body_found += 1
-                        self._log_status(f"[YOLO] Found: {filename}")
+                        self._log_status(f"[YOLO] Found: {filename} ({max_conf:.2f})")
+                    elif max_conf >= self.confidence_threshold:
+                        detection_results[image_path] = ('unsure', max_conf, None, 'yolo')
+                        unsure_found += 1
+                        self._log_status(f"[YOLO] Unsure: {filename} ({max_conf:.2f})")
                     else:
-                        detection_results[image_path] = (False, None)
+                        detection_results[image_path] = ('no_people', max_conf if confs else None, None, 'yolo')
 
                     if self.progress_callback:
                         progress = 55 + int(((i + 1) / body_total) * 30)
@@ -348,84 +379,165 @@ class ImagePeopleSorter:
 
             except ImportError:
                 self._log_status("Warning: ultralytics not installed — body scan skipped. Run: pip install ultralytics")
+                unsure_found = 0
                 for path in needs_body_scan:
-                    detection_results[path] = (False, None)
+                    detection_results[path] = ('no_people', None, None, 'none')
 
-            self._log_status(f"Pass 2 complete: {body_found} additional people found by YOLO")
+            self._log_status(
+                f"Pass 2 complete: {body_found} additional people found by YOLO, "
+                f"{unsure_found} marked unsure"
+            )
+
+        # Build a DetectionEntry per image so review + CSV reporting have a
+        # single unified view of the outcome regardless of which pass decided it.
+        entries: List[DetectionEntry] = []
+        for image_path in image_files:
+            category, confidence, error, pass_name = detection_results.get(
+                image_path, ('no_people', None, "Not processed", 'none')
+            )
+            entries.append(DetectionEntry(
+                path=image_path, category=category, confidence=confidence,
+                detection_pass=pass_name, error=error,
+            ))
+        entries_by_path = {e.path: e for e in entries}
+
+        # =========================================
+        # REVIEW (optional): let the caller veto false positives before
+        # any file is copied/moved. Only candidates flagged as people/unsure
+        # are worth reviewing — no_people/error entries are left alone.
+        # =========================================
+        if self.review_callback:
+            reviewable = [e for e in entries if e.category in ('people', 'unsure')]
+            if reviewable:
+                self._log_status(f"Review: {len(reviewable)} images awaiting confirmation...")
+                overrides = self.review_callback(reviewable) or {}
+                for path, new_category in overrides.items():
+                    if path in entries_by_path:
+                        entries_by_path[path].category = new_category
+                self._log_status("Review complete, resuming...")
 
         # =========================================
         # PASS 3: Copy/Move files
         # =========================================
         self._log_status(f"Pass 3: {'Copying' if self.copy_mode else 'Moving'} files...")
 
+        category_folders = {
+            'people': (people_folder, "People"),
+            'unsure': (unsure_folder, "Unsure"),
+            'no_people': (no_people_folder, "No_People"),
+        }
+
         results = []
         people_count = 0
         no_people_count = 0
+        unsure_count = 0
+        csv_rows = []
 
-        for idx, image_path in enumerate(image_files, 1):
+        for idx, entry in enumerate(entries, 1):
+            image_path = entry.path
             if self.cancel_check and self.cancel_check():
                 self._log_status("Operation cancelled by user")
                 break
 
             filename = os.path.basename(image_path)
-            has_people, error = detection_results.get(image_path, (False, "Not processed"))
 
             if self.progress_callback:
                 progress = 85 + int((idx / total_files) * 15)
                 self.progress_callback(progress, 100, f"{'Copying' if self.copy_mode else 'Moving'}: {filename}", 100)
 
-            if error:
+            if entry.error:
                 results.append(SortResult(
                     source_path=image_path,
                     dest_path=None,
                     has_people=False,
                     success=False,
-                    error_message=error
+                    error_message=entry.error,
+                    category=entry.category,
+                    detection_pass=entry.detection_pass,
+                    confidence=entry.confidence,
                 ))
+                csv_rows.append((entry, None, False, entry.error))
                 continue
 
             try:
-                if has_people:
-                    dest_subfolder = people_folder
+                dest_subfolder, category_label = category_folders[entry.category]
+                if entry.category == 'people':
                     people_count += 1
-                    category = "People"
+                elif entry.category == 'unsure':
+                    unsure_count += 1
                 else:
-                    dest_subfolder = no_people_folder
                     no_people_count += 1
-                    category = "No_People"
 
                 dest_path = self._get_unique_dest_path(dest_subfolder, filename)
                 self._copy_or_move_file(image_path, dest_path)
 
                 action = "Copied" if self.copy_mode else "Moved"
-                self._log_status(f"{action}: {filename} -> {category}")
+                self._log_status(f"{action}: {filename} -> {category_label}")
 
                 results.append(SortResult(
                     source_path=image_path,
                     dest_path=dest_path,
-                    has_people=has_people,
-                    success=True
+                    has_people=(entry.category == 'people'),
+                    success=True,
+                    category=entry.category,
+                    detection_pass=entry.detection_pass,
+                    confidence=entry.confidence,
                 ))
+                csv_rows.append((entry, dest_path, True, None))
 
             except Exception as e:
                 self._log_status(f"Error processing {filename}: {e}")
                 results.append(SortResult(
                     source_path=image_path,
                     dest_path=None,
-                    has_people=has_people,
+                    has_people=(entry.category == 'people'),
                     success=False,
-                    error_message=str(e)
+                    error_message=str(e),
+                    category=entry.category,
+                    detection_pass=entry.detection_pass,
+                    confidence=entry.confidence,
                 ))
+                csv_rows.append((entry, None, False, str(e)))
+
+        if self.write_csv_report and csv_rows:
+            self._write_csv_report(dest_folder, csv_rows)
 
         if self.cancel_check and self.cancel_check():
-            self._log_status(f"Operation cancelled: {people_count} people, {no_people_count} no people processed")
+            self._log_status(
+                f"Operation cancelled: {people_count} people, {unsure_count} unsure, "
+                f"{no_people_count} no people processed"
+            )
         else:
             error_count = sum(1 for r in results if not r.success)
-            action = "copied" if self.copy_mode else "moved"
             self._log_status(
                 f"Complete: {people_count} with people "
                 f"({hog_found} face-fast + {hog_deep_found} face-deep + {body_found} body), "
-                f"{no_people_count} without, {error_count} errors"
+                f"{unsure_count} unsure, {no_people_count} without, {error_count} errors"
             )
 
-        return results, people_count, no_people_count
+        return results, people_count, no_people_count, unsure_count
+
+    def _write_csv_report(self, dest_folder: str, csv_rows: list) -> None:
+        import csv as csv_module
+        report_path = os.path.join(dest_folder, "sort_report.csv")
+        try:
+            with open(report_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv_module.writer(f)
+                writer.writerow([
+                    "filename", "source_path", "category", "detection_pass",
+                    "confidence", "dest_path", "success", "error",
+                ])
+                for entry, dest_path, success, error in csv_rows:
+                    writer.writerow([
+                        os.path.basename(entry.path),
+                        entry.path,
+                        entry.category,
+                        entry.detection_pass,
+                        f"{entry.confidence:.3f}" if entry.confidence is not None else "",
+                        dest_path or "",
+                        success,
+                        error or "",
+                    ])
+            self._log_status(f"CSV report written: {report_path}")
+        except IOError as e:
+            self._log_status(f"Warning: could not write CSV report: {e}")
