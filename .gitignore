@@ -58,6 +58,7 @@ api_keys.json
 # Auto-generated app state
 **/error_log.txt
 **/settings.json
+**/generation_history.json
 
 # Sample / test media files
 *.mp4

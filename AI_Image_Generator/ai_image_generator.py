@@ -1,4 +1,4 @@
-"""AI Image Studio v3.0.0"""
+"""AI Image Studio v3.1.0"""
 
 import base64
 import json
@@ -13,15 +13,16 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QTextEdit, QComboBox, QSlider, QSpinBox,
     QGroupBox, QFileDialog, QProgressBar, QSizePolicy, QTabWidget,
     QScrollArea, QFrame, QMessageBox, QLineEdit, QStackedWidget,
-    QGridLayout,
+    QGridLayout, QCheckBox, QListWidget, QListWidgetItem, QDialog,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent
 
-VERSION = "3.0.2"
+VERSION = "3.1.0"
 
 SETTINGS_FILE = Path(__file__).parent / "settings.json"
 API_KEYS_FILE = Path(__file__).parent / "api_keys.json"
+HISTORY_FILE  = Path(__file__).parent / "generation_history.json"
 WORKFLOWS_DIR = Path(__file__).parent / "Comfy_Workflows"
 DROPPED_DIR   = Path(__file__).parent / "dropped_images"
 UPLOAD_DIR    = Path(__file__).parent / "upload_temp"
@@ -243,6 +244,38 @@ def save_api_keys(keys: dict):
         pass
 
 # ------------------------------------------------------------------ #
+# Generation history  (prompt recall)
+# ------------------------------------------------------------------ #
+
+_HISTORY_MAX = 500
+
+def load_history() -> list:
+    if HISTORY_FILE.exists():
+        try:
+            data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+    return []
+
+def add_history_entry(entry: dict):
+    try:
+        hist = load_history()
+        hist.insert(0, entry)
+        del hist[_HISTORY_MAX:]
+        HISTORY_FILE.write_text(json.dumps(hist, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+def find_history_entry(path: str) -> dict | None:
+    target = str(Path(path))
+    for e in load_history():
+        if str(Path(e.get("path", ""))) == target:
+            return e
+    return None
+
+# ------------------------------------------------------------------ #
 # Workflow introspection helpers
 # ------------------------------------------------------------------ #
 
@@ -314,6 +347,44 @@ def _patch_workflow_edit(workflow: dict, prompt: str, seed: int, steps: int) -> 
             inp["noise_seed"] = seed
         if "seed" in inp and isinstance(inp["seed"], int):
             inp["seed"] = seed
+
+    return workflow
+
+
+def _patch_workflow_i2i(workflow: dict, prompt: str, seed: int, steps: int,
+                        denoise: float) -> dict:
+    """Patch an img2img workflow: prompt (if given), seed, steps, and denoise strength."""
+    import random
+    if seed < 0:
+        seed = random.randint(0, 2**31)
+
+    if prompt:
+        for _, v in workflow.items():
+            if v.get("class_type") == "PrimitiveStringMultiline":
+                v["inputs"]["value"] = prompt
+                break
+        else:
+            for _, v in workflow.items():
+                if v.get("class_type") == "CLIPTextEncode":
+                    meta = v.get("_meta", {}).get("title", "").lower()
+                    if "neg" not in meta:
+                        v["inputs"]["text"] = prompt
+                        break
+
+    result = _find_node_by_class(workflow, "KSampler")
+    if result:
+        _, node = result
+        node["inputs"]["seed"] = seed
+        node["inputs"]["steps"] = steps
+
+    for v in workflow.values():
+        inp = v.get("inputs", {})
+        if "noise_seed" in inp:
+            inp["noise_seed"] = seed
+        if "seed" in inp and isinstance(inp["seed"], int):
+            inp["seed"] = seed
+        if "denoise" in inp and isinstance(inp["denoise"], (int, float)):
+            inp["denoise"] = round(denoise, 2)
 
     return workflow
 
@@ -968,9 +1039,10 @@ _LIB_COLS = 4
 class ThumbnailCard(QFrame):
     selected_signal = pyqtSignal(str)
 
-    def __init__(self, img_path: str, parent=None):
+    def __init__(self, img_path: str, favorite: bool = False, parent=None):
         super().__init__(parent)
         self._path = img_path
+        self._favorite = favorite
         self.setFixedSize(_CARD_W, _CARD_H)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._build_ui()
@@ -995,13 +1067,14 @@ class ThumbnailCard(QFrame):
             self._thumb.setText("?")
         layout.addWidget(self._thumb)
 
-        name = Path(self._path).name
-        if len(name) > 22:
-            name = name[:19] + "..."
-        name_lbl = QLabel(name)
-        name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        name_lbl.setStyleSheet(f"color: {FG}; font-size: 8pt; background: transparent; border: none;")
-        layout.addWidget(name_lbl)
+        self._name = Path(self._path).name
+        if len(self._name) > 22:
+            self._name = self._name[:19] + "..."
+        self._name_lbl = QLabel()
+        self._name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._name_lbl.setStyleSheet(f"color: {FG}; font-size: 8pt; background: transparent; border: none;")
+        layout.addWidget(self._name_lbl)
+        self._update_name_label()
 
         try:
             mtime = Path(self._path).stat().st_mtime
@@ -1027,6 +1100,16 @@ class ThumbnailCard(QFrame):
     def set_selected(self, selected: bool):
         self._set_style(selected)
 
+    def _update_name_label(self):
+        if self._favorite:
+            self._name_lbl.setText(f'<span style="color:#f5c04a;">★</span> {self._name}')
+        else:
+            self._name_lbl.setText(self._name)
+
+    def set_favorite(self, favorite: bool):
+        self._favorite = favorite
+        self._update_name_label()
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.selected_signal.emit(self._path)
@@ -1035,6 +1118,72 @@ class ThumbnailCard(QFrame):
     @property
     def path(self) -> str:
         return self._path
+
+
+# ------------------------------------------------------------------ #
+# A/B compare dialog
+# ------------------------------------------------------------------ #
+
+class CompareDialog(QDialog):
+    def __init__(self, path_a: str, path_b: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Compare  A ⇆ B")
+        self.resize(1280, 760)
+        self.setStyleSheet(STYLESHEET)
+        self._pix_a = QPixmap(path_a)
+        self._pix_b = QPixmap(path_b)
+
+        layout = QHBoxLayout(self)
+        layout.setSpacing(12)
+        self._img_labels: list[tuple[QLabel, QPixmap]] = []
+
+        for tag, path, pix in (("A", path_a, self._pix_a), ("B", path_b, self._pix_b)):
+            col = QVBoxLayout()
+            col.setSpacing(6)
+
+            img_lbl = QLabel()
+            img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            img_lbl.setMinimumSize(300, 300)
+            img_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            img_lbl.setStyleSheet(f"background-color: {BG_MED}; border-radius: 4px;")
+            self._img_labels.append((img_lbl, pix))
+            col.addWidget(img_lbl, stretch=1)
+
+            p = Path(path)
+            cap = QLabel(f"<b style='color:{ACCENT};'>{tag}</b>   {p.name}")
+            cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            cap.setStyleSheet(f"color:{FG}; font-size:9pt;")
+            col.addWidget(cap)
+
+            try:
+                stat = p.stat()
+                mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+                dims = f"{pix.width()} × {pix.height()}" if not pix.isNull() else "?"
+                detail = QLabel(f"{dims}   ·   {stat.st_size / 1024:.0f} KB   ·   {mtime}")
+            except Exception:
+                detail = QLabel("")
+            detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            detail.setStyleSheet(f"color:{FG_DIM}; font-size:8pt;")
+            col.addWidget(detail)
+
+            layout.addLayout(col, stretch=1)
+
+    def _update_pixmaps(self):
+        for lbl, pix in self._img_labels:
+            if not pix.isNull():
+                lbl.setPixmap(pix.scaled(
+                    lbl.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                ))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._update_pixmaps()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_pixmaps()
 
 
 # ------------------------------------------------------------------ #
@@ -1047,6 +1196,12 @@ class TextToImageTab(QWidget):
         self._settings = settings
         self._api_keys = api_keys
         self._worker: QThread | None = None
+        self._queue: list[dict] = []
+        self._queue_running = False
+        self._queue_total = 0
+        self._queue_done = 0
+        self._queue_failed = 0
+        self._active_job: dict | None = None
         self._build_ui()
         self._reload_workflows()
 
@@ -1156,6 +1311,43 @@ class TextToImageTab(QWidget):
         out_row.addWidget(out_browse)
         left.addWidget(out_group)
 
+        # Batch queue
+        queue_group = QGroupBox("Batch Queue")
+        queue_layout = QVBoxLayout(queue_group)
+        queue_layout.setSpacing(6)
+        self._queue_list = QListWidget()
+        self._queue_list.setFixedHeight(96)
+        self._queue_list.setStyleSheet(
+            f"QListWidget {{ background-color: {BG_LT}; border: 1px solid {BORDER};"
+            f" border-radius: 4px; font-size: 8pt; color: {FG}; }}"
+            f"QListWidget::item:selected {{ background-color: {ACCENT}; color: white; }}"
+        )
+        queue_layout.addWidget(self._queue_list)
+        qbtn_row = QHBoxLayout()
+        qbtn_row.setSpacing(6)
+        add_q_btn = QPushButton("➕ Add to Queue")
+        add_q_btn.setObjectName("secondary")
+        add_q_btn.clicked.connect(self._add_to_queue)
+        self._run_q_btn = QPushButton("▶ Run Queue")
+        self._run_q_btn.setObjectName("secondary")
+        self._run_q_btn.clicked.connect(self._run_queue)
+        rm_q_btn = QPushButton("✕")
+        rm_q_btn.setObjectName("secondary")
+        rm_q_btn.setFixedSize(30, 30)
+        rm_q_btn.setToolTip("Remove selected job")
+        rm_q_btn.clicked.connect(self._remove_queue_item)
+        clr_q_btn = QPushButton("🗑")
+        clr_q_btn.setObjectName("secondary")
+        clr_q_btn.setFixedSize(30, 30)
+        clr_q_btn.setToolTip("Clear queue")
+        clr_q_btn.clicked.connect(self._clear_queue)
+        qbtn_row.addWidget(add_q_btn, stretch=1)
+        qbtn_row.addWidget(self._run_q_btn, stretch=1)
+        qbtn_row.addWidget(rm_q_btn)
+        qbtn_row.addWidget(clr_q_btn)
+        queue_layout.addLayout(qbtn_row)
+        left.addWidget(queue_group)
+
         left.addStretch()
 
         self._gen_btn = QPushButton("✨  Generate")
@@ -1210,60 +1402,206 @@ class TextToImageTab(QWidget):
             self._settings["t2i_output_dir"] = f
             save_settings(self._settings)
 
-    def _generate(self):
+    def _collect_job(self) -> dict | None:
+        """Validate the current form and return a job dict, or None (with status set)."""
         workflow_path = self._wf_combo.currentData()
         prompt = self._prompt.toPlainText().strip()
         out = self._out_edit.toPlainText().strip()
 
         if not workflow_path or not Path(workflow_path).exists():
             self._status.setText("Select a valid workflow.")
-            return
+            return None
         if not prompt:
             self._status.setText("Enter a prompt.")
-            return
+            return None
         if not out:
             self._status.setText("Select an output folder.")
-            return
-
-        with open(workflow_path, "r", encoding="utf-8") as f:
-            workflow = json.load(f)
+            return None
 
         w, h = self._size_combo.currentData()
-        workflow = _patch_workflow_t2i(workflow, prompt, w, h,
-                                        self._seed.value(), self._steps.value())
+        return {
+            "workflow_path": workflow_path,
+            "prompt": prompt,
+            "size": [w, h],
+            "steps": self._steps.value(),
+            "seed": self._seed.value(),
+            "output_dir": out,
+        }
 
-        self._gen_btn.setEnabled(False)
-        self._progress.setValue(0)
-        self._preview_panel.set_message("Generating...")
-        self._save_state()
+    def _start_job(self, job: dict) -> bool:
+        """Kick off one generation job. Returns False if it could not start."""
+        import random
 
+        with open(job["workflow_path"], "r", encoding="utf-8") as f:
+            workflow = json.load(f)
+
+        seed = job["seed"]
+        if seed < 0:
+            seed = random.randint(0, 2**31)
+
+        w, h = job["size"]
+        workflow = _patch_workflow_t2i(workflow, job["prompt"], w, h,
+                                        seed, job["steps"])
+
+        out = Path(job["output_dir"])
         if self._conn.mode == "runpod":
             api_key = self._conn.runpod_api_key
             endpoint = self._conn.runpod_endpoint
             if not api_key or not endpoint:
                 self._status.setText("Enter RunPod API key and endpoint ID.")
-                self._gen_btn.setEnabled(True)
-                return
-            self._worker = RunPodWorker(api_key, endpoint, workflow, Path(out), "t2i")
+                return False
+            self._worker = RunPodWorker(api_key, endpoint, workflow, out, "t2i")
         else:
-            self._worker = ComfyWorker(self._conn.local_url, workflow, Path(out), "t2i")
+            self._worker = ComfyWorker(self._conn.local_url, workflow, out, "t2i")
+
+        self._active_job = dict(job, seed=seed)
+        self._gen_btn.setEnabled(False)
+        self._run_q_btn.setEnabled(False)
+        self._progress.setValue(0)
+        self._preview_panel.set_message("Generating...")
 
         self._worker.status.connect(self._status.setText)
         self._worker.progress.connect(self._progress.setValue)
         self._worker.done.connect(self._on_done)
         self._worker.error.connect(self._on_error)
         self._worker.start()
+        return True
+
+    def _generate(self):
+        if self._worker and self._worker.isRunning():
+            return
+        job = self._collect_job()
+        if not job:
+            return
+        self._queue_running = False
+        self._save_state()
+        self._start_job(job)
+
+    # ---- Batch queue ---------------------------------------------- #
+
+    def _add_to_queue(self):
+        job = self._collect_job()
+        if not job:
+            return
+        self._queue.append(job)
+        self._refresh_queue_list()
+        self._status.setText(f"Queued job {len(self._queue)} — "
+                             f"{len(self._queue)} waiting")
+
+    def _refresh_queue_list(self):
+        self._queue_list.clear()
+        for i, job in enumerate(self._queue, 1):
+            w, h = job["size"]
+            text = job["prompt"].replace("\n", " ")
+            if len(text) > 46:
+                text = text[:43] + "..."
+            self._queue_list.addItem(f"{i}.  {text}   [{w}×{h}, {job['steps']}st]")
+        n = len(self._queue)
+        self._run_q_btn.setText(f"▶ Run Queue ({n})" if n else "▶ Run Queue")
+
+    def _remove_queue_item(self):
+        row = self._queue_list.currentRow()
+        if 0 <= row < len(self._queue):
+            self._queue.pop(row)
+            self._refresh_queue_list()
+
+    def _clear_queue(self):
+        self._queue.clear()
+        self._refresh_queue_list()
+
+    def _run_queue(self):
+        if self._worker and self._worker.isRunning():
+            return
+        if not self._queue:
+            self._status.setText("Queue is empty — add jobs first.")
+            return
+        self._queue_running = True
+        self._queue_total = len(self._queue)
+        self._queue_done = 0
+        self._queue_failed = 0
+        self._start_next_queued()
+
+    def _start_next_queued(self):
+        if not self._queue:
+            self._finish_queue()
+            return
+        job = self._queue.pop(0)
+        self._refresh_queue_list()
+        self._status.setText(f"Queue: job {self._queue_done + self._queue_failed + 1} "
+                             f"of {self._queue_total}...")
+        if not self._start_job(job):
+            self._queue_failed += 1
+            self._start_next_queued()
+
+    def _finish_queue(self):
+        self._queue_running = False
+        self._gen_btn.setEnabled(True)
+        self._run_q_btn.setEnabled(True)
+        msg = f"Queue complete — {self._queue_done} done"
+        if self._queue_failed:
+            msg += f", {self._queue_failed} failed"
+        self._status.setText(msg)
+
+    # ---- Completion ------------------------------------------------ #
+
+    def _record_history(self, path: str):
+        job = self._active_job or {}
+        add_history_entry({
+            "path": str(path),
+            "tab": "t2i",
+            "prompt": job.get("prompt", ""),
+            "workflow": job.get("workflow_path", ""),
+            "size": job.get("size", []),
+            "steps": job.get("steps", 0),
+            "seed": job.get("seed", -1),
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+        })
 
     def _on_done(self, path: str):
-        self._gen_btn.setEnabled(True)
-        self._status.setText(f"Done! {Path(path).name}")
+        self._record_history(path)
         self._preview_panel.show_image(path)
+        if self._queue_running:
+            self._queue_done += 1
+            self._start_next_queued()
+        else:
+            self._gen_btn.setEnabled(True)
+            self._run_q_btn.setEnabled(True)
+            self._status.setText(f"Done! {Path(path).name}")
 
     def _on_error(self, msg: str):
-        self._gen_btn.setEnabled(True)
         self._progress.setValue(0)
-        self._status.setText("Error — see preview panel")
-        self._preview_panel.set_message(f"Error:\n{msg[:400]}")
+        if self._queue_running:
+            self._queue_failed += 1
+            self._preview_panel.set_message(f"Job failed:\n{msg[:300]}")
+            self._start_next_queued()
+        else:
+            self._gen_btn.setEnabled(True)
+            self._run_q_btn.setEnabled(True)
+            self._status.setText("Error — see preview panel")
+            self._preview_panel.set_message(f"Error:\n{msg[:400]}")
+
+    # ---- Prompt recall --------------------------------------------- #
+
+    def apply_history(self, entry: dict):
+        self._prompt.setPlainText(entry.get("prompt", ""))
+        steps = entry.get("steps")
+        if isinstance(steps, int) and steps > 0:
+            self._steps.setValue(steps)
+        seed = entry.get("seed")
+        if isinstance(seed, int):
+            self._seed.setValue(seed)
+        size = entry.get("size") or []
+        if len(size) == 2:
+            for i in range(self._size_combo.count()):
+                if self._size_combo.itemData(i) == tuple(size):
+                    self._size_combo.setCurrentIndex(i)
+                    break
+        wf = entry.get("workflow", "")
+        for i in range(self._wf_combo.count()):
+            if self._wf_combo.itemData(i) == wf:
+                self._wf_combo.setCurrentIndex(i)
+                break
+        self._save_state()
 
 
 # ------------------------------------------------------------------ #
@@ -1497,10 +1835,22 @@ class SceneComposerTab(QWidget):
         with open(workflow_path, "r", encoding="utf-8") as f:
             workflow = json.load(f)
 
-        workflow = _patch_workflow_edit(workflow, instruction,
-                                        self._seed.value(), self._steps.value())
+        import random
+        seed = self._seed.value()
+        if seed < 0:
+            seed = random.randint(0, 2**31)
+
+        workflow = _patch_workflow_edit(workflow, instruction, seed, self._steps.value())
 
         w, h = self._size_combo.currentData()
+
+        self._active_job = {
+            "prompt": instruction,
+            "workflow_path": workflow_path,
+            "size": [w, h],
+            "steps": self._steps.value(),
+            "seed": seed,
+        }
 
         self._compose_btn.setEnabled(False)
         self._progress.setValue(0)
@@ -1532,6 +1882,17 @@ class SceneComposerTab(QWidget):
         self._compose_btn.setEnabled(True)
         self._status.setText(f"Done! {Path(path).name}")
         self._preview_panel.show_image(path)
+        job = getattr(self, "_active_job", None) or {}
+        add_history_entry({
+            "path": str(path),
+            "tab": "edit",
+            "prompt": job.get("prompt", ""),
+            "workflow": job.get("workflow_path", ""),
+            "size": job.get("size", []),
+            "steps": job.get("steps", 0),
+            "seed": job.get("seed", -1),
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+        })
 
     def _on_error(self, msg: str):
         self._compose_btn.setEnabled(True)
@@ -1539,19 +1900,392 @@ class SceneComposerTab(QWidget):
         self._status.setText("Error — see preview panel")
         self._preview_panel.set_message(f"Error:\n{msg[:400]}")
 
+    def apply_history(self, entry: dict):
+        self._instruction.setPlainText(entry.get("prompt", ""))
+        steps = entry.get("steps")
+        if isinstance(steps, int) and steps > 0:
+            self._steps.setValue(steps)
+        seed = entry.get("seed")
+        if isinstance(seed, int):
+            self._seed.setValue(seed)
+        size = entry.get("size") or []
+        if len(size) == 2:
+            for i in range(self._size_combo.count()):
+                if self._size_combo.itemData(i) == tuple(size):
+                    self._size_combo.setCurrentIndex(i)
+                    break
+        wf = entry.get("workflow", "")
+        for i in range(self._wf_combo.count()):
+            if self._wf_combo.itemData(i) == wf:
+                self._wf_combo.setCurrentIndex(i)
+                break
+        self._save_state()
+
 
 # ------------------------------------------------------------------ #
-# Tab 3 — Library
+# Tab 3 — Img2img Variations
+# ------------------------------------------------------------------ #
+
+class ImageVariationsTab(QWidget):
+    def __init__(self, settings: dict, api_keys: dict, parent=None):
+        super().__init__(parent)
+        self._settings = settings
+        self._api_keys = api_keys
+        self._worker: QThread | None = None
+        self._active_job: dict | None = None
+        self._build_ui()
+        self._reload_workflows()
+
+    def _build_ui(self):
+        root = QHBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(12)
+
+        left_widget = QWidget()
+        left = QVBoxLayout(left_widget)
+        left.setSpacing(10)
+        left.setContentsMargins(4, 4, 4, 4)
+
+        left_scroll = QScrollArea()
+        left_scroll.setWidget(left_widget)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setMinimumWidth(280)
+        left_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        # Connection (Local / RunPod)
+        self._conn = ConnectionWidget(self._settings, self._api_keys, "i2i")
+        left.addWidget(self._conn)
+
+        # Workflow
+        wf_group = QGroupBox("Workflow")
+        wf_row = QHBoxLayout(wf_group)
+        self._wf_combo = QComboBox()
+        wf_reload = QPushButton("↻")
+        wf_reload.setObjectName("secondary")
+        wf_reload.setFixedSize(34, 34)
+        wf_reload.setToolTip("Reload workflows")
+        wf_reload.clicked.connect(self._reload_workflows)
+        wf_row.addWidget(self._wf_combo, stretch=1)
+        wf_row.addWidget(wf_reload)
+        left.addWidget(wf_group)
+
+        # Source image slot
+        src_group = QGroupBox("Source Image  (drag & drop or click)")
+        src_layout = QHBoxLayout(src_group)
+        src_layout.setContentsMargins(6, 10, 6, 10)
+        self._src_slot = ImageSlot("Source Image")
+        self._src_slot.image_changed.connect(self._save_state)
+        src_layout.addStretch()
+        src_layout.addWidget(self._src_slot)
+        src_layout.addStretch()
+        left.addWidget(src_group)
+
+        saved_src = self._settings.get("i2i_source", "")
+        if saved_src and Path(saved_src).exists():
+            self._src_slot.set_image(saved_src, copy=False)
+
+        # Prompt (optional)
+        prompt_group = QGroupBox("Prompt  (optional)")
+        prompt_layout = QVBoxLayout(prompt_group)
+        self._prompt = QTextEdit()
+        self._prompt.setPlaceholderText(
+            "Optional — describe the changes you want.\n"
+            "Leave blank to keep the workflow's own prompt."
+        )
+        self._prompt.setPlainText(self._settings.get("i2i_prompt", ""))
+        self._prompt.setFixedHeight(90)
+        self._prompt.textChanged.connect(self._save_state)
+        prompt_layout.addWidget(self._prompt)
+        left.addWidget(prompt_group)
+
+        # Output size
+        size_group = QGroupBox("Output Size")
+        size_layout = QVBoxLayout(size_group)
+        self._size_combo = QComboBox()
+        for label, w, h in SIZE_PRESETS:
+            self._size_combo.addItem(label, (w, h))
+        saved_size = tuple(self._settings.get("i2i_size", [1024, 1024]))
+        for i, (_, w, h) in enumerate(SIZE_PRESETS):
+            if (w, h) == saved_size:
+                self._size_combo.setCurrentIndex(i)
+                break
+        self._size_combo.currentIndexChanged.connect(self._save_state)
+        size_layout.addWidget(self._size_combo)
+        left.addWidget(size_group)
+
+        # Strength (denoise)
+        strength_group = QGroupBox("Variation Strength  (denoise)")
+        strength_inner = QHBoxLayout(strength_group)
+        self._strength = QSlider(Qt.Orientation.Horizontal)
+        self._strength.setRange(5, 100)
+        self._strength.setValue(self._settings.get("i2i_strength", 60))
+        self._strength_lbl = QLabel(f"{self._strength.value() / 100:.2f}")
+        self._strength_lbl.setFixedWidth(38)
+        self._strength_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._strength_lbl.setStyleSheet(f"color:{ACCENT}; font-weight:bold;")
+        self._strength.valueChanged.connect(
+            lambda v: (self._strength_lbl.setText(f"{v / 100:.2f}"), self._save_state()))
+        strength_inner.addWidget(self._strength)
+        strength_inner.addWidget(self._strength_lbl)
+        hint = QLabel("Low = subtle variation  ·  High = mostly new image")
+        hint.setStyleSheet(f"color:{FG_DIM}; font-size:8pt;")
+        left.addWidget(strength_group)
+        left.addWidget(hint)
+
+        # Steps + Seed
+        params_row = QHBoxLayout()
+
+        steps_group = QGroupBox("Steps")
+        steps_inner = QHBoxLayout(steps_group)
+        self._steps = QSlider(Qt.Orientation.Horizontal)
+        self._steps.setRange(1, 60)
+        self._steps.setValue(self._settings.get("i2i_steps", 20))
+        self._steps_lbl = QLabel(str(self._steps.value()))
+        self._steps_lbl.setFixedWidth(28)
+        self._steps_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._steps_lbl.setStyleSheet(f"color:{ACCENT}; font-weight:bold;")
+        self._steps.valueChanged.connect(lambda v: (self._steps_lbl.setText(str(v)), self._save_state()))
+        steps_inner.addWidget(self._steps)
+        steps_inner.addWidget(self._steps_lbl)
+        params_row.addWidget(steps_group, stretch=2)
+
+        seed_group = QGroupBox("Seed  (-1 = random)")
+        seed_inner = QHBoxLayout(seed_group)
+        self._seed = QSpinBox()
+        self._seed.setRange(-1, 2147483647)
+        self._seed.setValue(-1)
+        rand_btn = QPushButton("🎲")
+        rand_btn.setObjectName("secondary")
+        rand_btn.setFixedSize(30, 30)
+        rand_btn.clicked.connect(lambda: self._seed.setValue(-1))
+        seed_inner.addWidget(self._seed)
+        seed_inner.addWidget(rand_btn)
+        params_row.addWidget(seed_group, stretch=1)
+        left.addLayout(params_row)
+
+        # Output folder
+        out_group = QGroupBox("Output Folder")
+        out_row = QHBoxLayout(out_group)
+        self._out_edit = QTextEdit(self._settings.get("i2i_output_dir",
+                                   str(Path.home() / "AI_Images")))
+        self._out_edit.setFixedHeight(36)
+        self._out_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        out_browse = QPushButton("...")
+        out_browse.setObjectName("secondary")
+        out_browse.setFixedSize(36, 36)
+        out_browse.clicked.connect(self._browse_output)
+        out_row.addWidget(self._out_edit)
+        out_row.addWidget(out_browse)
+        left.addWidget(out_group)
+
+        left.addStretch()
+
+        self._gen_btn = QPushButton("🔄  Generate Variation")
+        self._gen_btn.setFixedHeight(50)
+        self._gen_btn.setStyleSheet(f"font-size:13pt; background-color:{ACCENT}; border-radius:6px;")
+        self._gen_btn.clicked.connect(self._generate)
+        left.addWidget(self._gen_btn)
+
+        self._progress = QProgressBar()
+        self._progress.setRange(0, 100)
+        left.addWidget(self._progress)
+
+        self._status = QLabel("Load a source image and set the variation strength")
+        self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status.setStyleSheet(f"color:{FG_DIM}; font-size:9pt;")
+        self._status.setWordWrap(True)
+        left.addWidget(self._status)
+
+        root.addWidget(left_scroll, stretch=1)
+
+        self._preview_panel = PreviewPanel()
+        root.addWidget(self._preview_panel, stretch=2)
+
+    def _reload_workflows(self):
+        self._wf_combo.clear()
+        workflows = sorted(WORKFLOWS_DIR.glob("i2i_*.json"))
+        for wf in workflows:
+            self._wf_combo.addItem(wf.stem.replace("_", " ").replace("i2i ", ""), str(wf))
+        if not workflows:
+            self._wf_combo.addItem("No workflows found — add i2i_*.json to Comfy_Workflows/", "")
+        saved_wf = self._settings.get("i2i_workflow", "")
+        for i in range(self._wf_combo.count()):
+            if self._wf_combo.itemData(i) == saved_wf:
+                self._wf_combo.setCurrentIndex(i)
+                break
+
+    def _save_state(self):
+        if not hasattr(self, '_out_edit'):
+            return
+        self._settings["i2i_prompt"] = self._prompt.toPlainText()
+        self._settings["i2i_steps"] = self._steps.value()
+        self._settings["i2i_strength"] = self._strength.value()
+        self._settings["i2i_workflow"] = self._wf_combo.currentData() or ""
+        self._settings["i2i_size"] = list(self._size_combo.currentData() or (1024, 1024))
+        self._settings["i2i_source"] = self._src_slot.path or ""
+        self._settings["i2i_output_dir"] = self._out_edit.toPlainText().strip()
+        save_settings(self._settings)
+
+    def _browse_output(self):
+        f = QFileDialog.getExistingDirectory(self, "Select output folder",
+                                              self._out_edit.toPlainText().strip())
+        if f:
+            self._out_edit.setPlainText(f)
+            self._settings["i2i_output_dir"] = f
+            save_settings(self._settings)
+
+    def set_source_image(self, path: str):
+        """Called from the Library's Variations button."""
+        if path and Path(path).exists():
+            self._src_slot.set_image(path, copy=False)
+            self._status.setText(f"Source: {Path(path).name}")
+
+    def _generate(self):
+        if self._worker and self._worker.isRunning():
+            return
+
+        workflow_path = self._wf_combo.currentData()
+        prompt = self._prompt.toPlainText().strip()
+        out = self._out_edit.toPlainText().strip()
+        src = self._src_slot.path
+
+        if not workflow_path or not Path(workflow_path).exists():
+            self._status.setText("Select a valid workflow (i2i_*.json).")
+            return
+        if not src or not Path(src).exists():
+            self._status.setText("Load a source image.")
+            return
+        if not out:
+            self._status.setText("Select an output folder.")
+            return
+
+        with open(workflow_path, "r", encoding="utf-8") as f:
+            workflow = json.load(f)
+
+        import random
+        seed = self._seed.value()
+        if seed < 0:
+            seed = random.randint(0, 2**31)
+
+        denoise = self._strength.value() / 100
+        workflow = _patch_workflow_i2i(workflow, prompt, seed,
+                                       self._steps.value(), denoise)
+
+        w, h = self._size_combo.currentData()
+
+        self._active_job = {
+            "prompt": prompt,
+            "workflow_path": workflow_path,
+            "size": [w, h],
+            "steps": self._steps.value(),
+            "seed": seed,
+            "strength": denoise,
+            "source": src,
+        }
+
+        self._gen_btn.setEnabled(False)
+        self._progress.setValue(0)
+        self._preview_panel.set_message("Generating variation...")
+        self._save_state()
+
+        if self._conn.mode == "runpod":
+            api_key = self._conn.runpod_api_key
+            endpoint = self._conn.runpod_endpoint
+            if not api_key or not endpoint:
+                self._status.setText("Enter RunPod API key and endpoint ID.")
+                self._gen_btn.setEnabled(True)
+                return
+            self._worker = RunPodEditorWorker(
+                api_key, endpoint, workflow, Path(out), [src], (w, h)
+            )
+        else:
+            self._worker = EditorWorker(
+                self._conn.local_url, workflow, Path(out), [src], (w, h)
+            )
+
+        self._worker.status.connect(self._status.setText)
+        self._worker.progress.connect(self._progress.setValue)
+        self._worker.done.connect(self._on_done)
+        self._worker.error.connect(self._on_error)
+        self._worker.start()
+
+    def _on_done(self, path: str):
+        self._gen_btn.setEnabled(True)
+        self._status.setText(f"Done! {Path(path).name}")
+        self._preview_panel.show_image(path)
+        job = self._active_job or {}
+        add_history_entry({
+            "path": str(path),
+            "tab": "i2i",
+            "prompt": job.get("prompt", ""),
+            "workflow": job.get("workflow_path", ""),
+            "size": job.get("size", []),
+            "steps": job.get("steps", 0),
+            "seed": job.get("seed", -1),
+            "strength": job.get("strength", 0),
+            "source": job.get("source", ""),
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+        })
+
+    def _on_error(self, msg: str):
+        self._gen_btn.setEnabled(True)
+        self._progress.setValue(0)
+        self._status.setText("Error — see preview panel")
+        self._preview_panel.set_message(f"Error:\n{msg[:400]}")
+
+    def apply_history(self, entry: dict):
+        self._prompt.setPlainText(entry.get("prompt", ""))
+        steps = entry.get("steps")
+        if isinstance(steps, int) and steps > 0:
+            self._steps.setValue(steps)
+        seed = entry.get("seed")
+        if isinstance(seed, int):
+            self._seed.setValue(seed)
+        strength = entry.get("strength")
+        if isinstance(strength, (int, float)) and strength > 0:
+            self._strength.setValue(int(strength * 100))
+        size = entry.get("size") or []
+        if len(size) == 2:
+            for i in range(self._size_combo.count()):
+                if self._size_combo.itemData(i) == tuple(size):
+                    self._size_combo.setCurrentIndex(i)
+                    break
+        wf = entry.get("workflow", "")
+        for i in range(self._wf_combo.count()):
+            if self._wf_combo.itemData(i) == wf:
+                self._wf_combo.setCurrentIndex(i)
+                break
+        src = entry.get("source", "")
+        if src and Path(src).exists():
+            self._src_slot.set_image(src, copy=False)
+        self._save_state()
+
+
+# ------------------------------------------------------------------ #
+# Tab 4 — Library
 # ------------------------------------------------------------------ #
 
 class LibraryTab(QWidget):
+    recall_requested = pyqtSignal(dict)
+    variations_requested = pyqtSignal(str)
+
     def __init__(self, settings: dict, parent=None):
         super().__init__(parent)
         self._settings = settings
         self._cards: list[ThumbnailCard] = []
         self._selected_card: ThumbnailCard | None = None
         self._all_paths: list[str] = []
+        self._selected_entry: dict | None = None
+        self._compare_a: str | None = None
         self._build_ui()
+
+    def _favorites(self) -> list[str]:
+        favs = self._settings.get("lib_favorites", [])
+        return favs if isinstance(favs, list) else []
+
+    def _is_fav(self, path: str) -> bool:
+        return str(path) in self._favorites()
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -1573,6 +2307,9 @@ class LibraryTab(QWidget):
         clear_filter_btn.setFixedSize(28, 28)
         clear_filter_btn.setToolTip("Clear filter")
         clear_filter_btn.clicked.connect(lambda: self._filter_edit.clear())
+        self._fav_only_chk = QCheckBox("★ Favorites only")
+        self._fav_only_chk.setStyleSheet(f"color:{FG}; font-size:9pt;")
+        self._fav_only_chk.stateChanged.connect(self._apply_filter)
         self._count_lbl = QLabel("0 images")
         self._count_lbl.setStyleSheet(f"color:{FG_DIM}; font-size:9pt;")
         toolbar.addWidget(refresh_btn)
@@ -1580,6 +2317,8 @@ class LibraryTab(QWidget):
         toolbar.addWidget(filter_lbl)
         toolbar.addWidget(self._filter_edit)
         toolbar.addWidget(clear_filter_btn)
+        toolbar.addSpacing(12)
+        toolbar.addWidget(self._fav_only_chk)
         toolbar.addStretch()
         toolbar.addWidget(self._count_lbl)
         root.addLayout(toolbar)
@@ -1622,10 +2361,47 @@ class LibraryTab(QWidget):
         self._meta_date.setStyleSheet(f"font-size:8pt; color:{FG_DIM};")
         self._meta_size = QLabel("—")
         self._meta_size.setStyleSheet(f"font-size:8pt; color:{FG_DIM};")
+        self._meta_prompt = QLabel("—")
+        self._meta_prompt.setWordWrap(True)
+        self._meta_prompt.setMaximumHeight(76)
+        self._meta_prompt.setStyleSheet(f"font-size:8pt; color:{FG_DIM}; font-style:italic;")
         info_layout.addWidget(self._meta_name)
         info_layout.addWidget(self._meta_date)
         info_layout.addWidget(self._meta_size)
+        info_layout.addWidget(self._meta_prompt)
         right_layout.addWidget(info_group)
+
+        fav_row = QHBoxLayout()
+        self._lib_fav_btn = QPushButton("☆  Favorite")
+        self._lib_fav_btn.setObjectName("secondary")
+        self._lib_fav_btn.setEnabled(False)
+        self._lib_fav_btn.clicked.connect(self._toggle_favorite)
+        self._lib_compare_btn = QPushButton("⇆  Set A")
+        self._lib_compare_btn.setObjectName("secondary")
+        self._lib_compare_btn.setEnabled(False)
+        self._lib_compare_btn.setToolTip(
+            "Select an image and click to set it as A;\n"
+            "then select another image and click again to compare."
+        )
+        self._lib_compare_btn.clicked.connect(self._compare_clicked)
+        fav_row.addWidget(self._lib_fav_btn)
+        fav_row.addWidget(self._lib_compare_btn)
+        right_layout.addLayout(fav_row)
+
+        recall_row = QHBoxLayout()
+        self._lib_recall_btn = QPushButton("↩  Recall Prompt")
+        self._lib_recall_btn.setObjectName("secondary")
+        self._lib_recall_btn.setEnabled(False)
+        self._lib_recall_btn.setToolTip("Restore this image's prompt and settings to the tab that generated it")
+        self._lib_recall_btn.clicked.connect(self._recall_prompt)
+        self._lib_vary_btn = QPushButton("🔄  Variations")
+        self._lib_vary_btn.setObjectName("secondary")
+        self._lib_vary_btn.setEnabled(False)
+        self._lib_vary_btn.setToolTip("Send this image to the Variations tab")
+        self._lib_vary_btn.clicked.connect(self._send_to_variations)
+        recall_row.addWidget(self._lib_recall_btn)
+        recall_row.addWidget(self._lib_vary_btn)
+        right_layout.addLayout(recall_row)
 
         action_row = QHBoxLayout()
         self._lib_open_btn = QPushButton("📁  Open Folder")
@@ -1645,7 +2421,7 @@ class LibraryTab(QWidget):
 
     def refresh(self):
         dirs = []
-        for key in ("t2i_output_dir", "edit_output_dir"):
+        for key in ("t2i_output_dir", "edit_output_dir", "i2i_output_dir"):
             d = self._settings.get(key, "")
             if d and Path(d).exists():
                 dirs.append(Path(d))
@@ -1669,8 +2445,10 @@ class LibraryTab(QWidget):
 
     def _apply_filter(self):
         query = self._filter_edit.text().lower()
+        fav_only = self._fav_only_chk.isChecked()
         filtered = [p for p in self._all_paths
-                    if not query or query in Path(p).name.lower()]
+                    if (not query or query in Path(p).name.lower())
+                    and (not fav_only or self._is_fav(p))]
         self._rebuild_grid(filtered)
 
     def _rebuild_grid(self, paths: list[str]):
@@ -1682,7 +2460,7 @@ class LibraryTab(QWidget):
         self._selected_card = None
 
         for i, path in enumerate(paths):
-            card = ThumbnailCard(path)
+            card = ThumbnailCard(path, favorite=self._is_fav(path))
             card.selected_signal.connect(self._on_card_clicked)
             self._cards.append(card)
             row, col = divmod(i, _LIB_COLS)
@@ -1713,8 +2491,81 @@ class LibraryTab(QWidget):
         except Exception:
             pass
 
+        # History lookup — prompt display + recall availability
+        self._selected_entry = find_history_entry(path)
+        if self._selected_entry and self._selected_entry.get("prompt"):
+            prompt = self._selected_entry["prompt"].replace("\n", " ")
+            if len(prompt) > 220:
+                prompt = prompt[:217] + "..."
+            self._meta_prompt.setText(f"“{prompt}”")
+        elif self._selected_entry:
+            self._meta_prompt.setText("(generated — no prompt recorded)")
+        else:
+            self._meta_prompt.setText("(no generation history for this image)")
+        self._lib_recall_btn.setEnabled(self._selected_entry is not None)
+
+        self._lib_fav_btn.setEnabled(True)
+        self._lib_fav_btn.setText("★  Unfavorite" if self._is_fav(path) else "☆  Favorite")
+        self._lib_compare_btn.setEnabled(True)
+        self._update_compare_button()
+        self._lib_vary_btn.setEnabled(True)
         self._lib_open_btn.setEnabled(True)
         self._lib_delete_btn.setEnabled(True)
+
+    # ---- Favorites -------------------------------------------------- #
+
+    def _toggle_favorite(self):
+        if not self._selected_card:
+            return
+        path = str(self._selected_card.path)
+        favs = self._favorites()
+        if path in favs:
+            favs.remove(path)
+        else:
+            favs.append(path)
+        self._settings["lib_favorites"] = favs
+        save_settings(self._settings)
+        self._selected_card.set_favorite(path in favs)
+        self._lib_fav_btn.setText("★  Unfavorite" if path in favs else "☆  Favorite")
+        if self._fav_only_chk.isChecked():
+            self._apply_filter()
+
+    # ---- A/B compare ------------------------------------------------- #
+
+    def _update_compare_button(self):
+        if self._compare_a:
+            self._lib_compare_btn.setText("⇆  Compare with A")
+        else:
+            self._lib_compare_btn.setText("⇆  Set A")
+
+    def _compare_clicked(self):
+        if not self._selected_card:
+            return
+        path = self._selected_card.path
+        if not self._compare_a:
+            self._compare_a = path
+            self._update_compare_button()
+            self._count_lbl.setText(f"A = {Path(path).name}")
+            return
+        if path == self._compare_a:
+            # Clicking again on A cancels the pending compare
+            self._compare_a = None
+            self._update_compare_button()
+            return
+        dlg = CompareDialog(self._compare_a, path, self)
+        self._compare_a = None
+        self._update_compare_button()
+        dlg.exec()
+
+    # ---- Prompt recall / variations ---------------------------------- #
+
+    def _recall_prompt(self):
+        if self._selected_entry:
+            self.recall_requested.emit(self._selected_entry)
+
+    def _send_to_variations(self):
+        if self._selected_card:
+            self.variations_requested.emit(self._selected_card.path)
 
     def _open_folder(self):
         if self._selected_card:
@@ -1768,14 +2619,33 @@ class MainWindow(QMainWindow):
         title.setStyleSheet(f"font-size:18pt; font-weight:bold; color:{ACCENT};")
         root.addWidget(title)
 
-        tabs = QTabWidget()
+        self._tabs = QTabWidget()
         self._t2i_tab     = TextToImageTab(self._settings, self._api_keys)
         self._compose_tab = SceneComposerTab(self._settings, self._api_keys)
+        self._i2i_tab     = ImageVariationsTab(self._settings, self._api_keys)
         self._library_tab = LibraryTab(self._settings)
-        tabs.addTab(self._t2i_tab,     "✨  Text to Image")
-        tabs.addTab(self._compose_tab, "🎨  Scene Composer")
-        tabs.addTab(self._library_tab, "🖼  Library")
-        root.addWidget(tabs)
+        self._tabs.addTab(self._t2i_tab,     "✨  Text to Image")
+        self._tabs.addTab(self._compose_tab, "🎨  Scene Composer")
+        self._tabs.addTab(self._i2i_tab,     "🔄  Variations")
+        self._tabs.addTab(self._library_tab, "🖼  Library")
+        root.addWidget(self._tabs)
+
+        self._library_tab.recall_requested.connect(self._on_recall)
+        self._library_tab.variations_requested.connect(self._on_variations)
+
+    def _on_recall(self, entry: dict):
+        tab_key = entry.get("tab", "t2i")
+        target = {
+            "t2i":  self._t2i_tab,
+            "edit": self._compose_tab,
+            "i2i":  self._i2i_tab,
+        }.get(tab_key, self._t2i_tab)
+        target.apply_history(entry)
+        self._tabs.setCurrentWidget(target)
+
+    def _on_variations(self, path: str):
+        self._i2i_tab.set_source_image(path)
+        self._tabs.setCurrentWidget(self._i2i_tab)
 
     def closeEvent(self, event):
         save_settings(self._settings)
