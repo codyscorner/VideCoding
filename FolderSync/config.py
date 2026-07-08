@@ -9,6 +9,7 @@ class ConfigManager:
         "dest_path": "",
         "include_subfolders": False,
         "file_mask": "",
+        "hash_verify": False,
         "window_size": [900, 700],
     }
 
