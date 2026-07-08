@@ -50,3 +50,11 @@ Output: `dist\VideoConverter.exe`, copied to `P:\Apps\VibeCoded\Video Converter\
 
 ### v1.0.0
 - Initial release: drag-and-drop + browse-files + browse-folder input, three format presets, suffix control, background conversion, per-file status table
+
+## Future Enhancements
+
+- [ ] Progress percent per file (parse ffmpeg time output) instead of just status
+- [ ] Custom preset editor (CRF/bitrate/resolution)
+- [ ] Trim on convert (start/end time)
+- [ ] Recursive folder scan option
+- [ ] Parallel conversions with a worker cap

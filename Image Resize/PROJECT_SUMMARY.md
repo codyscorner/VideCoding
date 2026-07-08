@@ -35,3 +35,11 @@ Image Resize/
 ```bash
 pyinstaller ImageResizer.spec --clean --noconfirm
 ```
+
+## Future Enhancements
+
+- [ ] Drag-and-drop input
+- [ ] Fit/fill/crop-to-aspect modes (e.g., exact 1920×1080 with crop)
+- [ ] Sharpening pass after downscale
+- [ ] Preserve EXIF option
+- [ ] Skip images already at/below target size

@@ -99,3 +99,10 @@ Your ComfyUI workflow must be exported in **API format** (enable Dev Mode in Com
 
 ### v1.0.0
 - Initial release: batch i2i processing with random prompt assignment, Local/RunPod support, skip-existing resume, in-app prompt editor
+
+## Future Enhancements
+
+- [ ] Per-image prompt override: click a thumbnail, pin a specific prompt
+- [ ] Prompt weighting: mark some prompts as more likely
+- [ ] "Re-roll" button on a finished image to re-run with a new random prompt
+- [ ] Prompt-used metadata sidecar/CSV so you know which prompt made which output

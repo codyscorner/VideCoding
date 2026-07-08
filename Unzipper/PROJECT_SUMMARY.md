@@ -77,6 +77,16 @@ pip install PyQt6 py7zr
 
 ---
 
+## Future Enhancements
+
+- [ ] Password-protected archive support (prompt or saved password list)
+- [ ] RAR support via `rarfile`
+- [ ] Test-only mode (verify archives without extracting)
+- [ ] Delete archive after successful extraction (optional)
+- [ ] Nested archive handling (zip inside zip)
+
+---
+
 ## License
 
 MIT

@@ -66,3 +66,10 @@ Extracted frames are saved as PNG files:
 - **v1.3**: Added custom UI dark theme (Orange & Black) and refined GUI layout.
 - **v1.2**: Added support for extracting the "Last Frame" of videos.
 - **v1.0**: Initial release for numeric frame extraction.
+
+## Future Enhancements
+
+- [ ] Arbitrary frame/timestamp selection (percent or mm:ss, not just 1–20/last)
+- [ ] Thumbnail preview of the chosen frame before batch run
+- [ ] JPG output with quality setting
+- [ ] Multiple frames per video (e.g., every N seconds → contact sheet)

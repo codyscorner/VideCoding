@@ -55,3 +55,11 @@ Deploy to: `P:\Apps\VibeCoded\Image Converter\`
 - Quality slider for lossy formats, recursive subfolders, delete originals option
 - JPEG alpha-flattening (RGBA → white-background RGB)
 - Supersedes JPG2PNG_Converter (v1.0.0) — all JPG2PNG functionality is covered and extended
+
+## Future Enhancements
+
+- [ ] Drag-and-drop files/folders
+- [ ] Resize-on-convert (max dimension cap)
+- [ ] HEIC input support (phone photos)
+- [ ] Strip-metadata option
+- [ ] Parallel workers for large batches

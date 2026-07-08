@@ -96,3 +96,10 @@ Default: 14 HOG workers (suited for 16-core CPUs like AMD Ryzen 9 series). YOLOv
 
 ### v1.0.0
 - Initial release: two-pass detection (HOG + CNN)
+
+## Future Enhancements
+
+- [ ] Review mode: thumbnail grid of "person" results to veto false positives before moving
+- [ ] Confidence threshold slider
+- [ ] Third bucket: "unsure" folder for borderline scores
+- [ ] CSV report of decisions per file
