@@ -91,3 +91,41 @@ def run_archive(seven_zip_path, source_folder, dest_path, progress_cb, log_cb,
 
     except Exception as e:
         return False, "", str(e)
+
+
+def rotate_backups(dest_path, prefix, keep_last_n, log_cb):
+    """
+    Deletes older archives (and their .sha256 sidecars) matching the given
+    prefix in dest_path, keeping only the keep_last_n most recent by mtime.
+    No-op if keep_last_n <= 0.
+    """
+    if keep_last_n <= 0:
+        return
+
+    pattern_prefix = (prefix or DEFAULT_PREFIX).strip() or DEFAULT_PREFIX
+    candidates = []
+    try:
+        for name in os.listdir(dest_path):
+            if name.startswith(pattern_prefix) and name.endswith(".7z"):
+                full = os.path.join(dest_path, name)
+                candidates.append((os.path.getmtime(full), full))
+    except OSError as e:
+        log_cb(f"Rotation: could not list destination folder: {e}")
+        return
+
+    candidates.sort(key=lambda t: t[0], reverse=True)
+    to_delete = candidates[keep_last_n:]
+
+    for _, path in to_delete:
+        try:
+            os.remove(path)
+            log_cb(f"Rotation: removed old archive {os.path.basename(path)}")
+        except OSError as e:
+            log_cb(f"Rotation: failed to remove {os.path.basename(path)}: {e}")
+            continue
+        hash_path = path + ".sha256"
+        if os.path.exists(hash_path):
+            try:
+                os.remove(hash_path)
+            except OSError:
+                pass

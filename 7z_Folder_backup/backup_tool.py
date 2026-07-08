@@ -3,9 +3,10 @@ import sys
 from datetime import datetime
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QFont, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGroupBox,
@@ -19,14 +20,17 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from utils.archiver import COMPRESSION_FLAGS, DEFAULT_PREFIX, build_archive_name, run_archive
+from utils.archiver import COMPRESSION_FLAGS, DEFAULT_PREFIX, build_archive_name, rotate_backups, run_archive
 from utils.logger import create_log_file, write_log
+from utils.manifest import compute_source_manifest, normalize_source_key
 from utils.settings_manager import DEFAULT_PREFIX, get_app_dir, load_settings, save_settings
 from utils.verifier import generate_sha256, run_integrity_test
 
@@ -177,15 +181,19 @@ class BackupWorker(QThread):
     log_msg  = pyqtSignal(str)
     status   = pyqtSignal(str)
     finished = pyqtSignal(bool, str)
+    skipped  = pyqtSignal(str)
 
-    def __init__(self, settings, source_folder, dest_path, prefix=None, compression="store"):
+    def __init__(self, settings, source_folder, dest_path, prefix=None, compression="store",
+                 incremental_enabled=False, rotation_keep_n=0):
         super().__init__()
-        self.settings      = settings
-        self.source_folder = source_folder
-        self.dest_path     = dest_path
-        self.prefix        = prefix
-        self.compression   = compression
-        self._cancelled    = False
+        self.settings            = settings
+        self.source_folder       = source_folder
+        self.dest_path           = dest_path
+        self.prefix              = prefix
+        self.compression         = compression
+        self.incremental_enabled = incremental_enabled
+        self.rotation_keep_n     = rotation_keep_n
+        self._cancelled          = False
 
     def cancel(self):
         self._cancelled = True
@@ -207,6 +215,26 @@ class BackupWorker(QThread):
 
         def archive_progress(pct):
             self.progress.emit(int(pct * 0.75))
+
+        # ── Phase 0: Incremental check ──────────────────────────────────
+        source_key = normalize_source_key(self.source_folder)
+        current_hash = None
+        if self.incremental_enabled:
+            self.status.emit("Checking for changes...")
+            log("Incremental mode: scanning source folder...")
+            current_hash = compute_source_manifest(self.source_folder)
+            manifests = self.settings.get("source_manifests", {})
+            previous_hash = manifests.get(source_key)
+
+            if previous_hash and previous_hash == current_hash:
+                log("No changes detected since last backup.")
+                self.status.emit("No changes detected — skipped.")
+                self.skipped.emit(
+                    "No changes detected since the last backup.\n\n"
+                    "Backup skipped — nothing to archive."
+                )
+                return
+            log("Changes detected (or no previous backup found) — proceeding.")
 
         # ── Phase 1: Archive ──────────────────────────────────────────────
         self.status.emit("Creating archive...")
@@ -251,6 +279,13 @@ class BackupWorker(QThread):
         # ── Phase 3: SHA-256 ──────────────────────────────────────────────
         self.status.emit("Generating SHA-256 hash...")
         generate_sha256(archive_path, log)
+        self.progress.emit(95)
+
+        # ── Phase 4: Rotation ──────────────────────────────────────────────
+        if self.rotation_keep_n > 0:
+            self.status.emit("Rotating old backups...")
+            log(f"Rotation: keeping the {self.rotation_keep_n} most recent archive(s).")
+            rotate_backups(self.dest_path, self.prefix, self.rotation_keep_n, log)
         self.progress.emit(100)
 
         # ── Save settings ─────────────────────────────────────────────────
@@ -260,6 +295,9 @@ class BackupWorker(QThread):
         self.settings["compression_level"]   = self.compression
         if self.prefix:
             self.settings["archive_prefix"] = self.prefix
+        if self.incremental_enabled:
+            manifests = self.settings.setdefault("source_manifests", {})
+            manifests[source_key] = current_hash or compute_source_manifest(self.source_folder)
         save_settings(self.settings)
 
         log(f"Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -287,6 +325,23 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._load_from_settings()
         self._check_7zip()
+        self._setup_tray_icon()
+
+    def _setup_tray_icon(self):
+        icon_path = os.path.join(get_app_dir(), "app_icon.ico")
+        icon = QIcon(icon_path) if os.path.exists(icon_path) else self.windowIcon()
+        self.tray_icon = QSystemTrayIcon(icon, self)
+        self.tray_icon.setToolTip("Folder Backup Archiver")
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray_icon.show()
+
+    def _notify(self, title, message, success=True):
+        if not self.chk_notify.isChecked():
+            return
+        if not getattr(self, "tray_icon", None) or not self.tray_icon.isSystemTrayAvailable():
+            return
+        icon = QSystemTrayIcon.MessageIcon.Information if success else QSystemTrayIcon.MessageIcon.Critical
+        self.tray_icon.showMessage(title, message, icon, 8000)
 
     def _build_ui(self):
         self.setWindowTitle("Folder Backup Archiver")
@@ -377,6 +432,33 @@ class MainWindow(QMainWindow):
         comp_row.addWidget(self.comp_combo)
         root.addWidget(comp_group)
 
+        # ── Options ───────────────────────────────────────────────────────
+        opt_group = QGroupBox("Options")
+        opt_layout = QVBoxLayout(opt_group)
+        opt_layout.setSpacing(8)
+
+        self.chk_incremental = QCheckBox("Skip backup if source is unchanged since last run")
+        opt_layout.addWidget(self.chk_incremental)
+
+        rotation_row = QHBoxLayout()
+        rotation_row.setSpacing(8)
+        rotation_label = QLabel("Keep last")
+        self.rotation_spin = QSpinBox()
+        self.rotation_spin.setRange(0, 999)
+        self.rotation_spin.setFixedWidth(70)
+        self.rotation_spin.setSpecialValueText("All")
+        rotation_suffix = QLabel("backups (older ones auto-deleted after a successful run)")
+        rotation_row.addWidget(rotation_label)
+        rotation_row.addWidget(self.rotation_spin)
+        rotation_row.addWidget(rotation_suffix)
+        rotation_row.addStretch()
+        opt_layout.addLayout(rotation_row)
+
+        self.chk_notify = QCheckBox("Show a notification when the backup finishes or fails")
+        opt_layout.addWidget(self.chk_notify)
+
+        root.addWidget(opt_group)
+
         # ── Action buttons ────────────────────────────────────────────────
         self.btn_start = QPushButton("Start Backup")
         self.btn_start.setFixedHeight(38)
@@ -440,6 +522,10 @@ class MainWindow(QMainWindow):
             if self.comp_combo.itemData(i) == saved_comp:
                 self.comp_combo.setCurrentIndex(i)
                 break
+
+        self.chk_incremental.setChecked(bool(self.settings.get("incremental_enabled", False)))
+        self.rotation_spin.setValue(int(self.settings.get("rotation_keep_n", 0)))
+        self.chk_notify.setChecked(bool(self.settings.get("notifications_enabled", True)))
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -511,6 +597,13 @@ class MainWindow(QMainWindow):
         prefix      = self.prefix_edit.text().strip() or DEFAULT_PREFIX
         compression = self.comp_combo.currentData() or "store"
 
+        incremental_enabled = self.chk_incremental.isChecked()
+        rotation_keep_n     = self.rotation_spin.value()
+        self.settings["incremental_enabled"]  = incremental_enabled
+        self.settings["rotation_keep_n"]      = rotation_keep_n
+        self.settings["notifications_enabled"] = self.chk_notify.isChecked()
+        save_settings(self.settings)
+
         self.log_list.clear()
         self.progress_bar.setValue(0)
         self.btn_start.setEnabled(False)
@@ -519,12 +612,15 @@ class MainWindow(QMainWindow):
 
         self.worker = BackupWorker(
             self.settings, source, dest,
-            prefix=prefix, compression=compression
+            prefix=prefix, compression=compression,
+            incremental_enabled=incremental_enabled,
+            rotation_keep_n=rotation_keep_n,
         )
         self.worker.progress.connect(self.progress_bar.setValue)
         self.worker.log_msg.connect(self._log)
         self.worker.status.connect(self.status_label.setText)
         self.worker.finished.connect(self._on_finished)
+        self.worker.skipped.connect(self._on_skipped)
         self.worker.start()
 
     def _cancel_backup(self):
@@ -553,10 +649,21 @@ class MainWindow(QMainWindow):
         if success:
             self.status_label.setStyleSheet("color: #3fb950; font-size: 9pt;")
             QMessageBox.information(self, "Backup Complete", message)
+            self._notify("Backup Complete", message, success=True)
         else:
             self.status_label.setStyleSheet("color: #f85149; font-size: 9pt;")
             if message != "Backup cancelled.":
                 QMessageBox.critical(self, "Backup Failed", message)
+                self._notify("Backup Failed", message, success=False)
+
+    def _on_skipped(self, message):
+        self.btn_start.setEnabled(True)
+        self.btn_cancel.setVisible(False)
+        self.btn_cancel.setEnabled(True)
+        self.progress_bar.setValue(0)
+        self.status_label.setStyleSheet("color: #7d8590; font-size: 9pt;")
+        QMessageBox.information(self, "Backup Skipped", message)
+        self._notify("Backup Skipped", message, success=True)
 
 
 # ── Entry Point ───────────────────────────────────────────────────────────────

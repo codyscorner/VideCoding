@@ -18,6 +18,10 @@ DEFAULTS = {
     "7zip_path": "",
     "archive_prefix": DEFAULT_PREFIX,
     "compression_level": "store",
+    "incremental_enabled": False,
+    "rotation_keep_n": 0,
+    "notifications_enabled": True,
+    "source_manifests": {},
 }
 
 
