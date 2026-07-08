@@ -2,6 +2,12 @@
 
 ## Version History
 
+### v1.2.0
+- Search file contents (text match) as an option — matches the search term against each file's text content (first ~2MB) instead of its name; binary files are detected and skipped automatically
+- Right-click actions on results: Open, Open Containing Folder, Copy Path, Delete File (with confirmation)
+- Saved search presets — save/load/delete named presets (search term, mode, filters, content-search toggle, root folders) to a JSON file next to the app
+- Multiple root folders in one search — "Search entire computer" checkbox (default) or add specific root folders to scan instead of all drives
+
 ### v1.1.0 (June 21, 2026)
 - Search mode selector: Contains (substring), Wildcard (*?), Regex
 - Regex validation with user-friendly error dialog before search starts
@@ -98,7 +104,7 @@ for root, dirs, files in os.walk(drive):
 
 ## Future Enhancements
 
-- [ ] Search file contents (text match) as an option
-- [ ] Right-click actions on results: open, open folder, copy path, delete
-- [ ] Saved search presets
-- [ ] Multiple root folders in one search
+- [x] Search file contents (text match) as an option
+- [x] Right-click actions on results: open, open folder, copy path, delete
+- [x] Saved search presets
+- [x] Multiple root folders in one search

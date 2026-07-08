@@ -2,20 +2,44 @@ import os
 import sys
 import re
 import csv
+import json
 import string
 import fnmatch
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QListWidget, QLabel, QMessageBox, QSpinBox,
-    QComboBox, QCheckBox, QFileDialog, QDateEdit, QSizePolicy
+    QComboBox, QCheckBox, QFileDialog, QDateEdit, QSizePolicy, QMenu,
+    QInputDialog, QAbstractItemView
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDate
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDate, QPoint
 from PyQt6.QtGui import QIcon
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
+
+CONTENT_MAX_BYTES = 2_000_000  # only the first ~2MB of a file is searched for content matches
+
+
+def get_presets_file() -> Path:
+    if getattr(sys, 'frozen', False):
+        exe_name = Path(sys.executable).stem
+        return Path(sys.executable).parent / f"{exe_name}_presets.json"
+    return Path(__file__).parent / f"{Path(__file__).stem}_presets.json"
+
+
+def _read_text_snippet(path: str):
+    """Read up to CONTENT_MAX_BYTES of a file as text, or None if it looks binary/unreadable"""
+    try:
+        with open(path, 'rb') as f:
+            data = f.read(CONTENT_MAX_BYTES)
+        if b'\x00' in data:
+            return None
+        return data.decode('utf-8', errors='ignore')
+    except (OSError, PermissionError):
+        return None
 
 
 class SearchThread(QThread):
@@ -24,7 +48,8 @@ class SearchThread(QThread):
     status_update = pyqtSignal(str)
 
     def __init__(self, search_term, search_mode="contains", file_types=None,
-                 min_size_mb=0, max_size_mb=0, date_after=None, date_before=None):
+                 min_size_mb=0, max_size_mb=0, date_after=None, date_before=None,
+                 content_search=False, root_folders=None):
         super().__init__()
         self.search_mode = search_mode
         self.min_size_bytes = int(min_size_mb * 1024 * 1024)
@@ -36,6 +61,8 @@ class SearchThread(QThread):
         )
         self.date_after = date_after
         self.date_before = date_before
+        self.content_search = content_search
+        self.root_folders = root_folders or []
         self.is_running = True
 
         if search_mode == "contains":
@@ -45,22 +72,26 @@ class SearchThread(QThread):
         elif search_mode == "regex":
             self._regex = re.compile(search_term, re.IGNORECASE)
 
-    def _name_matches(self, name: str) -> bool:
+    def _text_matches(self, text: str) -> bool:
         if self.search_mode == "contains":
-            return self._term in name.lower()
+            return self._term in text.lower()
         elif self.search_mode == "wildcard":
-            return fnmatch.fnmatch(name.lower(), self._pattern)
+            return fnmatch.fnmatch(text.lower(), self._pattern)
         elif self.search_mode == "regex":
-            return bool(self._regex.search(name))
+            return bool(self._regex.search(text))
         return False
 
     def run(self):
-        drives = ['%s:' % d for d in string.ascii_uppercase if os.path.exists('%s:' % d)]
-        for drive in drives:
+        if self.root_folders:
+            roots = self.root_folders
+        else:
+            roots = ['%s:\\' % d for d in string.ascii_uppercase if os.path.exists('%s:' % d)]
+
+        for root in roots:
             if not self.is_running:
                 break
-            self.status_update.emit(f"Scanning {drive}...")
-            self.scan_directory(f"{drive}\\")
+            self.status_update.emit(f"Scanning {root}...")
+            self.scan_directory(root)
         if self.is_running:
             self.status_update.emit("Search complete.")
         self.search_finished.emit()
@@ -74,8 +105,13 @@ class SearchThread(QThread):
                     if item.is_dir(follow_symlinks=False):
                         self.scan_directory(item.path)
                     elif item.is_file(follow_symlinks=False):
-                        if not self._name_matches(item.name):
-                            continue
+                        if self.content_search:
+                            text = _read_text_snippet(item.path)
+                            if text is None or not self._text_matches(text):
+                                continue
+                        else:
+                            if not self._text_matches(item.name):
+                                continue
                         stat = item.stat()
                         size = stat.st_size
                         if self.min_size_bytes > 0 and size < self.min_size_bytes:
@@ -106,9 +142,10 @@ class FileFinderApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"File Finder v{VERSION}")
-        self.resize(960, 650)
+        self.resize(960, 720)
         self.found_count = 0
         self.results = []
+        self.presets = self._load_presets()
 
         icon_path = Path(__file__).parent / "app_icon.ico"
         if icon_path.exists():
@@ -142,7 +179,32 @@ class FileFinderApp(QMainWindow):
         search_layout.addWidget(self.search_button)
         main_layout.addLayout(search_layout)
 
-        # --- Row 2: Filters ---
+        # --- Row 2: Search scope (all drives vs specific root folders) ---
+        scope_layout = QHBoxLayout()
+        scope_layout.setSpacing(8)
+        self.search_all_check = QCheckBox("Search entire computer (all drives)")
+        self.search_all_check.setChecked(True)
+        self.search_all_check.stateChanged.connect(self._on_scope_toggled)
+        scope_layout.addWidget(self.search_all_check)
+
+        self.roots_list = QListWidget()
+        self.roots_list.setFixedHeight(50)
+        self.roots_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.roots_list.setEnabled(False)
+        scope_layout.addWidget(self.roots_list, stretch=1)
+
+        self.add_root_button = QPushButton("Add Folder")
+        self.add_root_button.setEnabled(False)
+        self.add_root_button.clicked.connect(self._add_root_folder)
+        scope_layout.addWidget(self.add_root_button)
+
+        self.remove_root_button = QPushButton("Remove")
+        self.remove_root_button.setEnabled(False)
+        self.remove_root_button.clicked.connect(self._remove_selected_roots)
+        scope_layout.addWidget(self.remove_root_button)
+        main_layout.addLayout(scope_layout)
+
+        # --- Row 3: Filters ---
         filter_layout = QHBoxLayout()
         filter_layout.setSpacing(8)
 
@@ -190,12 +252,45 @@ class FileFinderApp(QMainWindow):
         self.before_date.setFixedWidth(105)
         filter_layout.addWidget(self.before_date)
 
+        self.content_search_check = QCheckBox("Search file contents")
+        self.content_search_check.setToolTip(
+            "Match the search term against each file's text content instead of its name.\n"
+            "Binary files are skipped automatically. Only the first ~2MB of each file is searched."
+        )
+        filter_layout.addWidget(self.content_search_check)
+
         filter_layout.addStretch()
         main_layout.addLayout(filter_layout)
+
+        # --- Row 4: Saved search presets ---
+        preset_layout = QHBoxLayout()
+        preset_layout.setSpacing(8)
+        preset_layout.addWidget(QLabel("Preset:"))
+        self.preset_combo = QComboBox()
+        self.preset_combo.setFixedWidth(180)
+        self._refresh_preset_combo()
+        preset_layout.addWidget(self.preset_combo)
+
+        self.load_preset_button = QPushButton("Load")
+        self.load_preset_button.clicked.connect(self._load_preset)
+        preset_layout.addWidget(self.load_preset_button)
+
+        self.save_preset_button = QPushButton("Save As...")
+        self.save_preset_button.clicked.connect(self._save_preset)
+        preset_layout.addWidget(self.save_preset_button)
+
+        self.delete_preset_button = QPushButton("Delete")
+        self.delete_preset_button.clicked.connect(self._delete_preset)
+        preset_layout.addWidget(self.delete_preset_button)
+
+        preset_layout.addStretch()
+        main_layout.addLayout(preset_layout)
 
         # --- Results list ---
         self.results_list = QListWidget()
         self.results_list.itemClicked.connect(self.copy_to_clipboard)
+        self.results_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.results_list.customContextMenuRequested.connect(self._show_results_context_menu)
         main_layout.addWidget(self.results_list)
 
         # --- Status bar ---
@@ -216,6 +311,28 @@ class FileFinderApp(QMainWindow):
         self._apply_styles()
         self.search_thread = None
 
+    # ---------- Search scope ----------
+
+    def _on_scope_toggled(self, state):
+        specific_folders = not bool(state)
+        self.roots_list.setEnabled(specific_folders)
+        self.add_root_button.setEnabled(specific_folders)
+        self.remove_root_button.setEnabled(specific_folders)
+
+    def _add_root_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Add Root Folder", str(Path.home()))
+        if folder:
+            existing = [self.roots_list.item(i).text() for i in range(self.roots_list.count())]
+            if folder not in existing:
+                self.roots_list.addItem(folder)
+
+    def _remove_selected_roots(self):
+        for item in self.roots_list.selectedItems():
+            self.roots_list.takeItem(self.roots_list.row(item))
+
+    def _get_root_folders(self):
+        return [self.roots_list.item(i).text() for i in range(self.roots_list.count())]
+
     def _get_file_types(self):
         raw = self.type_input.text().strip()
         if not raw:
@@ -234,6 +351,13 @@ class FileFinderApp(QMainWindow):
         if not search_term:
             QMessageBox.warning(self, "Input Error", "Please enter a search term.")
             return
+
+        root_folders = []
+        if not self.search_all_check.isChecked():
+            root_folders = self._get_root_folders()
+            if not root_folders:
+                QMessageBox.warning(self, "Input Error", "Add at least one root folder, or check 'Search entire computer'.")
+                return
 
         mode_text = self.mode_combo.currentText()
         if mode_text == "Contains":
@@ -274,6 +398,8 @@ class FileFinderApp(QMainWindow):
             max_size_mb=self.max_size_spin.value(),
             date_after=date_after,
             date_before=date_before,
+            content_search=self.content_search_check.isChecked(),
+            root_folders=root_folders,
         )
         self.search_thread.file_found.connect(self.on_file_found)
         self.search_thread.status_update.connect(self.on_status_update)
@@ -298,6 +424,162 @@ class FileFinderApp(QMainWindow):
         path = item.text()
         QApplication.clipboard().setText(path)
         self.status_label.setText(f"Copied: {path}")
+
+    # ---------- Results context menu ----------
+
+    def _show_results_context_menu(self, pos: QPoint):
+        item = self.results_list.itemAt(pos)
+        if item is None:
+            return
+        path = item.text()
+
+        menu = QMenu(self)
+        open_action = menu.addAction("Open")
+        open_folder_action = menu.addAction("Open Containing Folder")
+        copy_action = menu.addAction("Copy Path")
+        menu.addSeparator()
+        delete_action = menu.addAction("Delete File")
+
+        chosen = menu.exec(self.results_list.mapToGlobal(pos))
+        if chosen is None:
+            return
+
+        if chosen == open_action:
+            self._open_path(path)
+        elif chosen == open_folder_action:
+            self._open_containing_folder(path)
+        elif chosen == copy_action:
+            QApplication.clipboard().setText(path)
+            self.status_label.setText(f"Copied: {path}")
+        elif chosen == delete_action:
+            self._delete_result(item, path)
+
+    def _open_path(self, path):
+        try:
+            os.startfile(path)
+        except OSError as e:
+            QMessageBox.critical(self, "Open Failed", f"Could not open file:\n{e}")
+
+    def _open_containing_folder(self, path):
+        try:
+            subprocess.run(['explorer', '/select,', path])
+        except OSError as e:
+            QMessageBox.critical(self, "Open Failed", f"Could not open containing folder:\n{e}")
+
+    def _delete_result(self, item, path):
+        reply = QMessageBox.warning(
+            self, "Delete File",
+            f"Permanently delete this file?\n\n{path}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            os.remove(path)
+            row = self.results_list.row(item)
+            self.results_list.takeItem(row)
+            if path in self.results:
+                self.results.remove(path)
+            self.found_count = len(self.results)
+            self.count_label.setText(f"Files found: {self.found_count}")
+            self.status_label.setText(f"Deleted: {path}")
+        except OSError as e:
+            QMessageBox.critical(self, "Delete Failed", f"Could not delete file:\n{e}")
+
+    # ---------- Saved search presets ----------
+
+    def _load_presets(self) -> dict:
+        presets_file = get_presets_file()
+        if presets_file.exists():
+            try:
+                with open(presets_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    def _save_presets(self):
+        try:
+            with open(get_presets_file(), 'w', encoding='utf-8') as f:
+                json.dump(self.presets, f, indent=2)
+        except OSError:
+            pass
+
+    def _refresh_preset_combo(self):
+        self.preset_combo.clear()
+        self.preset_combo.addItems(sorted(self.presets.keys()))
+
+    def _save_preset(self):
+        name, ok = QInputDialog.getText(self, "Save Preset", "Preset name:")
+        name = name.strip()
+        if not ok or not name:
+            return
+
+        self.presets[name] = {
+            'search_term': self.search_input.text(),
+            'mode': self.mode_combo.currentText(),
+            'file_types': self.type_input.text(),
+            'min_size_mb': self.min_size_spin.value(),
+            'max_size_mb': self.max_size_spin.value(),
+            'after_enabled': self.after_check.isChecked(),
+            'after_date': self.after_date.date().toString("yyyy-MM-dd"),
+            'before_enabled': self.before_check.isChecked(),
+            'before_date': self.before_date.date().toString("yyyy-MM-dd"),
+            'content_search': self.content_search_check.isChecked(),
+            'search_all_drives': self.search_all_check.isChecked(),
+            'root_folders': self._get_root_folders(),
+        }
+        self._save_presets()
+        self._refresh_preset_combo()
+        self.preset_combo.setCurrentText(name)
+        self.status_label.setText(f"Preset saved: {name}")
+
+    def _load_preset(self):
+        name = self.preset_combo.currentText()
+        if not name or name not in self.presets:
+            return
+        p = self.presets[name]
+
+        self.search_input.setText(p.get('search_term', ''))
+        self.mode_combo.setCurrentText(p.get('mode', 'Contains'))
+        self.type_input.setText(p.get('file_types', ''))
+        self.min_size_spin.setValue(p.get('min_size_mb', 0))
+        self.max_size_spin.setValue(p.get('max_size_mb', 0))
+
+        self.after_check.setChecked(p.get('after_enabled', False))
+        after_date = QDate.fromString(p.get('after_date', ''), "yyyy-MM-dd")
+        if after_date.isValid():
+            self.after_date.setDate(after_date)
+
+        self.before_check.setChecked(p.get('before_enabled', False))
+        before_date = QDate.fromString(p.get('before_date', ''), "yyyy-MM-dd")
+        if before_date.isValid():
+            self.before_date.setDate(before_date)
+
+        self.content_search_check.setChecked(p.get('content_search', False))
+
+        self.roots_list.clear()
+        self.roots_list.addItems(p.get('root_folders', []))
+        self.search_all_check.setChecked(p.get('search_all_drives', True))
+
+        self.status_label.setText(f"Preset loaded: {name}")
+
+    def _delete_preset(self):
+        name = self.preset_combo.currentText()
+        if not name or name not in self.presets:
+            return
+        reply = QMessageBox.question(
+            self, "Delete Preset", f"Delete preset '{name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        del self.presets[name]
+        self._save_presets()
+        self._refresh_preset_combo()
+        self.status_label.setText(f"Preset deleted: {name}")
 
     def export_results(self):
         if not self.results:
@@ -393,6 +675,14 @@ class FileFinderApp(QMainWindow):
                 color: white;
             }
             QListWidget::item:hover { background-color: #1b4324; }
+            QMenu {
+                background-color: #1b4324;
+                color: #e8f5e9;
+                border: 1px solid #2e7d32;
+            }
+            QMenu::item:selected {
+                background-color: #2e7d32;
+            }
             QLabel {
                 color: #a5d6a7;
                 font-size: 12px;
