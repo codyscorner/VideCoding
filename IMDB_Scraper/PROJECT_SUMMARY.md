@@ -5,10 +5,14 @@ Downloads all gallery photos from any IMDB title or actor/actress page into orga
 ## Features
 
 - Supports both title pages (`/title/tt...`) and actor/actress pages (`/name/nm...`)
+- Batch queue: paste multiple URLs (one per line), downloads each in turn into its own named subfolder
 - Auto-names the download subfolder from the title/person name
 - Files named `<Title>_0001.jpg` to avoid conflicts when copying across folders
 - Scrolls gallery to load all lazy-loaded images (bypasses the ~72 image limit)
+- Optional full-resolution mode: visits each photo's mediaviewer page for the largest available image (slower)
 - Skips already-downloaded files on re-run
+- Automatic retry with exponential backoff on network failure for each image download
+- Writes `manifest.csv` and `manifest.json` per subfolder listing every image's filename, source URL, caption, and status
 - Persistent root folder setting saved between sessions
 - Clickable folder link opens Explorer when download completes
 
@@ -58,6 +62,13 @@ Root Folder/
 
 ## Changelog
 
+### v1.1.0
+- Batch queue: URL field is now a multi-line box, one URL per line, downloaded sequentially
+- Full-resolution option (checkbox): follows each thumbnail's mediaviewer link and pulls the largest available image via `og:image`, falling back to the gallery-derived URL if unavailable
+- `manifest.csv` / `manifest.json` written to each output subfolder: index, filename, source URL, caption (from image alt text), and status (downloaded/skipped/failed)
+- Downloads now retry up to 3 times with exponential backoff before being marked failed
+- Internal: scraping now returns per-image caption + mediaviewer link, not just a flat URL list
+
 ### v1.0.0
 - Initial release
 - Title and actor/actress URL support
@@ -68,7 +79,4 @@ Root Folder/
 
 ## Future Enhancements
 
-- [ ] Batch queue: paste multiple URLs, download all
-- [ ] Full-resolution image option (grab original instead of gallery size)
-- [ ] CSV/JSON manifest of downloaded images with captions
-- [ ] Retry/resume on network failure
+All planned enhancements shipped in v1.1.0.
