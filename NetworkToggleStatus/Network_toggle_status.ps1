@@ -123,6 +123,11 @@ function Write-HourlyLog {
 
 # Create the form
 $form = New-Object System.Windows.Forms.Form
+try {
+    $__exeDir = Split-Path ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+    $__ico = Join-Path $__exeDir 'app_icon.ico'
+    if (Test-Path $__ico) { $form.Icon = New-Object System.Drawing.Icon $__ico }
+} catch {}
 $form.Text = "Network Control v1.2"
 $form.Size = New-Object System.Drawing.Size(512, 512)
 $form.StartPosition = "CenterScreen"
