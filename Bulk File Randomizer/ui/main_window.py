@@ -16,7 +16,8 @@ from PyQt6.QtWidgets import (
 )
 
 from config import ConfigManager
-from renamer import copy_and_rename
+from renamer import copy_and_rename, preview_rename
+from ui.preview_dialog import PreviewDialog
 from ui.styles import STYLESHEET
 
 _CHARS = string.ascii_letters + string.digits
@@ -128,15 +129,36 @@ class MainWindow(QMainWindow):
         self.recursive_check = QCheckBox("Search subfolders recursively")
         lay.addWidget(self.recursive_check)
 
+        # Mode + Seed
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Mode:"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("Copy", "copy")
+        self.mode_combo.addItem("Move", "move")
+        self.mode_combo.setFixedWidth(100)
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_change)
+        mode_row.addWidget(self.mode_combo)
+        mode_row.addSpacing(16)
+        mode_row.addWidget(QLabel("Seed:"))
+        self.seed_edit = QLineEdit()
+        self.seed_edit.setPlaceholderText("blank = random")
+        self.seed_edit.setFixedWidth(140)
+        mode_row.addWidget(self.seed_edit)
+        mode_row.addStretch()
+        lay.addLayout(mode_row)
+
         # Action buttons
         btn_row = QHBoxLayout()
         self.run_btn = QPushButton("Copy & Rename")
         self.run_btn.clicked.connect(self._start)
+        self.preview_btn = QPushButton("Preview")
+        self.preview_btn.clicked.connect(self._preview)
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setObjectName("cancel_btn")
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self._request_cancel)
         btn_row.addWidget(self.run_btn)
+        btn_row.addWidget(self.preview_btn)
         btn_row.addWidget(self.cancel_btn)
         btn_row.addStretch()
         lay.addLayout(btn_row)
@@ -157,7 +179,8 @@ class MainWindow(QMainWindow):
 
         # Counters
         counter_row = QHBoxLayout()
-        counter_row.addWidget(QLabel("Copied:"))
+        self.copied_hdr_lbl = QLabel("Copied:")
+        counter_row.addWidget(self.copied_hdr_lbl)
         self.copied_lbl = QLabel("0")
         self.copied_lbl.setObjectName("section_label")
         counter_row.addWidget(self.copied_lbl)
@@ -190,6 +213,10 @@ class MainWindow(QMainWindow):
         self.prefix_edit.setText(self.config.get("last_prefix", ""))
         self.mask_edit.setText(self.config.get("last_file_mask", "*.*"))
         self.recursive_check.setChecked(self.config.get("recursive_search", False))
+        saved_mode = self.config.get("last_mode", "copy")
+        idx = self.mode_combo.findData(saved_mode)
+        self.mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._on_mode_change()
         self._update_preview()
 
     # ---------------------------------------------------------------- slots --
@@ -206,6 +233,14 @@ class MainWindow(QMainWindow):
         if value:
             self.mask_edit.setText(value)
 
+    def _on_mode_change(self):
+        mode = self.mode_combo.currentData()
+        verb = "Move" if mode == "move" else "Copy"
+        past = "Moved" if mode == "move" else "Copied"
+        self.run_btn.setText(f"{verb} & Rename")
+        self.copied_hdr_lbl.setText(f"{past}:")
+        self._update_preview()
+
     def _update_preview(self):
         prefix = self.prefix_edit.text().strip()
         source = self.source_edit.text().strip()
@@ -214,9 +249,23 @@ class MainWindow(QMainWindow):
             return
         sample = f"{''.join(random.choices(_CHARS, k=10))}"
         dest_path = f"{source}/{prefix}/" if source else f"<source>/{prefix}/"
+        verb = "moved" if self.mode_combo.currentData() == "move" else "copied"
         self.preview_label.setText(
-            f"Output folder:  {dest_path}   ·   Example name:  {prefix}_{sample}.ext"
+            f"Files {verb} to:  {dest_path}   ·   Example name:  {prefix}_{sample}.ext"
         )
+
+    def _resolve_seed(self) -> int:
+        """Read the Seed field; if blank, generate one and write it back so the
+        run and any prior Preview stay reproducible."""
+        text = self.seed_edit.text().strip()
+        if text:
+            try:
+                return int(text)
+            except ValueError:
+                pass
+        seed = random.randint(0, 2**31 - 1)
+        self.seed_edit.setText(str(seed))
+        return seed
 
     def _log(self, msg: str):
         if self.log_list.count() >= 500:
@@ -249,10 +298,13 @@ class MainWindow(QMainWindow):
             mask = "*.*"
 
         masks = [m.strip() for m in mask.split(",") if m.strip()]
+        mode = self.mode_combo.currentData()
+        seed = self._resolve_seed()
 
         self._cancel = False
         self._running = True
         self.run_btn.setEnabled(False)
+        self.preview_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.progress_bar.setValue(0)
         self.count_label.setText("")
@@ -264,26 +316,30 @@ class MainWindow(QMainWindow):
         self.config.set("last_prefix", prefix)
         self.config.set("last_file_mask", mask)
         self.config.set("recursive_search", self.recursive_check.isChecked())
+        self.config.set("last_mode", mode)
         self.config.save()
 
         self._thread = threading.Thread(
             target=self._worker,
-            args=(source, prefix, masks, self.recursive_check.isChecked()),
+            args=(source, prefix, masks, self.recursive_check.isChecked(), mode, seed),
             daemon=True,
         )
         self._thread.start()
         self._timer.start()
 
-    def _worker(self, source: str, prefix: str, masks: list, recursive: bool):
+    def _worker(self, source: str, prefix: str, masks: list, recursive: bool, mode: str, seed: int):
         try:
             start = time.time()
-            self._q("log", f"Start — source: {source}  prefix: {prefix}")
+            verb = "Moving" if mode == "move" else "Copying"
+            self._q("log", f"Start — {verb} — source: {source}  prefix: {prefix}  seed: {seed}")
 
             results = copy_and_rename(
                 source_dir=Path(source),
                 prefix=prefix,
                 masks=masks,
                 recursive=recursive,
+                mode=mode,
+                seed=seed,
                 progress_cb=lambda i, t, n: self._q("progress", (i, t, n)),
                 cancel_check=lambda: self._cancel,
             )
@@ -334,23 +390,64 @@ class MainWindow(QMainWindow):
     def _on_done(self, copied: int, errors: int, elapsed: float):
         self._running = False
         self.run_btn.setEnabled(True)
+        self.preview_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.progress_bar.setValue(100)
         self.copied_lbl.setText(str(copied))
         self.errors_lbl.setText(str(errors))
+        verb = "Moved" if self.mode_combo.currentData() == "move" else "Copied"
         m, s = divmod(int(elapsed), 60)
         self.file_label.setText("Done" if not self._cancel else "Cancelled")
-        self._log(f"Finished — Copied: {copied}  Errors: {errors}  Time: {m:02d}:{s:02d}")
+        self._log(f"Finished — {verb}: {copied}  Errors: {errors}  Time: {m:02d}:{s:02d}")
         if not self._cancel:
             if errors == 0:
-                QMessageBox.information(self, "Done", f"Copied {copied} file(s) in {m:02d}:{s:02d}")
+                QMessageBox.information(self, "Done", f"{verb} {copied} file(s) in {m:02d}:{s:02d}")
             else:
                 QMessageBox.warning(self, "Done with errors",
-                                    f"Copied: {copied}\nErrors: {errors}\n\nCheck the log for details.")
+                                    f"{verb}: {copied}\nErrors: {errors}\n\nCheck the log for details.")
 
     def _on_error(self, msg: str):
         self._running = False
         self.run_btn.setEnabled(True)
+        self.preview_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self._log(f"FATAL: {msg}")
         QMessageBox.critical(self, "Error", msg)
+
+    def _preview(self):
+        source = self.source_edit.text().strip()
+        prefix = self.prefix_edit.text().strip()
+        mask = self.mask_edit.text().strip()
+
+        if not source:
+            QMessageBox.critical(self, "Error", "Please select a source folder.")
+            return
+        if not os.path.isdir(source):
+            QMessageBox.critical(self, "Error", f"Source folder not found:\n{source}")
+            return
+        if not prefix:
+            QMessageBox.critical(self, "Error", "Please enter a prefix.")
+            return
+        if not mask:
+            mask = "*.*"
+        masks = [m.strip() for m in mask.split(",") if m.strip()]
+
+        seed = self._resolve_seed()
+        try:
+            pairs = preview_rename(
+                source_dir=Path(source),
+                prefix=prefix,
+                masks=masks,
+                recursive=self.recursive_check.isChecked(),
+                seed=seed,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Preview Error", str(exc))
+            return
+
+        if not pairs:
+            QMessageBox.information(self, "Preview", "No files match the current mask.")
+            return
+
+        dlg = PreviewDialog(pairs, self.mode_combo.currentData(), seed, self)
+        dlg.exec()

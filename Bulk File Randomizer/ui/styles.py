@@ -164,6 +164,28 @@ QListWidget::item:selected {{
     color: #ffffff;
 }}
 
+QTableWidget {{
+    background-color: {COLORS['surface']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 4px;
+    gridline-color: {COLORS['border']};
+}}
+QTableWidget::item {{
+    padding: 3px 6px;
+}}
+QTableWidget::item:selected {{
+    background-color: {COLORS['accent']};
+    color: #ffffff;
+}}
+QHeaderView::section {{
+    background-color: {COLORS['bg']};
+    color: {COLORS['accent']};
+    border: none;
+    border-bottom: 1px solid {COLORS['border']};
+    padding: 5px 6px;
+    font-weight: bold;
+}}
+
 QScrollBar:vertical {{
     background: {COLORS['surface']};
     width: 10px;

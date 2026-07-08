@@ -11,6 +11,7 @@ class ConfigManager:
         "last_prefix": "",
         "last_file_mask": "*.*",
         "recursive_search": False,
+        "last_mode": "copy",
     }
 
     def __init__(self, config_path: Path):
