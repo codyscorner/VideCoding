@@ -7,6 +7,7 @@ Saves:
   - ICO is also copied to the project folder as app_icon.ico
 """
 
+import datetime
 import json
 import random
 import shutil
@@ -21,6 +22,8 @@ OUTPUT_DIR    = Path(__file__).parent / "output"
 WORKFLOW_FILE = Path(__file__).parent / "qwen_T2Image_2512_API.json"
 PROJECTS_ROOT = Path(__file__).parent.parent
 ICO_SIZES     = [16, 32, 48, 256]
+PROMPT_HISTORY_FILE = OUTPUT_DIR / "prompt_history.json"
+SKIP_PROJECT_DIRS = {".venv", ".git", "__pycache__", "IconMaker", "node_modules", "output"}
 
 # ── App definitions ───────────────────────────────────────────────────────────
 APPS = [
@@ -424,11 +427,74 @@ def get_output_filename(prompt_id: str) -> str | None:
     return None
 
 
-def convert_to_ico(png_path: Path, ico_path: Path) -> None:
-    from PIL import Image
+def build_ico_image(png_path: Path, padding_pct: int = 0, corner_radius_pct: int = 0):
+    """Load a PNG and apply optional padding (shrink onto a transparent canvas)
+    and rounded corners, returning a PIL Image ready to save as .ico."""
+    from PIL import Image, ImageChops, ImageDraw
+
     img = Image.open(png_path).convert("RGBA")
+    size = img.size[0]
+
+    if padding_pct > 0:
+        pad = int(size * padding_pct / 100)
+        inner_size = max(1, size - 2 * pad)
+        resized = img.resize((inner_size, inner_size), Image.LANCZOS)
+        canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        canvas.paste(resized, (pad, pad), resized)
+        img = canvas
+
+    if corner_radius_pct > 0:
+        radius = int(size * corner_radius_pct / 100)
+        mask = Image.new("L", (size, size), 0)
+        draw = ImageDraw.Draw(mask)
+        draw.rounded_rectangle([(0, 0), (size - 1, size - 1)], radius=radius, fill=255)
+        img.putalpha(ImageChops.multiply(img.getchannel("A"), mask))
+
+    return img
+
+
+def convert_to_ico(png_path: Path, ico_path: Path, padding_pct: int = 0, corner_radius_pct: int = 0) -> None:
+    img = build_ico_image(png_path, padding_pct, corner_radius_pct)
     img.save(ico_path, format="ICO", sizes=[(s, s) for s in ICO_SIZES])
     print(f"  ICO  -> {ico_path.name}")
+
+
+def load_prompt_history() -> dict:
+    if PROMPT_HISTORY_FILE.exists():
+        try:
+            return json.loads(PROMPT_HISTORY_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def append_prompt_history(app_name: str, prompt: str, seed: int) -> None:
+    history = load_prompt_history()
+    history.setdefault(app_name, []).append({
+        "prompt": prompt,
+        "seed": seed,
+        "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+    })
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    PROMPT_HISTORY_FILE.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+
+def find_projects_missing_icon(projects_root: Path = PROJECTS_ROOT) -> list[str]:
+    """List project folders (containing at least one .py file) that aren't
+    already in APPS and don't have an app_icon.ico yet."""
+    known_folders = {app["project_folder"] for app in APPS}
+    missing = []
+    for entry in sorted(projects_root.iterdir()):
+        if not entry.is_dir() or entry.name in SKIP_PROJECT_DIRS or entry.name.startswith("."):
+            continue
+        if entry.name in known_folders:
+            continue
+        if not any(entry.glob("*.py")):
+            continue
+        if (entry / "app_icon.ico").exists():
+            continue
+        missing.append(entry.name)
+    return missing
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
