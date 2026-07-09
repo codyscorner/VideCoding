@@ -5,15 +5,26 @@ Supports MP4 and other common video formats, plus common image formats
 
 import sys
 import os
+import json
+from datetime import datetime
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel, QStackedLayout,
-    QDialog, QRadioButton, QButtonGroup, QPushButton, QHBoxLayout
+    QDialog, QRadioButton, QButtonGroup, QPushButton, QHBoxLayout, QMessageBox
 )
 import random
 from PyQt6.QtCore import Qt, QUrl, QEventLoop, QTimer
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QIcon, QPixmap
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
+from send2trash import send2trash
+
+CONFIG_FILE = os.path.join(
+    os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else __file__),
+    "video_drop_player_config.json",
+)
+RESUME_MIN_MS = 3000            # don't bother resuming videos barely started
+RESUME_END_MARGIN_MS = 5000     # don't resume within the last few seconds (treat as finished)
 
 class SortOrderDialog(QDialog):
     """Dialog for choosing playlist sort order."""
@@ -220,7 +231,7 @@ class ImageViewer(QLabel):
 class VideoDropPlayer(QMainWindow):
     """Main window for the video drop player application."""
 
-    VERSION = "1.3.2"
+    VERSION = "1.4.0"
     PLAYBACK_SPEEDS = [0.5, 1.0, 1.25, 1.5, 2.0]
     SUPPORTED_FORMATS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm'}
     SUPPORTED_IMAGE_FORMATS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif'}
@@ -258,6 +269,18 @@ class VideoDropPlayer(QMainWindow):
         self._left_tap_timer.setInterval(400)  # ms window for double-tap
         self._left_tap_timer.timeout.connect(self._left_seek)
         self._left_tap_pending = False
+
+        # Resume-position memory (per file path, milliseconds)
+        self._positions = self._load_positions()
+        self._pending_resume_ms = 0
+        self._current_file_path = None
+
+        # A-B loop
+        self._loop_in_ms = None
+        self._loop_out_ms = None
+
+        # Last video frame (for screenshot capture)
+        self._last_frame = None
 
         # Set window icon
         icon_path = get_icon_path()
@@ -316,6 +339,8 @@ class VideoDropPlayer(QMainWindow):
         # Connect signals
         self.media_player.mediaStatusChanged.connect(self.on_media_status_changed)
         self.media_player.errorOccurred.connect(self.on_error)
+        self.media_player.positionChanged.connect(self._on_position_changed)
+        self.video_widget.videoSink().videoFrameChanged.connect(self._on_video_frame)
 
         # Set window style - dark blue theme
         self.setStyleSheet("""
@@ -359,6 +384,150 @@ class VideoDropPlayer(QMainWindow):
             hwnd = int(self.winId())
             # BGR color: #0a1628 -> 0x28160a
             set_dark_title_bar(hwnd, 0x28160a)
+
+    # ------------------------------------------------------------------
+    # Resume-position memory
+
+    @staticmethod
+    def _load_positions() -> dict:
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f).get("positions", {})
+        except Exception:
+            return {}
+
+    def _save_positions(self):
+        try:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump({"positions": self._positions}, f, indent=2)
+        except Exception:
+            pass
+
+    def _remember_current_position(self):
+        """Store (or clear) the outgoing file's playback position before switching away."""
+        if not self._current_file_path:
+            return
+        pos = self.media_player.position()
+        duration = self.media_player.duration()
+        if pos < RESUME_MIN_MS or (duration > 0 and pos >= duration - RESUME_END_MARGIN_MS):
+            self._positions.pop(self._current_file_path, None)
+        else:
+            self._positions[self._current_file_path] = pos
+        self._save_positions()
+
+    def _on_position_changed(self, position: int):
+        if self._loop_out_ms is not None and self._loop_in_ms is not None:
+            if position >= self._loop_out_ms:
+                self.media_player.setPosition(self._loop_in_ms)
+
+    # ------------------------------------------------------------------
+    # A-B loop
+
+    def _set_loop_in(self):
+        if self._mode != 'video':
+            return
+        self._loop_in_ms = self.media_player.position()
+        if self._loop_out_ms is not None and self._loop_out_ms <= self._loop_in_ms:
+            self._loop_out_ms = None
+        self._flash_message("Loop point A set")
+
+    def _set_loop_out(self):
+        if self._mode != 'video' or self._loop_in_ms is None:
+            return
+        pos = self.media_player.position()
+        if pos <= self._loop_in_ms:
+            return
+        self._loop_out_ms = pos
+        self._flash_message("A-B loop active")
+
+    def _clear_loop(self):
+        self._loop_in_ms = None
+        self._loop_out_ms = None
+        self._flash_message("Loop cleared")
+
+    def _flash_message(self, text: str, duration_ms: int = 1500):
+        """Briefly show a status message in the title bar, then restore it."""
+        restore = self.windowTitle()
+        self.setWindowTitle(f"Video Drop Player v{self.VERSION} - {text}")
+        QTimer.singleShot(duration_ms, lambda: self.setWindowTitle(restore))
+
+    # ------------------------------------------------------------------
+    # Screenshot
+
+    def _on_video_frame(self, frame):
+        if frame.isValid():
+            self._last_frame = frame
+
+    def _take_screenshot(self):
+        if self._mode != 'video' or self._last_frame is None or not self._last_frame.isValid():
+            return
+        image = self._last_frame.toImage()
+        if image.isNull():
+            return
+
+        source = Path(self._current_file_path) if self._current_file_path else None
+        out_dir = (source.parent if source else Path.cwd()) / "Screenshots"
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+
+        stem = source.stem if source else "screenshot"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = out_dir / f"{stem}_{ts}.png"
+        if image.save(str(out_path)):
+            self._flash_message(f"Screenshot saved: {out_path.name}")
+
+    # ------------------------------------------------------------------
+    # Delete current file
+
+    def _delete_current_file(self):
+        if self._mode == 'video' and self.playlist:
+            file_path, _ = self.playlist[self.current_index]
+        elif self._mode == 'image' and self.image_list:
+            file_path = self.image_list[self.image_index]
+        else:
+            return
+
+        reply = QMessageBox.question(
+            self, "Delete File",
+            f"Send this file to the Recycle Bin?\n\n{os.path.basename(file_path)}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        if self._mode == 'video':
+            self.media_player.stop()
+            self.media_player.setSource(QUrl())
+            self._positions.pop(file_path, None)
+            self._save_positions()
+            try:
+                send2trash(file_path)
+            except Exception as exc:
+                QMessageBox.warning(self, "Delete Failed", str(exc))
+                return
+            del self.playlist[self.current_index]
+            if not self.playlist:
+                self.release_video()
+            else:
+                if self.current_index >= len(self.playlist):
+                    self.current_index = len(self.playlist) - 1
+                self.play_current()
+        else:
+            try:
+                send2trash(file_path)
+            except Exception as exc:
+                QMessageBox.warning(self, "Delete Failed", str(exc))
+                return
+            del self.image_list[self.image_index]
+            if not self.image_list:
+                self.release_video()
+            else:
+                if self.image_index >= len(self.image_list):
+                    self.image_index = len(self.image_list) - 1
+                self.show_current_image()
 
     def _show_drop_screen(self):
         self._mode = 'drop'
@@ -568,7 +737,13 @@ class VideoDropPlayer(QMainWindow):
 
     def play_video(self, file_path: str):
         """Play the specified video file."""
+        self._remember_current_position()
+        self._loop_in_ms = None
+        self._loop_out_ms = None
         self._show_video_screen()
+
+        self._current_file_path = file_path
+        self._pending_resume_ms = self._positions.get(file_path, 0)
 
         self.media_player.setSource(QUrl.fromLocalFile(file_path))
         self.media_player.setPlaybackRate(self.PLAYBACK_SPEEDS[self._speed_index])
@@ -607,9 +782,17 @@ class VideoDropPlayer(QMainWindow):
         """Handle media status changes."""
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
             self.play_next()
+        elif status == QMediaPlayer.MediaStatus.LoadedMedia and self._pending_resume_ms:
+            self.media_player.setPosition(self._pending_resume_ms)
+            self._pending_resume_ms = 0
 
     def release_video(self):
         """Stop playback and release the file handle."""
+        self._remember_current_position()
+        self._current_file_path = None
+        self._loop_in_ms = None
+        self._loop_out_ms = None
+        self._last_frame = None
         self.media_player.stop()
         self.media_player.setSource(QUrl())
         self.playlist = []
@@ -620,6 +803,11 @@ class VideoDropPlayer(QMainWindow):
         self.drop_label.setText("Drag and drop a video or image file here")
         self._show_drop_screen()
         self.setWindowTitle(f"Video Drop Player v{self.VERSION}")
+
+    def closeEvent(self, event):
+        """Persist the current file's resume position before the app closes."""
+        self._remember_current_position()
+        super().closeEvent(event)
 
     def on_error(self, error, error_string):
         """Handle media player errors."""
@@ -647,6 +835,9 @@ class VideoDropPlayer(QMainWindow):
         elif key == Qt.Key.Key_F:
             self._toggle_fullscreen()
             return
+
+        elif key == Qt.Key.Key_Delete and self._mode in ('video', 'image'):
+            self._delete_current_file()
 
         elif self._mode == 'video' and key == Qt.Key.Key_S:
             self._cycle_speed()
@@ -691,6 +882,14 @@ class VideoDropPlayer(QMainWindow):
                     self.play_next()
             elif key == Qt.Key.Key_P:
                 self.play_previous()
+            elif key == Qt.Key.Key_BracketLeft:
+                self._set_loop_in()
+            elif key == Qt.Key.Key_BracketRight:
+                self._set_loop_out()
+            elif key == Qt.Key.Key_L:
+                self._clear_loop()
+            elif key == Qt.Key.Key_C:
+                self._take_screenshot()
 
 
 def main():
