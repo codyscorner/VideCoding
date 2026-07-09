@@ -4,6 +4,7 @@ import re
 import subprocess
 import threading
 import os
+import zlib
 
 from PIL import Image, ImageOps
 
@@ -41,15 +42,17 @@ RUN_STAMP_RE = re.compile(r"_\d{8}_\d{6}$")
 # ------------------------------------------------------------------ #
 
 class ImageLoaderThread(QThread):
+    """Loads image thumbnails from a persistent `thumbnails` cache folder
+    inside the image directory (like the Library does for videos). On each
+    run it syncs the cache: generates thumbs for new/changed images, removes
+    thumbs whose source image is gone."""
     image_ready = pyqtSignal(QImage, str, str)
     progress = pyqtSignal(int, int)
     finished_loading = pyqtSignal(int)
 
-    def __init__(self, input_dir: Path, excluded_stems: set[str] | None = None,
-                 sort_key=None, sort_reverse: bool = False):
+    def __init__(self, input_dir: Path, sort_key=None, sort_reverse: bool = False):
         super().__init__()
         self._input_dir = input_dir
-        self._excluded_stems = excluded_stems or set()
         self._sort_key = sort_key or (lambda p: p.name.lower())
         self._sort_reverse = sort_reverse
         self._cancelled = False
@@ -57,31 +60,68 @@ class ImageLoaderThread(QThread):
     def cancel(self):
         self._cancelled = True
 
+    def _thumb_name(self, img_path: Path) -> str:
+        # Relative-path hash keeps same-named images in subfolders distinct
+        rel = str(img_path.relative_to(self._input_dir))
+        return f"{img_path.stem}_{zlib.crc32(rel.lower().encode()):08x}.jpg"
+
     def run(self):
-        all_images = sorted(
-            (p for p in self._input_dir.rglob("*") if p.suffix.lower() in IMAGE_EXTS),
+        thumb_dir = self._input_dir / "thumbnails"
+        try:
+            thumb_dir.mkdir(exist_ok=True)
+        except OSError:
+            thumb_dir = None
+
+        images = sorted(
+            (p for p in self._input_dir.rglob("*")
+             if p.suffix.lower() in IMAGE_EXTS
+             and (thumb_dir is None or thumb_dir not in p.parents)),
             key=self._sort_key,
             reverse=self._sort_reverse,
         )
-        images = [p for p in all_images if p.stem not in self._excluded_stems]
+
+        # Sync cache: drop thumbnails whose source image no longer exists
+        if thumb_dir is not None:
+            valid = {self._thumb_name(p) for p in images}
+            for t in thumb_dir.glob("*.jpg"):
+                if t.name not in valid:
+                    try:
+                        t.unlink()
+                    except OSError:
+                        pass
+
         total = len(images)
         loaded = 0
         for img_path in images:
             if self._cancelled:
                 return
-            try:
-                pil_img = Image.open(img_path)
-                pil_img = ImageOps.exif_transpose(pil_img)
-                pil_img = pil_img.convert("RGBA")
-                data = pil_img.tobytes("raw", "RGBA")
-                img = QImage(data, pil_img.width, pil_img.height, QImage.Format.Format_RGBA8888)
-            except Exception:
-                img = QImage(str(img_path))
+            img = QImage()
+            thumb_path = thumb_dir / self._thumb_name(img_path) if thumb_dir else None
+            if (thumb_path and thumb_path.exists()
+                    and thumb_path.stat().st_mtime >= img_path.stat().st_mtime):
+                img = QImage(str(thumb_path))
+            if img.isNull():
+                try:
+                    pil_img = Image.open(img_path)
+                    pil_img = ImageOps.exif_transpose(pil_img)
+                    pil_img.thumbnail((THUMB_SIZE, THUMB_SIZE), Image.LANCZOS)
+                    pil_img = pil_img.convert("RGB")
+                    if thumb_path:
+                        try:
+                            pil_img.save(thumb_path, "JPEG", quality=88)
+                        except OSError:
+                            pass
+                    data = pil_img.convert("RGBA").tobytes("raw", "RGBA")
+                    img = QImage(data, pil_img.width, pil_img.height,
+                                 QImage.Format.Format_RGBA8888).copy()
+                except Exception:
+                    img = QImage(str(img_path))
+                    if not img.isNull():
+                        img = img.scaled(THUMB_SIZE, THUMB_SIZE,
+                                         Qt.AspectRatioMode.KeepAspectRatio,
+                                         Qt.TransformationMode.SmoothTransformation)
             if img.isNull():
                 continue
-            img = img.scaled(THUMB_SIZE, THUMB_SIZE,
-                             Qt.AspectRatioMode.KeepAspectRatio,
-                             Qt.TransformationMode.SmoothTransformation)
             rel = img_path.relative_to(self._input_dir)
             label = str(rel) if rel.parent != Path(".") else img_path.name
             self.image_ready.emit(img, str(rel), label)
@@ -548,7 +588,7 @@ class MainWindow(QMainWindow):
         self._show_all_chk.setToolTip("Include images that already have a video in the library")
         self._show_all_chk.setChecked(False)
         self._show_all_chk.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
-        self._show_all_chk.stateChanged.connect(lambda _: (self._populate_images(), self._update_auto_buttons()))
+        self._show_all_chk.stateChanged.connect(lambda _: (self._apply_image_filter(), self._update_auto_buttons()))
         self._img_sort_combo = QComboBox()
         self._img_sort_combo.setFixedHeight(30)
         self._img_sort_combo.setMinimumWidth(140)
@@ -894,9 +934,10 @@ class MainWindow(QMainWindow):
             return
 
         # Warn if any stem appears with more than one extension
+        thumb_dir = input_dir / "thumbnails"
         stem_exts: dict[str, list[str]] = {}
         for p in input_dir.rglob("*"):
-            if p.suffix.lower() in IMAGE_EXTS:
+            if p.suffix.lower() in IMAGE_EXTS and thumb_dir not in p.parents:
                 stem_exts.setdefault(p.stem, []).append(p.suffix.lower())
         duplicates = {s: exts for s, exts in stem_exts.items() if len(exts) > 1}
         if duplicates:
@@ -910,14 +951,9 @@ class MainWindow(QMainWindow):
                 "to avoid ambiguous one-to-one matching."
             )
 
-        if self._show_all_chk.isChecked():
-            excluded = set()
-        else:
-            excluded = self._existing_video_stems()
-
         sort_idx = self._img_sort_combo.currentIndex()
         _, sort_key, sort_reverse = self._IMG_SORT_OPTIONS[sort_idx]
-        self._img_loader = ImageLoaderThread(input_dir, excluded, sort_key, sort_reverse)
+        self._img_loader = ImageLoaderThread(input_dir, sort_key, sort_reverse)
         self._img_loader.image_ready.connect(self.image_grid.add_item)
         self._img_loader.progress.connect(self._on_img_load_progress)
         self._img_loader.finished_loading.connect(self._on_img_load_finished)
@@ -933,10 +969,34 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_label.setText("Ready")
         self.start_btn.setEnabled(True)
-        if total == 0:
+        self._apply_image_filter()
+
+    def _apply_image_filter(self):
+        """Show/hide grid items to match the active template — images that
+        already have a video are hidden (unless 'Show all'). This replaces
+        rescanning the image folder when switching chain folders."""
+        excluded = set() if self._show_all_chk.isChecked() else self._existing_video_stems()
+        visible = 0
+        for i in range(self.image_grid.count()):
+            item = self.image_grid.item(i)
+            stem = Path(item.data(Qt.ItemDataRole.UserRole)).stem
+            hide = stem in excluded
+            if hide and item.isSelected():
+                item.setSelected(False)
+            item.setHidden(hide)
+            if not hide:
+                visible += 1
+        if self.image_grid.count() == 0:
             self.selected_label.setText("No images found in input folder")
+        elif visible == 0:
+            self.selected_label.setText("All images already have videos for this chain — check 'Show all' to reuse them")
         else:
-            self.selected_label.setText("Select images to include in the batch")
+            self.selected_label.setText(f"{visible} image{'s' if visible != 1 else ''} — select to include in the batch")
+        return visible
+
+    def _visible_image_items(self) -> list[QListWidgetItem]:
+        return [self.image_grid.item(i) for i in range(self.image_grid.count())
+                if not self.image_grid.item(i).isHidden()]
 
     def _browse_input_dir(self):
         current = self._input_dir_edit.text().strip()
@@ -1193,7 +1253,8 @@ class MainWindow(QMainWindow):
         self.config.set("active_chain_folder", folder)
         self.config.save()
         self._rebuild_seg_panel()
-        self._populate_images()
+        # Re-filter in place — no rescan of the image folder
+        self._apply_image_filter()
         self._sync_lib_dir_display()
 
     def _on_seg_dot_double_clicked(self, segment: int):
@@ -1266,15 +1327,14 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _select_next_auto_batch(self) -> bool:
-        """Select the next _auto_size_spin images from the top of the grid.
-        Returns False if the grid is empty."""
+        """Select the next _auto_size_spin visible images from the top of the
+        grid. Returns False if no unprocessed images remain."""
         self.image_grid.clearSelection()
-        count = self.image_grid.count()
-        if count == 0:
+        visible = self._visible_image_items()
+        if not visible:
             return False
-        batch = min(self._auto_size_spin.value(), count)
-        for i in range(batch):
-            self.image_grid.item(i).setSelected(True)
+        for item in visible[:self._auto_size_spin.value()]:
+            item.setSelected(True)
         keys = self.image_grid.selected_keys()
         if keys:
             self.selected_label.setText(f"{len(keys)} image{'s' if len(keys) > 1 else ''} selected  (auto)")
@@ -1443,9 +1503,8 @@ class MainWindow(QMainWindow):
         self.progress_label.setText(f"Batch complete — {n} video{'s' if n != 1 else ''}")
         self.final_label.setText(f"{n} videos saved to final video folder")
 
-        if not self._show_all_chk.isChecked():
-            processed_stems = {RUN_STAMP_RE.sub("", Path(p).stem) for p in final_paths}
-            self.image_grid.remove_items_by_stems(processed_stems)
+        # Newly stitched videos exist now, so re-filtering hides their images
+        self._apply_image_filter()
 
         # ── Auto mode: skip dialog and continue or stop ───────────────────
         if self._auto_mode:
@@ -1456,7 +1515,7 @@ class MainWindow(QMainWindow):
                 self._auto_continue = True
             else:
                 # No more images, or stop was requested — wind down auto mode
-                remaining = self.image_grid.count()
+                remaining = len(self._visible_image_items())
                 if self._auto_stop_requested:
                     self.progress_label.setText("Auto mode stopped by user.")
                 else:
@@ -1467,8 +1526,6 @@ class MainWindow(QMainWindow):
                 self._auto_mode = False
                 self._auto_stop_requested = False
                 self._update_auto_buttons()
-                if not self._show_all_chk.isChecked():
-                    self._populate_images()
             return
 
         # ── Normal mode: ask to play ──────────────────────────────────────
@@ -1489,8 +1546,6 @@ class MainWindow(QMainWindow):
             if existing:
                 player = VideoPlayerDialog(existing[0], parent=self, playlist=existing)
                 player.exec()
-        if not self._show_all_chk.isChecked():
-            self._populate_images()
 
     def _on_error(self, message: str):
         self._write_daily_log(f"ERROR: {message}")

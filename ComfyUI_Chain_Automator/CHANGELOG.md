@@ -1,5 +1,12 @@
 # Changelog — ComfyUI Workflow Chain Automator
 
+### v3.7.0
+- **Image thumbnails are now cached on disk** in a `thumbnails` subfolder inside the image folder (same pattern as the Library's video thumbnails); each load does a quick sync — generates thumbs for new/changed images (mtime compare), deletes thumbs whose source image is gone — so a 1000-image folder loads in seconds instead of re-decoding every picture
+- **Switching chain folders no longer rescans the image folder** — the grid keeps its loaded thumbnails and just shows/hides images to match the new template (hidden = already has a video for that chain); switching templates back and forth is instant
+- 'Show all' and post-batch refresh use the same in-place show/hide instead of reloading; processed images are hidden (not removed), so switching templates brings them back without a rescan
+- Auto Run selects its next batch from visible images only
+- Changing the image folder itself still reloads the grid (new folder, new thumbnails); each folder keeps its own `thumbnails` cache
+
 ### v3.6.1
 - **Stitched filenames now carry a batch timestamp** (`photo_20260709_141530.mp4`, one shared stamp per batch run) — re-running a same-named source image after cleaning out a folder can no longer collide with or be mistaken for an earlier batch's video when moving files elsewhere; the zip archive inherits the timestamped name too
 - The "hide already-processed images" filter and post-batch grid removal strip the timestamp when matching videos back to source images, so filtering behaves exactly as before

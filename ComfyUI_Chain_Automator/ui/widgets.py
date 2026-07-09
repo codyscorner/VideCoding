@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QAbstractItemView
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QPixmap, QIcon, QPainter, QImage
@@ -56,12 +54,6 @@ class ThumbnailGrid(QListWidget):
 
     def all_keys(self) -> list[str]:
         return [self.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.count())]
-
-    def remove_items_by_stems(self, stems: set[str]):
-        for i in range(self.count() - 1, -1, -1):
-            item = self.item(i)
-            if Path(item.data(Qt.ItemDataRole.UserRole)).stem in stems:
-                self.takeItem(i)
 
     def sort_by_filename(self):
         self.sortItems(Qt.SortOrder.AscendingOrder)

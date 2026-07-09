@@ -10,6 +10,7 @@ Automates a chain of ComfyUI segments (up to 10), stitching the outputs into a s
 - Dual workflow sets: `workflow_segment_XX_batch.json` in chain subfolder
 - Split-pane UI: image browser (with sort) on the left, controls on the right
 - Background image loading — UI appears instantly, thumbnails load progressively
+- Persistent image thumbnail cache (`thumbnails` subfolder in the image folder, auto-synced) — large folders load in seconds; switching chain templates re-filters in place with no rescan
 - 200px letterboxed thumbnails with black padding (no cropping)
 - Starting image sort: Name A→Z / Z→A, Newest First, Oldest First
 - Segment progress dots, per-segment timing, and live log
