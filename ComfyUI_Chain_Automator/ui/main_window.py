@@ -156,60 +156,6 @@ class VideoLoaderThread(QThread):
 
 
 # ------------------------------------------------------------------ #
-# Completion dialog
-# ------------------------------------------------------------------ #
-
-class CompletionDialog(QDialog):
-    def __init__(self, final_path: str, seg_count: int, parent=None):
-        super().__init__(parent)
-        self._final_path = final_path
-        self.setWindowTitle("Chain Complete!")
-        self.setMinimumWidth(520)
-        self.setStyleSheet(parent.styleSheet() if parent else "")
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(30)
-        layout.setContentsMargins(30, 30, 30, 30)
-
-        icon = QLabel("✅")
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet("font-size: 36pt;")
-        layout.addWidget(icon)
-
-        title = QLabel(f"All {seg_count} segments complete!")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size: 13pt; font-weight: bold; color: #4caf8a;")
-        layout.addWidget(title)
-
-        path_label = QLabel(final_path)
-        path_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        path_label.setWordWrap(True)
-        path_label.setStyleSheet("font-size: 12pt; color: #9090cc;")
-        layout.addWidget(path_label)
-
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(12)
-
-        play_btn = QPushButton("▶  Play Video")
-        play_btn.setFixedHeight(44)
-        play_btn.clicked.connect(self._play)
-
-        skip_btn = QPushButton("✕  Skip")
-        skip_btn.setObjectName("cancel_btn")
-        skip_btn.setFixedHeight(44)
-        skip_btn.clicked.connect(self.accept)
-
-        btn_row.addWidget(play_btn)
-        btn_row.addWidget(skip_btn)
-        layout.addLayout(btn_row)
-
-    def _play(self):
-        self.accept()
-        player = VideoPlayerDialog(self._final_path, parent=self.parent())
-        player.exec()
-
-
-# ------------------------------------------------------------------ #
 # Segment dot
 # ------------------------------------------------------------------ #
 
@@ -445,7 +391,7 @@ class MainWindow(QMainWindow):
         self._seg_time_labels: list[QLabel] = []
         self._auto_mode = False
         self._auto_stop_requested = False
-        self._auto_next_started = False
+        self._auto_continue = False
 
         self.setWindowTitle(f"ComfyUI Workflow Chain Automator  v{version}")
         self.setMinimumSize(1200, 780)
@@ -1333,7 +1279,7 @@ class MainWindow(QMainWindow):
             return
         self._auto_mode = True
         self._auto_stop_requested = False
-        self._auto_next_started = False
+        self._auto_continue = False
         self._update_auto_buttons()
         self._start()
 
@@ -1378,6 +1324,8 @@ class MainWindow(QMainWindow):
             self._write_daily_log(f"  - {Path(k).name}")
         eff_dir = self._effective_video_dir()
         eff_dir.mkdir(parents=True, exist_ok=True)
+        if self._worker:
+            self._worker.wait(5000)
         worker_cfg = self.config.get_all()
         worker_cfg["final_video_dir"] = str(eff_dir)
         self._worker = BatchChainWorker(worker_cfg, keys)
@@ -1428,16 +1376,6 @@ class MainWindow(QMainWindow):
         else:
             self.progress_label.setText("Stitching all videos...")
 
-    def _on_stitch_done(self, final_path: str):
-        self._play_completion_sound()
-        self.final_label.setText(f"Final video saved: {final_path}")
-        self.progress_label.setText("Complete!")
-        self.progress_bar.setValue(self._seg_count)
-        dlg = CompletionDialog(final_path, self._seg_count, parent=self)
-        dlg.exec()
-        if not self._show_all_chk.isChecked():
-            self._populate_images()
-
     def _play_completion_sound(self):
         if not self.config.get("completion_sound_enabled", False):
             return
@@ -1474,8 +1412,10 @@ class MainWindow(QMainWindow):
         # ── Auto mode: skip dialog and continue or stop ───────────────────
         if self._auto_mode:
             if not self._auto_stop_requested and self._select_next_auto_batch():
-                self._auto_next_started = True
-                self._start()
+                # Next batch is started from _on_worker_finished, once the
+                # current worker thread has fully exited — starting it here
+                # would drop the last reference to a still-running QThread.
+                self._auto_continue = True
             else:
                 # No more images, or stop was requested — wind down auto mode
                 remaining = self.image_grid.count()
@@ -1524,9 +1464,9 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Error", message)
 
     def _on_worker_finished(self):
-        if self._auto_next_started:
-            # A new auto batch was already started in _on_batch_done — leave buttons alone
-            self._auto_next_started = False
+        if self._auto_continue:
+            self._auto_continue = False
+            self._start()
             return
         if self._auto_mode:
             # Worker finished without completing a batch (cancelled / error mid-auto)
@@ -1542,9 +1482,11 @@ class MainWindow(QMainWindow):
 
     def _write_daily_log(self, message: str):
         vid_dir = self._effective_video_dir()
-        vid_dir.mkdir(parents=True, exist_ok=True)
         if not vid_dir.exists():
-            return
+            try:
+                vid_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                return
         today = datetime.now().strftime("%m_%d_%Y")
         log_path = vid_dir / f"ComfyUI_Chain_Log_{today}.txt"
         timestamp = datetime.now().strftime("%H:%M:%S")

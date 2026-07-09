@@ -2,6 +2,7 @@ import json
 import logging
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 import zipfile
@@ -26,6 +27,7 @@ class BatchChainWorker(QThread):
         self._config = config
         self._images = images
         self._cancelled = False
+        self._active_prompt_id = ""
         self._total_segs = len(config.get("workflows", []))
         self._client_id = str(uuid.uuid4())
         self._run_id = str(int(time.time() * 1000))
@@ -50,6 +52,19 @@ class BatchChainWorker(QThread):
 
     def cancel(self):
         self._cancelled = True
+        # Stop the job on the ComfyUI server too — otherwise the prompt keeps
+        # running (and on RunPod keeps billing) after the UI says cancelled.
+        threading.Thread(target=self._interrupt_server, daemon=True).start()
+
+    def _interrupt_server(self):
+        try:
+            requests.post(f"{self._url}/queue", json={"delete": [self._active_prompt_id]}, timeout=10)
+        except Exception:
+            pass
+        try:
+            requests.post(f"{self._url}/interrupt", timeout=10)
+        except Exception:
+            pass
 
     def _log(self, msg: str):
         self.log.emit(msg)
@@ -145,13 +160,17 @@ class BatchChainWorker(QThread):
                 self._patch_batch_output_prefix(workflow_json, seg)
 
                 prompt_id = self._queue_prompt(workflow_json)
+                self._active_prompt_id = prompt_id
                 self._log(f"[Segment {seg}/{self._total_segs}] Queued ({prompt_id[:8]}...), polling...")
 
                 self._poll_until_done(prompt_id, seg)
+                if self._cancelled:
+                    self._log("Cancelled.")
+                    return
 
                 if self._runpod:
                     time.sleep(5)
-                videos = self._collect_outputs(seg, prompt_id, n)
+                videos = self._download_batch_outputs(seg, prompt_id, n)
                 elapsed = self._fmt(time.time() - seg_start)
                 self._log(f"[Segment {seg}/{self._total_segs}] Done in {elapsed} — {n} videos")
                 segment_outputs.append(videos)
@@ -219,9 +238,6 @@ class BatchChainWorker(QThread):
     # Output collection
     # ------------------------------------------------------------------ #
 
-    def _collect_outputs(self, seg: int, prompt_id: str, n: int) -> list[Path]:
-        return self._download_batch_outputs(seg, prompt_id, n)
-
     def _download_batch_outputs(self, seg: int, prompt_id: str, n: int) -> list[Path]:
         history_url = f"{self._url}/history/{prompt_id}"
         resp = requests.get(history_url, timeout=15)
@@ -262,8 +278,14 @@ class BatchChainWorker(QThread):
             raise RuntimeError(f"No output videos in history for batch segment {seg}")
 
         if len(all_files) != n:
-            self._log(f"  Warning: expected {n} outputs, got {len(all_files)} — using first {n}")
-            all_files = all_files[:n]
+            # A silent truncation here would stitch every image after the gap
+            # to the wrong chain of videos — fail loudly instead.
+            names = ", ".join(f["filename"] for f in all_files)
+            raise RuntimeError(
+                f"Segment {seg}: expected {n} output videos, ComfyUI returned "
+                f"{len(all_files)} ({names or 'none'}). One or more images "
+                f"failed on the server — check the ComfyUI console."
+            )
 
         downloaded = []
         for idx, file_info in enumerate(all_files):
@@ -285,13 +307,6 @@ class BatchChainWorker(QThread):
             downloaded.append(local)
 
         return downloaded
-
-    def _find_local_batch_outputs(self, seg: int) -> list[Path]:
-        base = Path(self._config["output_base_dir"])
-        mp4s = sorted(base.glob(f"Batch_{seg}_{self._run_id}_*.mp4"), key=lambda p: p.name)
-        if not mp4s:
-            raise FileNotFoundError(f"No batch output files found for segment {seg} in {base}")
-        return mp4s
 
     # ------------------------------------------------------------------ #
     # Frame extraction
