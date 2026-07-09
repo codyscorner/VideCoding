@@ -10,7 +10,16 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        'torch', 'torchvision', 'torchaudio', 'tensorflow', 'tensorboard',
+        'keras', 'jax', 'jaxlib', 'transformers', 'diffusers', 'accelerate',
+        'safetensors', 'onnx', 'onnxruntime', 'sklearn', 'scipy', 'pandas',
+        'matplotlib', 'sympy', 'numba', 'llvmlite', 'h5py', 'triton',
+        'xformers', 'bitsandbytes', 'sentencepiece', 'tokenizers',
+        'face_recognition', 'dlib', 'ultralytics', 'playwright',
+        'cv2', 'numpy', 'PIL', 'py7zr', 'rarfile', 'send2trash',
+        'IPython', 'jupyter', 'notebook', 'pytest',
+    ],
     noarchive=False,
     optimize=0,
 )
