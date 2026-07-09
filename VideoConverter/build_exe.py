@@ -12,6 +12,13 @@ OUTPUT = Path(r"P:\Apps\VibeCoded\Video Converter")
 icon = ROOT / "app_icon.ico"
 icon_args = ["--icon", str(icon)] if icon.exists() else []
 
+EXCLUDES = [
+    "torch", "torchvision", "torchaudio", "tensorflow", "transformers",
+    "cv2", "scipy", "pandas", "matplotlib", "PIL", "numpy", "onnx",
+    "onnxruntime", "triton", "IPython", "jupyter", "sklearn", "numba",
+    "jax", "safetensors", "tokenizers", "einops", "av", "soundfile",
+]
+
 print("Building EXE...")
 cmd = [
     sys.executable, "-m", "PyInstaller",
@@ -20,6 +27,7 @@ cmd = [
     "--windowed",
     "--name", "VideoConverter",
     *icon_args,
+    *[arg for m in EXCLUDES for arg in ("--exclude-module", m)],
     str(ROOT / "main.py"),
 ]
 result = subprocess.run(cmd, cwd=str(ROOT))

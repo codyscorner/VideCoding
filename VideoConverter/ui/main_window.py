@@ -7,8 +7,12 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -19,6 +23,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -92,6 +97,105 @@ PRESETS = [
         "args": ["-vcodec", "libx264", "-pix_fmt", "yuv420p", "-acodec", "aac", "-b:a", "128k"],
     },
 ]
+
+CUSTOM_LABEL = "Custom Preset…  (define your own)"
+
+CODEC_CHOICES = [
+    ("H.264 (libx264)", "libx264", ".mp4"),
+    ("H.265 / HEVC (libx265)", "libx265", ".mp4"),
+    ("Xvid / AVI", "libxvid", ".avi"),
+    ("MPEG-4 Part 2", "mpeg4", ".mp4"),
+]
+
+
+def parse_timecode(text: str) -> float | None:
+    """Parse 'hh:mm:ss', 'mm:ss', or plain seconds into seconds. Returns None if blank/invalid."""
+    text = text.strip()
+    if not text:
+        return None
+    parts = text.split(":")
+    try:
+        parts = [float(p) for p in parts]
+    except ValueError:
+        return None
+    if len(parts) == 1:
+        seconds = parts[0]
+    elif len(parts) == 2:
+        seconds = parts[0] * 60 + parts[1]
+    elif len(parts) == 3:
+        seconds = parts[0] * 3600 + parts[1] * 60 + parts[2]
+    else:
+        return None
+    return seconds if seconds >= 0 else None
+
+
+class CustomPresetDialog(QDialog):
+    """Lets the user define a custom encode preset (codec, container, CRF/bitrate, resolution)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Custom Preset")
+        self.setMinimumWidth(360)
+
+        form = QFormLayout(self)
+
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("e.g. My 720p H.264")
+        form.addRow("Preset Name:", self.name_edit)
+
+        self.codec_combo = QComboBox()
+        for label, _codec, _ext in CODEC_CHOICES:
+            self.codec_combo.addItem(label)
+        form.addRow("Codec:", self.codec_combo)
+
+        self.crf_spin = QSpinBox()
+        self.crf_spin.setRange(0, 51)
+        self.crf_spin.setValue(23)
+        self.crf_spin.setSpecialValueText("(off)")
+        form.addRow("CRF (0=lossless, 51=worst, lower=better):", self.crf_spin)
+
+        self.bitrate_edit = QLineEdit()
+        self.bitrate_edit.setPlaceholderText("e.g. 4000k  (leave blank to use CRF instead)")
+        form.addRow("Video Bitrate:", self.bitrate_edit)
+
+        self.width_spin = QSpinBox()
+        self.width_spin.setRange(0, 7680)
+        self.width_spin.setSingleStep(2)
+        self.width_spin.setSpecialValueText("(original)")
+        form.addRow("Width (height auto-scaled):", self.width_spin)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def to_preset(self) -> dict | None:
+        name = self.name_edit.text().strip()
+        if not name:
+            return None
+        _label, codec, ext = CODEC_CHOICES[self.codec_combo.currentIndex()]
+
+        args: list[str] = ["-vcodec", codec]
+        bitrate = self.bitrate_edit.text().strip()
+        if bitrate:
+            args += ["-b:v", bitrate]
+        elif codec in ("libx264", "libx265"):
+            args += ["-crf", str(self.crf_spin.value())]
+        elif codec == "libxvid":
+            args += ["-q:v", "4"]
+
+        width = self.width_spin.value()
+        if width:
+            args += ["-vf", f"scale={width}:-2"]
+
+        if codec in ("libx264", "libx265", "mpeg4"):
+            args += ["-pix_fmt", "yuv420p"]
+        args += ["-acodec", "aac" if codec != "libxvid" else "mp3", "-b:a", "128k"]
+
+        return {"label": f"Custom — {name}", "ext": ext, "args": args, "custom": True}
+
 
 STATUS_PENDING    = "Pending"
 STATUS_CONVERTING = "Converting..."
@@ -355,6 +459,9 @@ class MainWindow(QMainWindow):
         self._browse_folder_btn.clicked.connect(self._browse_folder)
         btn_row.addWidget(self._browse_files_btn)
         btn_row.addWidget(self._browse_folder_btn)
+        self._recursive_check = QCheckBox("Include subfolders")
+        self._recursive_check.toggled.connect(self._save_config)
+        btn_row.addWidget(self._recursive_check)
         btn_row.addStretch()
         self._clear_btn = QPushButton("Clear All")
         self._clear_btn.clicked.connect(self._clear_files)
@@ -386,12 +493,40 @@ class MainWindow(QMainWindow):
         fmt_lbl = QLabel("Format:")
         fmt_lbl.setFixedWidth(110)
         fmt_row.addWidget(fmt_lbl)
+        self._presets: list[dict] = list(PRESETS)
         self._preset_combo = QComboBox()
-        for p in PRESETS:
-            self._preset_combo.addItem(p["label"])
-        self._preset_combo.currentIndexChanged.connect(self._rebuild_output_names)
+        self._reload_preset_combo()
+        self._preset_combo.currentIndexChanged.connect(self._on_preset_changed)
         fmt_row.addWidget(self._preset_combo, 1)
         sg.addLayout(fmt_row)
+
+        # Trim
+        trim_row = QHBoxLayout()
+        trim_lbl = QLabel("Trim (Start/End):")
+        trim_lbl.setFixedWidth(110)
+        trim_row.addWidget(trim_lbl)
+        self._trim_start_edit = QLineEdit()
+        self._trim_start_edit.setPlaceholderText("mm:ss (blank = from start)")
+        trim_row.addWidget(self._trim_start_edit, 1)
+        trim_row.addWidget(QLabel("to"))
+        self._trim_end_edit = QLineEdit()
+        self._trim_end_edit.setPlaceholderText("mm:ss (blank = to end)")
+        trim_row.addWidget(self._trim_end_edit, 1)
+        sg.addLayout(trim_row)
+
+        # Recursive + parallel workers
+        opts_row = QHBoxLayout()
+        workers_lbl = QLabel("Parallel Conversions:")
+        workers_lbl.setFixedWidth(140)
+        opts_row.addWidget(workers_lbl)
+        self._workers_spin = QSpinBox()
+        self._workers_spin.setRange(1, 8)
+        self._workers_spin.setValue(1)
+        self._workers_spin.setFixedWidth(60)
+        self._workers_spin.valueChanged.connect(self._save_config)
+        opts_row.addWidget(self._workers_spin)
+        opts_row.addStretch()
+        sg.addLayout(opts_row)
 
         # Output folder
         out_row = QHBoxLayout()
@@ -470,15 +605,20 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Input handling
 
+    def _scan_folder(self, folder: Path) -> list[Path]:
+        walker = folder.rglob("*") if self._recursive_check.isChecked() else folder.iterdir()
+        return sorted(
+            f for f in walker
+            if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS
+        )
+
     def _handle_paths(self, paths: list[Path]):
-        """Accept a mix of files and folders; folders are scanned one level deep."""
+        """Accept a mix of files and folders; folders scanned one level deep, or
+        recursively if 'Include subfolders' is checked."""
         candidates: list[Path] = []
         for p in paths:
             if p.is_dir():
-                candidates.extend(
-                    f for f in sorted(p.iterdir())
-                    if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS
-                )
+                candidates.extend(self._scan_folder(p))
             elif p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS:
                 candidates.append(p)
         self._add_files(candidates)
@@ -495,11 +635,7 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder to Convert")
         if not folder:
             return
-        videos = sorted(
-            f for f in Path(folder).iterdir()
-            if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS
-        )
-        self._add_files(videos)
+        self._add_files(self._scan_folder(Path(folder)))
 
     def _browse_out_dir(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Output Folder")
@@ -525,6 +661,14 @@ class MainWindow(QMainWindow):
         if not ffmpeg:
             ffmpeg = self._auto_find_ffmpeg()
         self._ffmpeg_edit.setText(ffmpeg)
+
+        self._recursive_check.setChecked(bool(data.get("recursive_scan", False)))
+        self._workers_spin.setValue(int(data.get("max_workers", 1)))
+
+        custom = data.get("custom_presets", [])
+        if custom:
+            self._presets.extend(custom)
+            self._reload_preset_combo()
 
     @staticmethod
     def _auto_find_ffmpeg() -> str:
@@ -560,11 +704,47 @@ class MainWindow(QMainWindow):
         return ""
 
     def _save_config(self):
-        data = {"ffmpeg_path": self._ffmpeg_edit.text().strip()}
+        data = {
+            "ffmpeg_path": self._ffmpeg_edit.text().strip(),
+            "recursive_scan": self._recursive_check.isChecked(),
+            "max_workers": self._workers_spin.value(),
+            "custom_presets": [p for p in self._presets if p.get("custom")],
+        }
         try:
             CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # Preset combo (built-in + user-defined custom presets)
+
+    def _reload_preset_combo(self):
+        self._preset_combo.blockSignals(True)
+        current = self._preset_combo.currentIndex()
+        self._preset_combo.clear()
+        for p in self._presets:
+            self._preset_combo.addItem(p["label"])
+        self._preset_combo.addItem(CUSTOM_LABEL)
+        if 0 <= current < len(self._presets):
+            self._preset_combo.setCurrentIndex(current)
+        self._preset_combo.blockSignals(False)
+
+    def _on_preset_changed(self, index: int):
+        if index == len(self._presets):
+            # "Custom Preset…" entry selected — open the editor
+            dialog = CustomPresetDialog(self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                preset = dialog.to_preset()
+                if preset:
+                    self._presets.append(preset)
+                    self._save_config()
+                    self._reload_preset_combo()
+                    self._preset_combo.setCurrentIndex(len(self._presets) - 1)
+                    return
+            # Cancelled or invalid — fall back to first preset
+            self._preset_combo.setCurrentIndex(0)
+            return
+        self._rebuild_output_names()
 
     def _add_files(self, paths: list[Path]):
         existing = set(self._files)
@@ -597,7 +777,7 @@ class MainWindow(QMainWindow):
     # Output name helpers
 
     def _output_name_for(self, input_path: Path) -> str:
-        ext = PRESETS[self._preset_combo.currentIndex()]["ext"]
+        ext = self._presets[self._preset_combo.currentIndex()]["ext"]
         suffix = self._suffix_edit.text().strip()
         stem = input_path.stem
         return f"{stem}_{suffix}{ext}" if suffix else f"{stem}{ext}"
@@ -632,14 +812,28 @@ class MainWindow(QMainWindow):
         # Reset any previously Converting/Error rows back to Pending
         for row in range(self._table.rowCount()):
             item = self._table.item(row, 2)
-            if item and item.text() in (STATUS_CONVERTING, STATUS_ERROR):
+            if item and (
+                item.text().startswith(STATUS_CONVERTING)
+                or item.text() in (STATUS_ERROR, "Cancelled")
+            ):
                 item.setText(STATUS_PENDING)
                 item.setForeground(QColor(COLOR_PENDING))
 
         # Build job list — skip already-Done rows
         jobs: list[dict] = []
         self._job_to_row = {}
-        preset_args = PRESETS[self._preset_combo.currentIndex()]["args"]
+        preset_args = self._presets[self._preset_combo.currentIndex()]["args"]
+
+        trim_start = parse_timecode(self._trim_start_edit.text())
+        trim_end = parse_timecode(self._trim_end_edit.text())
+        pre_args: list[str] = []
+        trim_args: list[str] = []
+        if trim_start is not None:
+            pre_args = ["-ss", str(trim_start)]
+        if trim_end is not None:
+            duration = trim_end - (trim_start or 0.0)
+            if duration > 0:
+                trim_args = ["-t", str(duration)]
 
         for row, p in enumerate(self._files):
             status_item = self._table.item(row, 2)
@@ -652,7 +846,12 @@ class MainWindow(QMainWindow):
                 out_item.setText(out.name)
             job_idx = len(jobs)
             self._job_to_row[job_idx] = row
-            jobs.append({"input": p, "output": out, "args": list(preset_args)})
+            jobs.append({
+                "input": p,
+                "output": out,
+                "args": trim_args + list(preset_args),
+                "pre_args": list(pre_args),
+            })
 
         if not jobs:
             self._log_append("Nothing to convert (all files already done).")
@@ -666,8 +865,12 @@ class MainWindow(QMainWindow):
         self._set_controls_busy(True)
 
         ffmpeg_path = self._ffmpeg_edit.text().strip() or "ffmpeg"
-        self._worker = ConversionWorker(jobs, ffmpeg_path=ffmpeg_path)
+        self._worker = ConversionWorker(
+            jobs, ffmpeg_path=ffmpeg_path, max_workers=self._workers_spin.value()
+        )
         self._worker.progress.connect(self._on_progress)
+        self._worker.file_started.connect(self._on_file_started)
+        self._worker.file_progress.connect(self._on_file_progress)
         self._worker.file_done.connect(self._on_file_done)
         self._worker.log.connect(self._log_append)
         self._worker.finished.connect(self._on_finished)
@@ -681,16 +884,24 @@ class MainWindow(QMainWindow):
     # Worker slots
 
     @pyqtSlot(int, int)
-    def _on_progress(self, job_idx: int, total: int):
-        self._progress.setValue(job_idx)
-        self._prog_label.setText(f"{job_idx} / {total}")
-        if job_idx < total:
-            self._set_row_status(job_idx, STATUS_CONVERTING, COLOR_CONVERTING)
+    def _on_progress(self, completed: int, total: int):
+        self._progress.setValue(completed)
+        self._prog_label.setText(f"{completed} / {total}")
+
+    @pyqtSlot(int)
+    def _on_file_started(self, job_idx: int):
+        self._set_row_status(job_idx, STATUS_CONVERTING, COLOR_CONVERTING)
+
+    @pyqtSlot(int, int)
+    def _on_file_progress(self, job_idx: int, percent: int):
+        self._set_row_status(job_idx, f"{STATUS_CONVERTING} {percent}%", COLOR_CONVERTING)
 
     @pyqtSlot(int, bool, str)
-    def _on_file_done(self, job_idx: int, success: bool, _msg: str):
+    def _on_file_done(self, job_idx: int, success: bool, msg: str):
         if success:
             self._set_row_status(job_idx, STATUS_DONE, COLOR_DONE)
+        elif msg == "Cancelled":
+            self._set_row_status(job_idx, "Cancelled", COLOR_PENDING)
         else:
             self._set_row_status(job_idx, STATUS_ERROR, COLOR_ERROR)
 

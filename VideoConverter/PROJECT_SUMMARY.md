@@ -48,13 +48,16 @@ Output: `dist\VideoConverter.exe`, copied to `P:\Apps\VibeCoded\Video Converter\
 
 ## Changelog
 
+### v1.1.0
+- Per-file progress percent (parses ffmpeg's `Duration:`/`time=` stderr output), shown inline in the Status column
+- Custom preset editor: "Custom Preset…" combo entry opens a dialog for codec (H.264/H.265/Xvid/MPEG-4), CRF or explicit bitrate, and width (auto-scaled height); saved presets persist in `video_converter_config.json`
+- Trim on convert: optional Start/End fields (`mm:ss`, `hh:mm:ss`, or plain seconds) applied via `-ss`/`-t`
+- Recursive folder scan option ("Include subfolders" checkbox) for both Browse Folder and folder drag-and-drop
+- Parallel conversions with a worker-count cap (1-8, default 1); conversion moved to a `ThreadPoolExecutor` inside the worker thread, overall progress bar now tracks completed jobs instead of started jobs
+
 ### v1.0.0
 - Initial release: drag-and-drop + browse-files + browse-folder input, three format presets, suffix control, background conversion, per-file status table
 
 ## Future Enhancements
 
-- [ ] Progress percent per file (parse ffmpeg time output) instead of just status
-- [ ] Custom preset editor (CRF/bitrate/resolution)
-- [ ] Trim on convert (start/end time)
-- [ ] Recursive folder scan option
-- [ ] Parallel conversions with a worker cap
+All planned enhancements shipped in v1.1.0.
