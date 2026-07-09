@@ -10,7 +10,8 @@ Open `index.html` in any modern web browser.
 
 | Input | Action |
 |-------|--------|
-| Mouse click | Launch interceptor missile at click location |
+| Mouse click | Launch interceptor missile at click location (or restart after Game Over) |
+| P / Escape | Pause / resume |
 
 ## Objective
 
@@ -19,6 +20,9 @@ Defend your cities from incoming missiles. Click to launch interceptors that exp
 - **Score** is shown in the top-left
 - **Ammo** count is displayed below the score
 - Missiles come in waves — survive as long as possible
+- Choose a **Difficulty** (Easy/Normal/Hard) in the top-right — spawn rate/speed apply immediately; starting ammo applies on the next restart
+- Toggle **Sound Effects** in the top-right; the preference is remembered between visits
+- Your top 5 **High Scores** are saved in the browser and shown in the bottom-right panel
 
 ## Requirements
 
