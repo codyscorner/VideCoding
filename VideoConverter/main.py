@@ -1,6 +1,6 @@
 """
 Video Converter
-Version: 1.0.0
+Version: 1.1.0
 """
 
 import sys
@@ -11,7 +11,7 @@ from PyQt6.QtGui import QIcon
 
 from ui.main_window import MainWindow
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 try:
     import ctypes
