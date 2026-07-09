@@ -3,7 +3,7 @@
 VHS Metadata Parser
 A PyQt6 application to parse and display ComfyUI workflow metadata files.
 Supports drag-and-drop and file browser import.
-Version: 1.1.0
+Version: 1.2.0
 """
 
 import csv
@@ -18,10 +18,12 @@ from PyQt6.QtWidgets import (
     QTabWidget, QLabel, QLineEdit, QTextEdit, QScrollArea,
     QGroupBox, QFormLayout, QFileDialog, QMenu,
     QFrame, QSplitter, QTableWidget, QTableWidgetItem, QHeaderView,
-    QPushButton, QMessageBox
+    QPushButton, QMessageBox, QCheckBox, QDialog, QAbstractItemView
 )
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QFont, QIcon, QAction
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QFont, QIcon, QAction, QColor
+
+SUPPORTED_EXTENSIONS = ('.mp4', '.json', '.txt')
 
 
 # Dark blue-green color scheme
@@ -366,6 +368,126 @@ class MetadataParser:
         return settings
 
 
+def summarize_file(file_path: str) -> Dict[str, Any]:
+    """Parse a single file and reduce it to a flat summary row used by batch/search/diff."""
+    parser = MetadataParser()
+    ok = parser.parse_file(file_path)
+    row: Dict[str, Any] = {'file': file_path, 'name': Path(file_path).name, 'error': not ok}
+    if not ok:
+        return row
+
+    settings = parser.get_video_settings()
+    models = parser.get_models()
+    samplers = parser.get_sampler_settings()
+    positive = parser.get_positive_prompts()
+    negative = parser.get_negative_prompts()
+    lora_names = [m['name'] for m in models['lora']]
+    unet_names = [m['name'] for m in models['unet']]
+    clip_names = [m['name'] for m in models['clip']]
+    vae_names = [m['name'] for m in models['vae']]
+
+    row.update({
+        'width': settings.get('width', 'N/A'),
+        'height': settings.get('height', 'N/A'),
+        'length': settings.get('length', 'N/A'),
+        'frame_rate': settings.get('frame_rate', 'N/A'),
+        'format': settings.get('format', 'N/A'),
+        'steps': samplers[0]['steps'] if samplers else 'N/A',
+        'cfg': samplers[0]['cfg'] if samplers else 'N/A',
+        'sampler_name': samplers[0]['sampler_name'] if samplers else 'N/A',
+        'scheduler': samplers[0]['scheduler'] if samplers else 'N/A',
+        'lora': ', '.join(lora_names),
+        'unet': ', '.join(unet_names),
+        'clip': ', '.join(clip_names),
+        'vae': ', '.join(vae_names),
+        'positive_prompt': ' | '.join(positive),
+        'negative_prompt': ' | '.join(negative),
+        'prompt_data': parser.prompt_data,
+        'workflow_data': parser.workflow_data,
+        'raw_data': parser.raw_data,
+    })
+    return row
+
+
+def row_matches_search(row: Dict[str, Any], term: str) -> bool:
+    if not term:
+        return True
+    term = term.lower()
+    haystacks = [
+        row.get('name', ''), row.get('lora', ''), row.get('unet', ''),
+        row.get('clip', ''), row.get('vae', ''), row.get('sampler_name', ''),
+        row.get('positive_prompt', ''), row.get('negative_prompt', ''), row.get('format', ''),
+    ]
+    return any(term in str(h).lower() for h in haystacks)
+
+
+class BatchScanWorker(QThread):
+    progress = pyqtSignal(int, int)
+    row_ready = pyqtSignal(dict)
+    finished_scan = pyqtSignal()
+
+    def __init__(self, files: List[str], parent=None):
+        super().__init__(parent)
+        self.files = files
+
+    def run(self):
+        total = len(self.files)
+        for i, file_path in enumerate(self.files, 1):
+            row = summarize_file(file_path)
+            self.row_ready.emit(row)
+            self.progress.emit(i, total)
+        self.finished_scan.emit()
+
+
+class DiffDialog(QDialog):
+    """Side-by-side comparison of key metadata fields between two files."""
+
+    FIELDS = [
+        ('name', 'File'), ('width', 'Width'), ('height', 'Height'), ('length', 'Frames/Length'),
+        ('frame_rate', 'Frame Rate'), ('format', 'Format'), ('steps', 'Steps'), ('cfg', 'CFG'),
+        ('sampler_name', 'Sampler'), ('scheduler', 'Scheduler'), ('unet', 'UNET'),
+        ('clip', 'CLIP'), ('vae', 'VAE'), ('lora', 'LoRA'),
+        ('positive_prompt', 'Positive Prompt'), ('negative_prompt', 'Negative Prompt'),
+    ]
+
+    def __init__(self, row_a: Dict[str, Any], row_b: Dict[str, Any], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Diff: {row_a.get('name')} vs {row_b.get('name')}")
+        self.resize(900, 600)
+
+        layout = QVBoxLayout(self)
+        table = QTableWidget()
+        table.setColumnCount(3)
+        table.setHorizontalHeaderLabels(['Field', row_a.get('name', 'File A'), row_b.get('name', 'File B')])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setWordWrap(True)
+        table.setRowCount(len(self.FIELDS))
+
+        diff_count = 0
+        for i, (key, label) in enumerate(self.FIELDS):
+            val_a = str(row_a.get(key, 'N/A'))
+            val_b = str(row_b.get(key, 'N/A'))
+            differs = val_a != val_b
+            if differs and key != 'name':
+                diff_count += 1
+            table.setItem(i, 0, QTableWidgetItem(label))
+            item_a = QTableWidgetItem(val_a)
+            item_b = QTableWidgetItem(val_b)
+            if differs and key != 'name':
+                item_a.setBackground(QColor(COLORS['accent_dark']))
+                item_b.setBackground(QColor(COLORS['accent_dark']))
+            table.setItem(i, 1, item_a)
+            table.setItem(i, 2, item_b)
+        table.resizeRowsToContents()
+        layout.addWidget(QLabel(f"{diff_count} field(s) differ"))
+        layout.addWidget(table)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+
 class DropZoneLabel(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -390,7 +512,10 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.parser = MetadataParser()
-        self.setWindowTitle("VHS Metadata Parser v1.1.1")
+        self.batch_rows: List[Dict[str, Any]] = []
+        self.batch_visible_rows: List[Dict[str, Any]] = []
+        self.batch_worker: Optional[BatchScanWorker] = None
+        self.setWindowTitle("VHS Metadata Parser v1.2.0")
         self.setMinimumSize(900, 700)
         self.setStyleSheet(STYLESHEET)
         self.setAcceptDrops(True)
@@ -431,6 +556,7 @@ class MainWindow(QMainWindow):
         self._create_sampler_tab()
         self._create_workflow_tab()
         self._create_raw_json_tab()
+        self._create_batch_tab()
 
     def _create_menu_bar(self):
         menubar = self.menuBar()
@@ -624,6 +750,155 @@ class MainWindow(QMainWindow):
         self.raw_json_edit.setReadOnly(True)
         layout.addWidget(self.raw_json_edit)
         self.tab_widget.addTab(tab, "Raw JSON")
+
+    def _create_batch_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        controls = QHBoxLayout()
+        self.batch_scan_btn = QPushButton("Scan Folder…")
+        self.batch_scan_btn.clicked.connect(self._scan_batch_folder)
+        controls.addWidget(self.batch_scan_btn)
+
+        self.batch_recursive_check = QCheckBox("Include subfolders")
+        self.batch_recursive_check.setChecked(True)
+        controls.addWidget(self.batch_recursive_check)
+
+        controls.addWidget(QLabel("Search:"))
+        self.batch_search_edit = QLineEdit()
+        self.batch_search_edit.setPlaceholderText("Filter by name, LoRA, model, sampler, prompt text…")
+        self.batch_search_edit.textChanged.connect(self._filter_batch_rows)
+        controls.addWidget(self.batch_search_edit, 1)
+        layout.addLayout(controls)
+
+        self.batch_status_label = QLabel("No folder scanned yet.")
+        self.batch_status_label.setObjectName("subtitle")
+        layout.addWidget(self.batch_status_label)
+
+        self.batch_table = QTableWidget()
+        batch_headers = ['File', 'Width', 'Height', 'Length', 'FPS', 'Format',
+                          'Steps', 'CFG', 'Sampler', 'LoRA', 'UNET']
+        self.batch_table.setColumnCount(len(batch_headers))
+        self.batch_table.setHorizontalHeaderLabels(batch_headers)
+        self.batch_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.batch_table.horizontalHeader().setStretchLastSection(True)
+        self.batch_table.setAlternatingRowColors(True)
+        self.batch_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.batch_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.batch_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.batch_table.doubleClicked.connect(self._load_batch_row_into_viewer)
+        layout.addWidget(self.batch_table, 1)
+
+        btn_row = QHBoxLayout()
+        diff_btn = QPushButton("Diff Selected (pick 2)")
+        diff_btn.clicked.connect(self._diff_selected_batch_rows)
+        btn_row.addWidget(diff_btn)
+
+        export_btn = QPushButton("Export Summary CSV…")
+        export_btn.clicked.connect(self._export_batch_summary_csv)
+        btn_row.addWidget(export_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        self.tab_widget.addTab(tab, "Batch / Search")
+
+    def _scan_batch_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Folder to Scan")
+        if not folder:
+            return
+
+        folder_path = Path(folder)
+        pattern = folder_path.rglob('*') if self.batch_recursive_check.isChecked() else folder_path.glob('*')
+        files = [str(p) for p in pattern if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS]
+
+        if not files:
+            QMessageBox.information(self, "No Files", "No .mp4, .json, or .txt files found in that folder.")
+            return
+
+        self.batch_rows = []
+        self.batch_table.setRowCount(0)
+        self.batch_scan_btn.setEnabled(False)
+        self.batch_status_label.setText(f"Scanning 0 / {len(files)}…")
+
+        self.batch_worker = BatchScanWorker(files, self)
+        self.batch_worker.row_ready.connect(self._on_batch_row_ready)
+        self.batch_worker.progress.connect(self._on_batch_progress)
+        self.batch_worker.finished_scan.connect(self._on_batch_scan_finished)
+        self.batch_worker.start()
+
+    def _on_batch_row_ready(self, row: Dict[str, Any]):
+        self.batch_rows.append(row)
+
+    def _on_batch_progress(self, done: int, total: int):
+        self.batch_status_label.setText(f"Scanning {done} / {total}…")
+
+    def _on_batch_scan_finished(self):
+        self.batch_scan_btn.setEnabled(True)
+        ok_count = sum(1 for r in self.batch_rows if not r.get('error'))
+        err_count = len(self.batch_rows) - ok_count
+        suffix = f", {err_count} failed to parse" if err_count else ""
+        self.batch_status_label.setText(f"Scanned {len(self.batch_rows)} file(s){suffix}.")
+        self._filter_batch_rows()
+
+    def _filter_batch_rows(self):
+        term = self.batch_search_edit.text().strip()
+        self.batch_visible_rows = [r for r in self.batch_rows if not r.get('error') and row_matches_search(r, term)]
+        self._populate_batch_table()
+
+    def _populate_batch_table(self):
+        rows = self.batch_visible_rows
+        self.batch_table.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            values = [r.get('name'), r.get('width'), r.get('height'), r.get('length'),
+                      r.get('frame_rate'), r.get('format'), r.get('steps'), r.get('cfg'),
+                      r.get('sampler_name'), r.get('lora'), r.get('unet')]
+            for j, v in enumerate(values):
+                self.batch_table.setItem(i, j, QTableWidgetItem(str(v) if v not in (None, '') else ('' if j in (9, 10) else 'N/A')))
+
+    def _selected_batch_rows(self) -> List[Dict[str, Any]]:
+        rows_idx = sorted({idx.row() for idx in self.batch_table.selectionModel().selectedRows()})
+        return [self.batch_visible_rows[i] for i in rows_idx if i < len(self.batch_visible_rows)]
+
+    def _load_batch_row_into_viewer(self):
+        selected = self._selected_batch_rows()
+        if selected:
+            self.load_file(selected[0]['file'])
+            self.tab_widget.setCurrentIndex(0)
+
+    def _diff_selected_batch_rows(self):
+        selected = self._selected_batch_rows()
+        if len(selected) != 2:
+            QMessageBox.information(self, "Select Two Files", "Select exactly two rows (Ctrl+Click) to diff.")
+            return
+        dialog = DiffDialog(selected[0], selected[1], self)
+        dialog.exec()
+
+    def _export_batch_summary_csv(self):
+        if not self.batch_visible_rows:
+            QMessageBox.warning(self, "No Data", "Scan a folder first (and clear search filters if the list is empty).")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Batch Summary CSV", "batch_summary.csv", "CSV Files (*.csv);;All Files (*.*)"
+        )
+        if not path:
+            return
+
+        headers = ['File', 'Path', 'Width', 'Height', 'Length', 'Frame Rate', 'Format',
+                   'Steps', 'CFG', 'Sampler', 'Scheduler', 'CLIP', 'VAE', 'UNET', 'LoRA',
+                   'Positive Prompt', 'Negative Prompt']
+        keys = ['name', 'file', 'width', 'height', 'length', 'frame_rate', 'format',
+                'steps', 'cfg', 'sampler_name', 'scheduler', 'clip', 'vae', 'unet', 'lora',
+                'positive_prompt', 'negative_prompt']
+        try:
+            with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f)
+                writer.writerow(headers)
+                for r in self.batch_visible_rows:
+                    writer.writerow([r.get(k, '') for k in keys])
+            QMessageBox.information(self, "Exported", f"CSV saved to:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Failed", str(e))
 
     def _open_file_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
