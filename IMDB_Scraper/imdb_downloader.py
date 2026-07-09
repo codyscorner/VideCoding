@@ -1,14 +1,24 @@
-"""IMDB Photo Downloader — GUI v1.1.0"""
+"""IMDB Photo Downloader — GUI v1.1.1"""
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 import csv
 import json
+import os
 import re
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+# When frozen by PyInstaller, Playwright resolves its browser cache relative
+# to the ephemeral _MEI extraction folder instead of the normal persistent
+# %LOCALAPPDATA%\ms-playwright location. Pin it before importing playwright
+# so installed browsers are found across runs.
+os.environ.setdefault(
+    "PLAYWRIGHT_BROWSERS_PATH",
+    str(Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "ms-playwright"),
+)
 
 import requests
 from bs4 import BeautifulSoup

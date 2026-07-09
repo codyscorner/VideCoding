@@ -62,6 +62,9 @@ Root Folder/
 
 ## Changelog
 
+### v1.1.1
+- Fixed "Executable doesn't exist" Playwright launch error in the packaged EXE — the frozen app was looking for Chromium inside the ephemeral PyInstaller `_MEI...` temp extraction folder instead of the persistent browser cache. Now pins `PLAYWRIGHT_BROWSERS_PATH` to `%LOCALAPPDATA%\ms-playwright` before Playwright is imported, so a one-time `playwright install chromium` on the machine works across every run of the EXE.
+
 ### v1.1.0
 - Batch queue: URL field is now a multi-line box, one URL per line, downloaded sequentially
 - Full-resolution option (checkbox): follows each thumbnail's mediaviewer link and pulls the largest available image via `og:image`, falling back to the gallery-derived URL if unavailable
