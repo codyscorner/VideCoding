@@ -86,14 +86,23 @@ def _copy_file(src: str, dst: str) -> None:
     shutil.copy2(_long_path(src), dst_lp)
 
 
-def _move_file(src: str, dst: str) -> None:
+def _same_drive(a: str, b: str) -> bool:
+    """True if *a* and *b* resolve to the same drive letter/UNC root."""
+    return (
+        os.path.splitdrive(os.path.abspath(a))[0].lower()
+        == os.path.splitdrive(os.path.abspath(b))[0].lower()
+    )
+
+
+def _move_file(src: str, dst: str, verify: bool = False) -> None:
     """Move *src* to *dst*.
 
-    Uses ``shutil.move`` as the primary method — it handles same-drive,
-    cross-drive, and mapped network drives correctly without needing
-    manual long-path prefix logic.  The ``\\\\?\\`` prefix is only
-    applied when a path genuinely exceeds 260 characters and is a local
-    drive path.
+    Same-drive moves use ``shutil.move`` (which resolves to an atomic
+    ``os.rename`` — either the whole file moves or nothing does, so no
+    verification is needed there). Cross-drive moves are copy + delete;
+    when *verify* is set, the destination's size is compared against the
+    source's before the source is removed, so a truncated/corrupt copy
+    leaves the source file in place instead of silently losing data.
 
     Read-only attributes on the source and any existing destination file
     are cleared before the move so that old/archived files (e.g. scanned
@@ -107,7 +116,21 @@ def _move_file(src: str, dst: str) -> None:
     # Clear read-only on destination if it already exists
     if os.path.exists(dst_lp):
         _clear_readonly(dst_lp)
-    shutil.move(src_lp, dst_lp)
+
+    if _same_drive(src, dst):
+        shutil.move(src_lp, dst_lp)
+        return
+
+    shutil.copy2(src_lp, dst_lp)
+    if verify:
+        src_size = _safe_size(src_lp)
+        dst_size = _safe_size(dst_lp)
+        if src_size != dst_size:
+            raise OSError(
+                f"Verification failed: size mismatch ({src_size} vs {dst_size} bytes) "
+                "— source left in place"
+            )
+    os.remove(src_lp)
 
 
 # ---------------------------------------------------------------------------
@@ -133,11 +156,19 @@ class MoveWorker(QThread):
     finished_signal = pyqtSignal(list)   # list[FileRecord]
     error_signal    = pyqtSignal(str)
 
-    def __init__(self, source: str, dest: str, dry_run: bool = False, parent=None) -> None:
+    def __init__(
+        self,
+        source: str,
+        dest: str,
+        dry_run: bool = False,
+        verify: bool = False,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.source  = source
         self.dest    = dest
         self.dry_run = dry_run
+        self.verify  = verify
         self._cancel = False            # checked between every file
 
     # ------------------------------------------------------------------
@@ -170,6 +201,41 @@ class MoveWorker(QThread):
     # ------------------------------------------------------------------
     # Internal implementation
     # ------------------------------------------------------------------
+
+    def _retry_failed(self, records: list[FileRecord]) -> list[FileRecord]:
+        """Second pass over files that failed on the first try.
+
+        A file locked by another process (e.g. still being written, or
+        held open in another app) often frees up within a second or two —
+        this retries each failure once more before giving up for good.
+        """
+        retryable = [r for r in records if r.status == "Failed"]
+        if not retryable:
+            return records
+
+        self.log_signal.emit(f"\nRetrying {len(retryable)} locked/failed file(s)…")
+        for i, record in enumerate(retryable, start=1):
+            if self._cancel:
+                break
+
+            rel = os.path.relpath(record.source_path, self.source)
+            self.log_signal.emit(f"  Retry [{i}/{len(retryable)}]  {rel}")
+
+            if not os.path.exists(_long_path(record.source_path)):
+                self.log_signal.emit("    ✗ Source no longer exists — skipping retry")
+                continue
+
+            time.sleep(0.5)  # give whatever was locking the file a moment to release it
+            try:
+                _move_file(record.source_path, record.dest_path, verify=self.verify)
+                record.status = "Success"
+                record.error_detail = f"Recovered on retry (was: {record.error_detail})"
+                self.log_signal.emit("    ✓ Recovered on retry")
+            except Exception as exc:
+                record.error_detail = f"{record.error_detail} | Retry also failed: {exc}"
+                self.log_signal.emit(f"    ✗ Retry failed — {exc}")
+
+        return records
 
     def _do_move(self) -> list[FileRecord]:
         """Core logic.  Returns the (possibly partial) list of records."""
@@ -252,7 +318,7 @@ class MoveWorker(QThread):
                     continue
 
                 try:
-                    _move_file(src_path, dst_path)
+                    _move_file(src_path, dst_path, verify=self.verify)
 
                 except PermissionError as exc:
                     self.log_signal.emit(
@@ -281,10 +347,9 @@ class MoveWorker(QThread):
 
                 except OSError as exc:
                     status       = "Failed"
-                    error_detail = f"OSError [{exc.errno}]: {exc.strerror}"
-                    self.log_signal.emit(
-                        f"  ✗ OS error {exc.errno} — {exc.strerror}"
-                    )
+                    detail       = exc.strerror or str(exc)
+                    error_detail = f"OSError [{exc.errno}]: {detail}" if exc.errno else str(exc)
+                    self.log_signal.emit(f"  ✗ OS error — {detail}")
 
             elapsed_ms = (time.perf_counter() - t_start) * 1_000
 
@@ -300,6 +365,10 @@ class MoveWorker(QThread):
 
             # Update the progress bar (integer 0-100).
             self.progress_signal.emit(round(idx / total * 100))
+
+        # ---- Phase 3: retry locked/failed files ---------------------------
+        if not self.dry_run:
+            records = self._retry_failed(records)
 
         # ---- Summary line -----------------------------------------------
         if self.dry_run:
