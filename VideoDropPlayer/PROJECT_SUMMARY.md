@@ -29,13 +29,19 @@ A simple drag-and-drop video and image player for Windows with playlist support 
 |-----|--------|
 | Space | Play / Pause |
 | Escape | Stop and return to drop screen |
-| Left Arrow | Seek backward 5 seconds |
+| Left Arrow | Seek backward 5 seconds (double-tap for previous video) |
 | Right Arrow | Seek forward 5 seconds |
 | Up Arrow | Volume up |
 | Down Arrow | Volume down |
 | M | Toggle mute |
 | N | Next video in playlist |
 | P | Previous video in playlist |
+| S | Cycle playback speed (0.5x-2.0x) |
+| [ | Set A-B loop start at current position |
+| ] | Set A-B loop end at current position (starts looping) |
+| L | Clear A-B loop |
+| C | Save a screenshot of the current frame to a `Screenshots` subfolder next to the video |
+| Delete | Send the current file to the Recycle Bin (confirmation prompt), advance to the next file |
 
 ### Image Mode
 
@@ -44,6 +50,7 @@ A simple drag-and-drop video and image player for Windows with playlist support 
 | Left Arrow | Previous image |
 | Right Arrow | Next image |
 | Escape | Return to drop screen |
+| Delete | Send the current image to the Recycle Bin (confirmation prompt), advance to the next image |
 
 ## Installation
 
@@ -67,15 +74,12 @@ pyinstaller VideoDropPlayer.spec --noconfirm
 
 - Python 3.10+
 - PyQt6
+- send2trash
 
 ## Version
 
-1.3.2
+1.4.0
 
 ## Future Enhancements
 
-- [ ] Remember last position per file (resume where you left off)
-- [ ] Playback speed control
-- [ ] A-B loop for a section
-- [ ] Screenshot current frame
-- [ ] Delete-current-file hotkey (useful when culling clips)
+All planned enhancements shipped in v1.4.0. Playback speed control (`S` key) already existed prior to this pass and is included in the checklist above for completeness.
