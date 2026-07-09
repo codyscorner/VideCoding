@@ -392,6 +392,7 @@ class MainWindow(QMainWindow):
         self._auto_mode = False
         self._auto_stop_requested = False
         self._auto_continue = False
+        self._seg_times_sec: dict[int, float] = {}  # per-segment wall times, for ETA
 
         self.setWindowTitle(f"ComfyUI Workflow Chain Automator  v{version}")
         self.setMinimumSize(1200, 780)
@@ -817,7 +818,8 @@ class MainWindow(QMainWindow):
         self._seg_layout.addLayout(dots_row)
 
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, n)
+        # 100 ticks per segment so live sampler-step progress renders smoothly
+        self.progress_bar.setRange(0, n * 100)
         self.progress_bar.setValue(0)
         self._seg_layout.addWidget(self.progress_bar)
 
@@ -880,7 +882,7 @@ class MainWindow(QMainWindow):
 
         if not input_dir.exists():
             self.selected_label.setText("No images found in input folder")
-            self.progress_bar.setRange(0, self._seg_count)
+            self.progress_bar.setRange(0, self._seg_count * 100)
             self.progress_label.setText("Ready")
             self.start_btn.setEnabled(True)
             return
@@ -921,7 +923,7 @@ class MainWindow(QMainWindow):
         self.progress_label.setText(f"Loading images... {current}/{total}")
 
     def _on_img_load_finished(self, total: int):
-        self.progress_bar.setRange(0, self._seg_count)
+        self.progress_bar.setRange(0, self._seg_count * 100)
         self.progress_bar.setValue(0)
         self.progress_label.setText("Ready")
         self.start_btn.setEnabled(True)
@@ -1332,6 +1334,8 @@ class MainWindow(QMainWindow):
         self._worker.log.connect(self._on_log)
         self._worker.segment_done.connect(self._on_segment_done)
         self._worker.segment_time.connect(self._on_segment_time)
+        self._worker.segment_secs.connect(self._on_segment_secs)
+        self._worker.step_progress.connect(self._on_step_progress)
         self._worker.all_done.connect(self._on_batch_done)
         self._worker.error.connect(self._on_error)
         self._worker.finished.connect(self._on_worker_finished)
@@ -1364,11 +1368,39 @@ class MainWindow(QMainWindow):
                 f"color:{COLORS['success']}; font-size:10pt; font-family:Consolas; font-weight:bold;"
             )
 
+    def _on_segment_secs(self, seg: int, secs: float):
+        self._seg_times_sec[seg] = secs
+
+    def _on_step_progress(self, seg: int, value: int, vmax: int):
+        if vmax <= 0:
+            return
+        frac = min(value / vmax, 1.0)
+        self.progress_bar.setValue(int(((seg - 1) + frac) * 100))
+        eta = self._estimate_eta(seg, frac)
+        eta_txt = f"  —  ~{eta} left" if eta else ""
+        stop_txt = "  (stopping after batch…)" if self._auto_stop_requested else ""
+        self.progress_label.setText(
+            f"Batch — Segment {seg}/{self._seg_count} — step {value}/{vmax}{eta_txt}{stop_txt}"
+        )
+
+    def _estimate_eta(self, seg: int, frac: float) -> str:
+        """Project time left from this session's per-segment wall times.
+        Empty until at least one segment has completed."""
+        if not self._seg_times_sec:
+            return ""
+        avg = sum(self._seg_times_sec.values()) / len(self._seg_times_sec)
+        remaining = 0.0
+        for s in range(seg, self._seg_count + 1):
+            expected = self._seg_times_sec.get(s, avg)
+            remaining += expected * (1.0 - frac) if s == seg else expected
+        m, s_ = divmod(int(remaining), 60)
+        return f"{m}m {s_:02d}s" if m else f"{s_}s"
+
     def _on_segment_done(self, seg: int):
         n = self._seg_count
         if seg - 1 < len(self._seg_dots):
             self._seg_dots[seg - 1].set_done()
-        self.progress_bar.setValue(seg)
+        self.progress_bar.setValue(seg * 100)
         if seg < n:
             if seg < len(self._seg_dots):
                 self._seg_dots[seg].set_active()

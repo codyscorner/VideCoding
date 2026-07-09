@@ -1,5 +1,12 @@
 # Changelog — ComfyUI Workflow Chain Automator
 
+### v3.6.0
+- **Live step progress**: the worker now listens on ComfyUI's websocket (`/ws?clientId=...`) and the progress bar advances with every sampler step instead of jumping once per segment; the label shows `Segment k/n — step 12/30`
+- **ETA**: once at least one segment has completed this session, the label projects time remaining for the whole chain (`~7m 20s left`), using per-segment wall times from earlier batches where available
+- Websocket is best-effort: if it can't connect or drops mid-run, the worker logs it and falls back to the previous HTTP polling loop; quiet stretches (model load) are covered by a history heartbeat so a missed finish can't hang the run
+- New dependency: `websocket-client` (optional — polling fallback works without it)
+- Build: PyInstaller spec now excludes torch/tensorflow/etc. from the shared venv (smaller EXE); `build_exe.py` no longer overwrites the live `main_config.json` next to the deployed EXE — it only seeds it on first deploy
+
 ### v3.5.1
 - Cancel now actually stops the job on the ComfyUI server: removes the pending prompt from the queue and POSTs `/interrupt` — previously the prompt kept running (and kept billing on RunPod) after the UI said cancelled
 - Fix: cancelling mid-poll no longer tries to download outputs of the half-finished prompt (confusing error instead of "Cancelled")

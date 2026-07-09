@@ -19,6 +19,8 @@ class BatchChainWorker(QThread):
     log = pyqtSignal(str)
     segment_done = pyqtSignal(int)
     segment_time = pyqtSignal(int, str)
+    segment_secs = pyqtSignal(int, float)     # segment, elapsed seconds (for ETA)
+    step_progress = pyqtSignal(int, int, int)  # segment, step value, step max
     all_done = pyqtSignal(list)   # list[str] of final video paths
     error = pyqtSignal(str)
 
@@ -163,7 +165,7 @@ class BatchChainWorker(QThread):
                 self._active_prompt_id = prompt_id
                 self._log(f"[Segment {seg}/{self._total_segs}] Queued ({prompt_id[:8]}...), polling...")
 
-                self._poll_until_done(prompt_id, seg)
+                self._wait_until_done(prompt_id, seg)
                 if self._cancelled:
                     self._log("Cancelled.")
                     return
@@ -171,11 +173,13 @@ class BatchChainWorker(QThread):
                 if self._runpod:
                     time.sleep(5)
                 videos = self._download_batch_outputs(seg, prompt_id, n)
-                elapsed = self._fmt(time.time() - seg_start)
+                elapsed_secs = time.time() - seg_start
+                elapsed = self._fmt(elapsed_secs)
                 self._log(f"[Segment {seg}/{self._total_segs}] Done in {elapsed} — {n} videos")
                 segment_outputs.append(videos)
                 self.segment_done.emit(seg)
                 self.segment_time.emit(seg, elapsed)
+                self.segment_secs.emit(seg, elapsed_secs)
 
             if self._cancelled:
                 return
@@ -392,10 +396,98 @@ class BatchChainWorker(QThread):
         resp.raise_for_status()
         return resp.json()["prompt_id"]
 
+    def _handle_execution_error(self, ex_msg: str, seg: int):
+        """Shared error handling: 'already exists' means the outputs are on the
+        server from a prior run — recover by downloading instead of failing."""
+        if "already exists" in ex_msg or "Error opening output file" in ex_msg:
+            self._log(f"[Segment {seg}/{self._total_segs}] Output exists on server, downloading...")
+            self._already_exists_seg = seg
+            return
+        raise RuntimeError(f"ComfyUI execution error: {ex_msg}")
+
+    def _history_done(self, prompt_id: str, seg: int) -> bool:
+        """Check /history once. True if the prompt finished (or recovered via
+        the already-exists path); raises on a real execution error."""
+        h = requests.get(f"{self._url}/history/{prompt_id}", timeout=10).json()
+        if prompt_id not in h:
+            return False
+        status = h[prompt_id].get("status", {})
+        if status.get("completed", False):
+            return True
+        msgs = status.get("messages", [])
+        if msgs and msgs[-1][0] == "execution_error":
+            self._handle_execution_error(msgs[-1][1].get("exception_message", ""), seg)
+            return True  # already-exists recovery
+        return False
+
+    def _wait_until_done(self, prompt_id: str, seg: int):
+        """Wait for the prompt via websocket for live step progress; fall back
+        to HTTP polling if the websocket can't connect or drops."""
+        try:
+            import websocket
+        except ImportError:
+            self._poll_until_done(prompt_id, seg)
+            return
+
+        ws_url = self._url.replace("https://", "wss://").replace("http://", "ws://")
+        try:
+            ws = websocket.create_connection(f"{ws_url}/ws?clientId={self._client_id}", timeout=20)
+        except Exception as e:
+            self._log(f"[Segment {seg}/{self._total_segs}] Websocket unavailable ({type(e).__name__}) — using polling")
+            self._poll_until_done(prompt_id, seg)
+            return
+
+        start = time.time()
+        last_minute_logged = 0
+        try:
+            while not self._cancelled:
+                try:
+                    msg = ws.recv()
+                except websocket.WebSocketTimeoutException:
+                    # Quiet stretch (model load, VAE decode) — confirm liveness
+                    # via history so a missed finish can't hang us forever.
+                    try:
+                        if self._history_done(prompt_id, seg):
+                            return
+                    except requests.RequestException:
+                        pass
+                    minute = int(time.time() - start) // 60
+                    if minute > last_minute_logged:
+                        last_minute_logged = minute
+                        self._log(f"[Segment {seg}/{self._total_segs}] Running... ({minute}m)")
+                    continue
+                except Exception:
+                    self._log(f"[Segment {seg}/{self._total_segs}] Websocket dropped — using polling")
+                    self._poll_until_done(prompt_id, seg)
+                    return
+
+                if isinstance(msg, bytes):
+                    continue  # binary preview frames
+                try:
+                    payload = json.loads(msg)
+                except ValueError:
+                    continue
+                mtype = payload.get("type")
+                data = payload.get("data", {})
+                if mtype == "progress":
+                    self.step_progress.emit(seg, int(data.get("value", 0)), int(data.get("max", 1)))
+                    minute = int(time.time() - start) // 60
+                    if minute > last_minute_logged:
+                        last_minute_logged = minute
+                        self._log(f"[Segment {seg}/{self._total_segs}] Running... ({minute}m)")
+                elif mtype == "executing" and data.get("prompt_id") == prompt_id and data.get("node") is None:
+                    return  # prompt finished
+                elif mtype == "execution_error" and data.get("prompt_id") == prompt_id:
+                    self._handle_execution_error(data.get("exception_message", ""), seg)
+                    return  # already-exists recovery
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
     def _poll_until_done(self, prompt_id: str, seg: int):
-        import re
         queue_url = f"{self._url}/queue"
-        history_url = f"{self._url}/history/{prompt_id}"
         elapsed = 0
         while not self._cancelled:
             time.sleep(3)
@@ -412,25 +504,10 @@ class BatchChainWorker(QThread):
                     if elapsed % 60 == 0:
                         self._log(f"[Segment {seg}/{self._total_segs}] Queued... ({elapsed // 60}m)")
                     continue
-                h = requests.get(history_url, timeout=10).json()
-                if prompt_id in h:
-                    status = h[prompt_id].get("status", {})
-                    if status.get("completed", False):
-                        return
-                    msgs = status.get("messages", [])
-                    last_msg = msgs[-1][0] if msgs else ""
-                    if last_msg == "execution_error":
-                        ex_msg = msgs[-1][1].get("exception_message", "")
-                        if "already exists" in ex_msg or "Error opening output file" in ex_msg:
-                            self._log(f"[Segment {seg}/{self._total_segs}] Output exists on server, downloading...")
-                            self._already_exists_seg = seg
-                            return
-                        raise RuntimeError(f"ComfyUI execution error: {ex_msg}")
-                    if elapsed % 60 == 0:
-                        self._log(f"[Segment {seg}/{self._total_segs}] Waiting for history... ({elapsed // 60}m)")
-                else:
-                    if elapsed % 60 == 0:
-                        self._log(f"[Segment {seg}/{self._total_segs}] Not yet in history... ({elapsed // 60}m)")
+                if self._history_done(prompt_id, seg):
+                    return
+                if elapsed % 60 == 0:
+                    self._log(f"[Segment {seg}/{self._total_segs}] Waiting for history... ({elapsed // 60}m)")
             except requests.RequestException as e:
                 self._log(f"[Segment {seg}/{self._total_segs}] Poll error: {e}")
 

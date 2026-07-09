@@ -13,6 +13,8 @@ Automates a chain of ComfyUI segments (up to 10), stitching the outputs into a s
 - 200px letterboxed thumbnails with black padding (no cropping)
 - Starting image sort: Name A→Z / Z→A, Newest First, Oldest First
 - Segment progress dots, per-segment timing, and live log
+- **Live step progress** via ComfyUI websocket — progress bar advances with each sampler step and shows an ETA once a segment has completed (falls back to HTTP polling if the websocket is unavailable)
+- Cancel interrupts the job on the ComfyUI server (no orphaned RunPod generations)
 - Daily log file (`ComfyUI_Chain_Log_mm_dd_yyyy.txt`) written to final video folder — run separator, per-image list, segment times, zip info
 - RunPod support — batch images uploaded via ComfyUI upload API, videos downloaded automatically
 - FFmpeg local last-frame extraction (`-sseof -0.1`) for smooth segment transitions
@@ -27,11 +29,12 @@ Automates a chain of ComfyUI segments (up to 10), stitching the outputs into a s
 - Python 3.11+
 - PyQt6
 - requests
+- websocket-client (live step progress; app falls back to polling without it)
 - FFmpeg on PATH (or configured in Settings)
 
 Install dependencies:
 ```
-pip install PyQt6 requests pyinstaller
+pip install PyQt6 requests websocket-client pyinstaller
 ```
 
 ## Usage
