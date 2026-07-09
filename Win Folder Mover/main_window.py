@@ -21,6 +21,8 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -59,6 +61,11 @@ class MainWindow(QMainWindow):
         self._worker:  Optional[MoveWorker]  = None
         self._records: list[FileRecord]      = []
 
+        # Multi-folder queue state
+        self._jobs: list[tuple[str, str]] = []
+        self._job_index: int = 0
+        self._queue_cancelled: bool = False
+
         self._build_ui()
         self._apply_style()
 
@@ -77,6 +84,21 @@ class MainWindow(QMainWindow):
         # ── Path selectors ────────────────────────────────────────────
         layout.addLayout(self._make_path_row("Source Folder:", "source"))
         layout.addLayout(self._make_path_row("Destination Folder:", "dest"))
+
+        # ── Multi-folder queue ────────────────────────────────────────
+        queue_row = QHBoxLayout()
+        self._btn_add_queue = QPushButton("＋  Add to Queue")
+        self._btn_add_queue.clicked.connect(self._add_to_queue)
+        self._btn_remove_queue = QPushButton("－  Remove Selected")
+        self._btn_remove_queue.clicked.connect(self._remove_from_queue)
+        queue_row.addWidget(self._btn_add_queue)
+        queue_row.addWidget(self._btn_remove_queue)
+        queue_row.addStretch()
+        layout.addLayout(queue_row)
+
+        self._queue_list = QListWidget()
+        self._queue_list.setMaximumHeight(80)
+        layout.addWidget(self._queue_list)
 
         # ── Progress bar ──────────────────────────────────────────────
         self._progress = QProgressBar()
@@ -99,10 +121,15 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(self._log)
 
-        # ── Dry-run toggle ────────────────────────────────────────────
+        # ── Dry-run / verify toggles ───────────────────────────────────
         self._dry_run_check = QCheckBox("Dry Run  (preview only — no files will be moved)")
         self._dry_run_check.stateChanged.connect(self._on_dry_run_toggle)
         layout.addWidget(self._dry_run_check)
+
+        self._verify_check = QCheckBox(
+            "Verify after move  (size check before deleting source on cross-drive moves)"
+        )
+        layout.addWidget(self._verify_check)
 
         # ── Control buttons ───────────────────────────────────────────
         btn_row = QHBoxLayout()
@@ -208,6 +235,16 @@ class MainWindow(QMainWindow):
                 border: 1px solid #7a2a2a;
                 border-radius: 4px;
             }
+            QListWidget {
+                background: #1a0a0a;
+                color: #f0c0c0;
+                border: 1px solid #7a2a2a;
+                border-radius: 4px;
+            }
+            QListWidget::item:selected {
+                background: #7a2a2a;
+                color: #f0d0d0;
+            }
             QScrollBar:vertical {
                 background: #2b1010;
                 width: 10px;
@@ -255,21 +292,19 @@ class MainWindow(QMainWindow):
             target.setText(folder)
 
     # ------------------------------------------------------------------
-    # Worker lifecycle
+    # Multi-folder queue
     # ------------------------------------------------------------------
 
-    def _start_move(self) -> None:
+    def _add_to_queue(self) -> None:
         source = self._source_input.text().strip()
         dest   = self._dest_input.text().strip()
 
-        # ── Input validation ──────────────────────────────────────────
         if not source or not dest:
             QMessageBox.warning(
                 self, "Missing Paths",
-                "Please select both a source and a destination folder."
+                "Select both a source and a destination folder before adding to the queue."
             )
             return
-
         if source == dest:
             QMessageBox.warning(
                 self, "Same Folder",
@@ -277,24 +312,78 @@ class MainWindow(QMainWindow):
             )
             return
 
+        item = QListWidgetItem(f"{source}   →   {dest}")
+        item.setData(Qt.ItemDataRole.UserRole, (source, dest))
+        self._queue_list.addItem(item)
+        self._source_input.clear()
+        self._dest_input.clear()
+
+    def _remove_from_queue(self) -> None:
+        row = self._queue_list.currentRow()
+        if row >= 0:
+            self._queue_list.takeItem(row)
+
+    # ------------------------------------------------------------------
+    # Worker lifecycle
+    # ------------------------------------------------------------------
+
+    def _start_move(self) -> None:
+        jobs: list[tuple[str, str]] = [
+            self._queue_list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self._queue_list.count())
+        ]
+
+        if not jobs:
+            source = self._source_input.text().strip()
+            dest   = self._dest_input.text().strip()
+
+            if not source or not dest:
+                QMessageBox.warning(
+                    self, "Missing Paths",
+                    "Please select both a source and a destination folder."
+                )
+                return
+            if source == dest:
+                QMessageBox.warning(
+                    self, "Same Folder",
+                    "Source and destination folders must be different."
+                )
+                return
+            jobs = [(source, dest)]
+
         # ── Reset UI state ────────────────────────────────────────────
-        self._records.clear()
+        self._jobs = jobs
+        self._job_index = 0
+        self._queue_cancelled = False
+        self._records = []
         self._log.clear()
         self._progress.setValue(0)
         self._btn_export.setEnabled(False)
         self._set_controls_busy(True)
+        self._queue_list.clear()
 
-        # ── Create and wire up the worker ─────────────────────────────
+        self._run_next_job()
+
+    def _run_next_job(self) -> None:
+        source, dest = self._jobs[self._job_index]
+        if len(self._jobs) > 1:
+            self._on_log(
+                f"\n════  Job {self._job_index + 1}/{len(self._jobs)}: "
+                f"{source}  →  {dest}  ════"
+            )
+
         dry_run = self._dry_run_check.isChecked()
-        self._worker = MoveWorker(source, dest, dry_run=dry_run)
+        verify  = self._verify_check.isChecked()
+        self._worker = MoveWorker(source, dest, dry_run=dry_run, verify=verify)
         self._worker.log_signal.connect(self._on_log)
         self._worker.progress_signal.connect(self._progress.setValue)
-        self._worker.finished_signal.connect(self._on_finished)
+        self._worker.finished_signal.connect(self._on_job_finished)
         self._worker.error_signal.connect(self._on_error)
         self._worker.start()
 
     def _cancel_move(self) -> None:
         if self._worker and self._worker.isRunning():
+            self._queue_cancelled = True
             self._worker.cancel()
             # Disable the button immediately so the user knows the request
             # was received; the thread will still finish its current file.
@@ -308,6 +397,8 @@ class MainWindow(QMainWindow):
         self._btn_cancel.setText("■  Cancel / Stop")   # reset label
         self._source_browse.setEnabled(not busy)
         self._dest_browse.setEnabled(not busy)
+        self._btn_add_queue.setEnabled(not busy)
+        self._btn_remove_queue.setEnabled(not busy)
 
     # ------------------------------------------------------------------
     # Signal handlers  (all called on the GUI / main thread by Qt)
@@ -319,11 +410,17 @@ class MainWindow(QMainWindow):
         sb = self._log.verticalScrollBar()
         sb.setValue(sb.maximum())
 
-    def _on_finished(self, records: list) -> None:
-        """Called when the worker thread completes (success *or* cancel)."""
-        self._records = records
+    def _on_job_finished(self, records: list) -> None:
+        """Called when one queued job's worker thread completes."""
+        self._records.extend(records)
+        self._job_index += 1
+
+        if not self._queue_cancelled and self._job_index < len(self._jobs):
+            self._run_next_job()
+            return
+
         self._set_controls_busy(False)
-        if records and not self._dry_run_check.isChecked():
+        if self._records and not self._dry_run_check.isChecked():
             self._btn_export.setEnabled(True)
 
     def _on_error(self, message: str) -> None:

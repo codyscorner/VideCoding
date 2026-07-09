@@ -1,6 +1,6 @@
 # Windows Folder Mover
 
-**Version:** 1.0.2 | **Status:** Active | **Language:** Python
+**Version:** 1.1.0 | **Status:** Active | **Language:** Python
 
 A desktop utility for recursively moving entire folder trees on Windows, with live progress tracking, detailed per-file logging, and CSV export.
 
@@ -22,6 +22,10 @@ A desktop utility for recursively moving entire folder trees on Windows, with li
 - Mapped network drive support — correctly handles drives like `T:\` without the `\\?\` prefix that breaks mapped drives
 - Permission denied fallback — if a move is denied, attempts a copy-only fallback and reports it as Copied instead of Failed
 - Summary counters — Moved / Copied / Skipped / Failed / Total
+- Multi-folder queue — line up several source/destination pairs and run them sequentially in one session
+- Dry-run mode — preview a move with a would-move/would-skip/total report, no files touched
+- Retry-locked-files pass — after the main pass, automatically retries any failed file once more (handles files that were transiently locked by another process)
+- Verify-after-move option — on cross-drive moves, compares destination size to source before deleting the source; leaves the source in place if verification fails
 - Medium red dark theme
 - Standalone EXE via PyInstaller
 
@@ -83,6 +87,12 @@ Python · PyQt6 · PyInstaller
 
 ## Changelog
 
+### v1.1.0 — July 8, 2026
+- Multi-folder queue: "Add to Queue" / "Remove Selected" plus a queue list; Start Move runs every queued job sequentially and aggregates the CSV log across all of them
+- Retry-locked-files pass: after the main move pass, any file that failed is retried once more (0.5s delay) before being reported as a final failure
+- Verify-after-move option: on cross-drive moves, compares destination file size to source before deleting the source; same-drive moves stay atomic (`os.rename`) and don't need it
+- Documented the dry-run mode (implemented in the prior commit, but the changelog/version were not updated at the time)
+
 ### v1.0.2 — April 11, 2026
 - Duplicate skip — files already at destination with the same size are skipped, source left intact
 - Read-only attribute cleared automatically on source and destination before moving
@@ -98,7 +108,4 @@ Python · PyQt6 · PyInstaller
 
 ## Future Enhancements
 
-- [ ] Multi-folder queue (line up several moves, run sequentially)
-- [ ] Dry-run mode with size/count/conflict report
-- [ ] Retry-locked-files pass at the end
-- [ ] Verify-after-move option (size or hash check before deleting source on cross-drive moves)
+All planned enhancements shipped in v1.1.0.
