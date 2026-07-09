@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import re
 import subprocess
 import threading
 import os
@@ -29,6 +30,10 @@ from ui.widgets import ThumbnailGrid, THUMB_SIZE
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv"}
 MAX_SEGMENTS = 10
+
+# Batch-run timestamp the worker appends to stitched filenames
+# (photo_20260709_141530.mp4) — strip it to recover the source image stem.
+RUN_STAMP_RE = re.compile(r"_\d{8}_\d{6}$")
 
 
 # ------------------------------------------------------------------ #
@@ -853,10 +858,9 @@ class MainWindow(QMainWindow):
 
     def _existing_video_stems(self) -> set[str]:
         """Return stems of videos in the current template's output folder.
-        Adds both the raw stem and the _N-stripped stem so images like
-        'photo_1.png' are excluded when 'photo_1.mp4' exists, and plain
-        'photo.png' is excluded when 'photo_1.mp4' (auto-numbered) exists."""
-        import re
+        Adds the raw stem, the run-timestamp-stripped stem, and the
+        _N-stripped stem so images like 'photo.png' are excluded when
+        'photo_20260709_141530.mp4' or auto-numbered 'photo_1.mp4' exists."""
         vid_dir = self._effective_video_dir()
         if not vid_dir.exists():
             return set()
@@ -864,7 +868,9 @@ class MainWindow(QMainWindow):
         for p in vid_dir.iterdir():
             if p.suffix.lower() in VIDEO_EXTS:
                 stems.add(p.stem)
-                stems.add(re.sub(r'_\d+$', '', p.stem))
+                unstamped = RUN_STAMP_RE.sub("", p.stem)
+                stems.add(unstamped)
+                stems.add(re.sub(r'_\d+$', '', unstamped))
         return stems
 
     def _populate_images(self):
@@ -1438,7 +1444,7 @@ class MainWindow(QMainWindow):
         self.final_label.setText(f"{n} videos saved to final video folder")
 
         if not self._show_all_chk.isChecked():
-            processed_stems = {Path(p).stem for p in final_paths}
+            processed_stems = {RUN_STAMP_RE.sub("", Path(p).stem) for p in final_paths}
             self.image_grid.remove_items_by_stems(processed_stems)
 
         # ── Auto mode: skip dialog and continue or stop ───────────────────

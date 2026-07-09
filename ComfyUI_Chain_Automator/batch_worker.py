@@ -33,6 +33,10 @@ class BatchChainWorker(QThread):
         self._total_segs = len(config.get("workflows", []))
         self._client_id = str(uuid.uuid4())
         self._run_id = str(int(time.time() * 1000))
+        # Suffix for stitched filenames so re-running the same source image
+        # (e.g. after cleaning out a folder) never collides with or gets
+        # skipped by an earlier batch's video of the same name.
+        self._run_stamp = time.strftime("%Y%m%d_%H%M%S")
         self._runpod = config.get("mode", "local") == "runpod"
         self._url = (
             config.get("runpod_url", "").rstrip("/")
@@ -351,7 +355,7 @@ class BatchChainWorker(QThread):
         final_dir = Path(self._config.get("final_video_dir", self._config["output_base_dir"]))
         final_dir.mkdir(parents=True, exist_ok=True)
         stem = Path(img_name).stem
-        final_path = final_dir / f"{stem}.mp4"
+        final_path = final_dir / f"{stem}_{self._run_stamp}.mp4"
         n = len(videos)
         ffmpeg = self._config.get("ffmpeg_path", "ffmpeg")
         inputs = []
