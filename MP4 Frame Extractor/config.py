@@ -9,6 +9,11 @@ class ConfigManager:
         "dest_dir": "",
         "frame_number": "Last Frame",
         "video_extension": ".mp4",
+        "selection_mode": "",
+        "frame_value": "",
+        "output_format": "PNG",
+        "jpg_quality": 90,
+        "contact_sheet": False,
     }
 
     def __init__(self, config_path: Path):
