@@ -1,8 +1,10 @@
 from datetime import datetime
 from pathlib import Path
+import re
 import subprocess
 import threading
 import os
+import zlib
 
 from PIL import Image, ImageOps
 
@@ -30,21 +32,27 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv"}
 MAX_SEGMENTS = 10
 
+# Batch-run timestamp the worker appends to stitched filenames
+# (photo_20260709_141530.mp4) — strip it to recover the source image stem.
+RUN_STAMP_RE = re.compile(r"_\d{8}_\d{6}$")
+
 
 # ------------------------------------------------------------------ #
 # Background loaders
 # ------------------------------------------------------------------ #
 
 class ImageLoaderThread(QThread):
+    """Loads image thumbnails from a persistent `thumbnails` cache folder
+    inside the image directory (like the Library does for videos). On each
+    run it syncs the cache: generates thumbs for new/changed images, removes
+    thumbs whose source image is gone."""
     image_ready = pyqtSignal(QImage, str, str)
     progress = pyqtSignal(int, int)
     finished_loading = pyqtSignal(int)
 
-    def __init__(self, input_dir: Path, excluded_stems: set[str] | None = None,
-                 sort_key=None, sort_reverse: bool = False):
+    def __init__(self, input_dir: Path, sort_key=None, sort_reverse: bool = False):
         super().__init__()
         self._input_dir = input_dir
-        self._excluded_stems = excluded_stems or set()
         self._sort_key = sort_key or (lambda p: p.name.lower())
         self._sort_reverse = sort_reverse
         self._cancelled = False
@@ -52,31 +60,68 @@ class ImageLoaderThread(QThread):
     def cancel(self):
         self._cancelled = True
 
+    def _thumb_name(self, img_path: Path) -> str:
+        # Relative-path hash keeps same-named images in subfolders distinct
+        rel = str(img_path.relative_to(self._input_dir))
+        return f"{img_path.stem}_{zlib.crc32(rel.lower().encode()):08x}.jpg"
+
     def run(self):
-        all_images = sorted(
-            (p for p in self._input_dir.rglob("*") if p.suffix.lower() in IMAGE_EXTS),
+        thumb_dir = self._input_dir / "thumbnails"
+        try:
+            thumb_dir.mkdir(exist_ok=True)
+        except OSError:
+            thumb_dir = None
+
+        images = sorted(
+            (p for p in self._input_dir.rglob("*")
+             if p.suffix.lower() in IMAGE_EXTS
+             and (thumb_dir is None or thumb_dir not in p.parents)),
             key=self._sort_key,
             reverse=self._sort_reverse,
         )
-        images = [p for p in all_images if p.stem not in self._excluded_stems]
+
+        # Sync cache: drop thumbnails whose source image no longer exists
+        if thumb_dir is not None:
+            valid = {self._thumb_name(p) for p in images}
+            for t in thumb_dir.glob("*.jpg"):
+                if t.name not in valid:
+                    try:
+                        t.unlink()
+                    except OSError:
+                        pass
+
         total = len(images)
         loaded = 0
         for img_path in images:
             if self._cancelled:
                 return
-            try:
-                pil_img = Image.open(img_path)
-                pil_img = ImageOps.exif_transpose(pil_img)
-                pil_img = pil_img.convert("RGBA")
-                data = pil_img.tobytes("raw", "RGBA")
-                img = QImage(data, pil_img.width, pil_img.height, QImage.Format.Format_RGBA8888)
-            except Exception:
-                img = QImage(str(img_path))
+            img = QImage()
+            thumb_path = thumb_dir / self._thumb_name(img_path) if thumb_dir else None
+            if (thumb_path and thumb_path.exists()
+                    and thumb_path.stat().st_mtime >= img_path.stat().st_mtime):
+                img = QImage(str(thumb_path))
+            if img.isNull():
+                try:
+                    pil_img = Image.open(img_path)
+                    pil_img = ImageOps.exif_transpose(pil_img)
+                    pil_img.thumbnail((THUMB_SIZE, THUMB_SIZE), Image.LANCZOS)
+                    pil_img = pil_img.convert("RGB")
+                    if thumb_path:
+                        try:
+                            pil_img.save(thumb_path, "JPEG", quality=88)
+                        except OSError:
+                            pass
+                    data = pil_img.convert("RGBA").tobytes("raw", "RGBA")
+                    img = QImage(data, pil_img.width, pil_img.height,
+                                 QImage.Format.Format_RGBA8888).copy()
+                except Exception:
+                    img = QImage(str(img_path))
+                    if not img.isNull():
+                        img = img.scaled(THUMB_SIZE, THUMB_SIZE,
+                                         Qt.AspectRatioMode.KeepAspectRatio,
+                                         Qt.TransformationMode.SmoothTransformation)
             if img.isNull():
                 continue
-            img = img.scaled(THUMB_SIZE, THUMB_SIZE,
-                             Qt.AspectRatioMode.KeepAspectRatio,
-                             Qt.TransformationMode.SmoothTransformation)
             rel = img_path.relative_to(self._input_dir)
             label = str(rel) if rel.parent != Path(".") else img_path.name
             self.image_ready.emit(img, str(rel), label)
@@ -153,60 +198,6 @@ class VideoLoaderThread(QThread):
             )
         except Exception:
             pass
-
-
-# ------------------------------------------------------------------ #
-# Completion dialog
-# ------------------------------------------------------------------ #
-
-class CompletionDialog(QDialog):
-    def __init__(self, final_path: str, seg_count: int, parent=None):
-        super().__init__(parent)
-        self._final_path = final_path
-        self.setWindowTitle("Chain Complete!")
-        self.setMinimumWidth(520)
-        self.setStyleSheet(parent.styleSheet() if parent else "")
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(30)
-        layout.setContentsMargins(30, 30, 30, 30)
-
-        icon = QLabel("✅")
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet("font-size: 36pt;")
-        layout.addWidget(icon)
-
-        title = QLabel(f"All {seg_count} segments complete!")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size: 13pt; font-weight: bold; color: #4caf8a;")
-        layout.addWidget(title)
-
-        path_label = QLabel(final_path)
-        path_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        path_label.setWordWrap(True)
-        path_label.setStyleSheet("font-size: 12pt; color: #9090cc;")
-        layout.addWidget(path_label)
-
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(12)
-
-        play_btn = QPushButton("▶  Play Video")
-        play_btn.setFixedHeight(44)
-        play_btn.clicked.connect(self._play)
-
-        skip_btn = QPushButton("✕  Skip")
-        skip_btn.setObjectName("cancel_btn")
-        skip_btn.setFixedHeight(44)
-        skip_btn.clicked.connect(self.accept)
-
-        btn_row.addWidget(play_btn)
-        btn_row.addWidget(skip_btn)
-        layout.addLayout(btn_row)
-
-    def _play(self):
-        self.accept()
-        player = VideoPlayerDialog(self._final_path, parent=self.parent())
-        player.exec()
 
 
 # ------------------------------------------------------------------ #
@@ -445,7 +436,8 @@ class MainWindow(QMainWindow):
         self._seg_time_labels: list[QLabel] = []
         self._auto_mode = False
         self._auto_stop_requested = False
-        self._auto_next_started = False
+        self._auto_continue = False
+        self._seg_times_sec: dict[int, float] = {}  # per-segment wall times, for ETA
 
         self.setWindowTitle(f"ComfyUI Workflow Chain Automator  v{version}")
         self.setMinimumSize(1200, 780)
@@ -596,7 +588,7 @@ class MainWindow(QMainWindow):
         self._show_all_chk.setToolTip("Include images that already have a video in the library")
         self._show_all_chk.setChecked(False)
         self._show_all_chk.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:10pt;")
-        self._show_all_chk.stateChanged.connect(lambda _: (self._populate_images(), self._update_auto_buttons()))
+        self._show_all_chk.stateChanged.connect(lambda _: (self._apply_image_filter(), self._update_auto_buttons()))
         self._img_sort_combo = QComboBox()
         self._img_sort_combo.setFixedHeight(30)
         self._img_sort_combo.setMinimumWidth(140)
@@ -871,7 +863,8 @@ class MainWindow(QMainWindow):
         self._seg_layout.addLayout(dots_row)
 
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, n)
+        # 100 ticks per segment so live sampler-step progress renders smoothly
+        self.progress_bar.setRange(0, n * 100)
         self.progress_bar.setValue(0)
         self._seg_layout.addWidget(self.progress_bar)
 
@@ -905,10 +898,9 @@ class MainWindow(QMainWindow):
 
     def _existing_video_stems(self) -> set[str]:
         """Return stems of videos in the current template's output folder.
-        Adds both the raw stem and the _N-stripped stem so images like
-        'photo_1.png' are excluded when 'photo_1.mp4' exists, and plain
-        'photo.png' is excluded when 'photo_1.mp4' (auto-numbered) exists."""
-        import re
+        Adds the raw stem, the run-timestamp-stripped stem, and the
+        _N-stripped stem so images like 'photo.png' are excluded when
+        'photo_20260709_141530.mp4' or auto-numbered 'photo_1.mp4' exists."""
         vid_dir = self._effective_video_dir()
         if not vid_dir.exists():
             return set()
@@ -916,7 +908,9 @@ class MainWindow(QMainWindow):
         for p in vid_dir.iterdir():
             if p.suffix.lower() in VIDEO_EXTS:
                 stems.add(p.stem)
-                stems.add(re.sub(r'_\d+$', '', p.stem))
+                unstamped = RUN_STAMP_RE.sub("", p.stem)
+                stems.add(unstamped)
+                stems.add(re.sub(r'_\d+$', '', unstamped))
         return stems
 
     def _populate_images(self):
@@ -934,15 +928,16 @@ class MainWindow(QMainWindow):
 
         if not input_dir.exists():
             self.selected_label.setText("No images found in input folder")
-            self.progress_bar.setRange(0, self._seg_count)
+            self.progress_bar.setRange(0, self._seg_count * 100)
             self.progress_label.setText("Ready")
             self.start_btn.setEnabled(True)
             return
 
         # Warn if any stem appears with more than one extension
+        thumb_dir = input_dir / "thumbnails"
         stem_exts: dict[str, list[str]] = {}
         for p in input_dir.rglob("*"):
-            if p.suffix.lower() in IMAGE_EXTS:
+            if p.suffix.lower() in IMAGE_EXTS and thumb_dir not in p.parents:
                 stem_exts.setdefault(p.stem, []).append(p.suffix.lower())
         duplicates = {s: exts for s, exts in stem_exts.items() if len(exts) > 1}
         if duplicates:
@@ -956,14 +951,9 @@ class MainWindow(QMainWindow):
                 "to avoid ambiguous one-to-one matching."
             )
 
-        if self._show_all_chk.isChecked():
-            excluded = set()
-        else:
-            excluded = self._existing_video_stems()
-
         sort_idx = self._img_sort_combo.currentIndex()
         _, sort_key, sort_reverse = self._IMG_SORT_OPTIONS[sort_idx]
-        self._img_loader = ImageLoaderThread(input_dir, excluded, sort_key, sort_reverse)
+        self._img_loader = ImageLoaderThread(input_dir, sort_key, sort_reverse)
         self._img_loader.image_ready.connect(self.image_grid.add_item)
         self._img_loader.progress.connect(self._on_img_load_progress)
         self._img_loader.finished_loading.connect(self._on_img_load_finished)
@@ -975,14 +965,38 @@ class MainWindow(QMainWindow):
         self.progress_label.setText(f"Loading images... {current}/{total}")
 
     def _on_img_load_finished(self, total: int):
-        self.progress_bar.setRange(0, self._seg_count)
+        self.progress_bar.setRange(0, self._seg_count * 100)
         self.progress_bar.setValue(0)
         self.progress_label.setText("Ready")
         self.start_btn.setEnabled(True)
-        if total == 0:
+        self._apply_image_filter()
+
+    def _apply_image_filter(self):
+        """Show/hide grid items to match the active template — images that
+        already have a video are hidden (unless 'Show all'). This replaces
+        rescanning the image folder when switching chain folders."""
+        excluded = set() if self._show_all_chk.isChecked() else self._existing_video_stems()
+        visible = 0
+        for i in range(self.image_grid.count()):
+            item = self.image_grid.item(i)
+            stem = Path(item.data(Qt.ItemDataRole.UserRole)).stem
+            hide = stem in excluded
+            if hide and item.isSelected():
+                item.setSelected(False)
+            item.setHidden(hide)
+            if not hide:
+                visible += 1
+        if self.image_grid.count() == 0:
             self.selected_label.setText("No images found in input folder")
+        elif visible == 0:
+            self.selected_label.setText("All images already have videos for this chain — check 'Show all' to reuse them")
         else:
-            self.selected_label.setText("Select images to include in the batch")
+            self.selected_label.setText(f"{visible} image{'s' if visible != 1 else ''} — select to include in the batch")
+        return visible
+
+    def _visible_image_items(self) -> list[QListWidgetItem]:
+        return [self.image_grid.item(i) for i in range(self.image_grid.count())
+                if not self.image_grid.item(i).isHidden()]
 
     def _browse_input_dir(self):
         current = self._input_dir_edit.text().strip()
@@ -1239,7 +1253,8 @@ class MainWindow(QMainWindow):
         self.config.set("active_chain_folder", folder)
         self.config.save()
         self._rebuild_seg_panel()
-        self._populate_images()
+        # Re-filter in place — no rescan of the image folder
+        self._apply_image_filter()
         self._sync_lib_dir_display()
 
     def _on_seg_dot_double_clicked(self, segment: int):
@@ -1312,15 +1327,14 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _select_next_auto_batch(self) -> bool:
-        """Select the next _auto_size_spin images from the top of the grid.
-        Returns False if the grid is empty."""
+        """Select the next _auto_size_spin visible images from the top of the
+        grid. Returns False if no unprocessed images remain."""
         self.image_grid.clearSelection()
-        count = self.image_grid.count()
-        if count == 0:
+        visible = self._visible_image_items()
+        if not visible:
             return False
-        batch = min(self._auto_size_spin.value(), count)
-        for i in range(batch):
-            self.image_grid.item(i).setSelected(True)
+        for item in visible[:self._auto_size_spin.value()]:
+            item.setSelected(True)
         keys = self.image_grid.selected_keys()
         if keys:
             self.selected_label.setText(f"{len(keys)} image{'s' if len(keys) > 1 else ''} selected  (auto)")
@@ -1333,7 +1347,7 @@ class MainWindow(QMainWindow):
             return
         self._auto_mode = True
         self._auto_stop_requested = False
-        self._auto_next_started = False
+        self._auto_continue = False
         self._update_auto_buttons()
         self._start()
 
@@ -1378,12 +1392,16 @@ class MainWindow(QMainWindow):
             self._write_daily_log(f"  - {Path(k).name}")
         eff_dir = self._effective_video_dir()
         eff_dir.mkdir(parents=True, exist_ok=True)
+        if self._worker:
+            self._worker.wait(5000)
         worker_cfg = self.config.get_all()
         worker_cfg["final_video_dir"] = str(eff_dir)
         self._worker = BatchChainWorker(worker_cfg, keys)
         self._worker.log.connect(self._on_log)
         self._worker.segment_done.connect(self._on_segment_done)
         self._worker.segment_time.connect(self._on_segment_time)
+        self._worker.segment_secs.connect(self._on_segment_secs)
+        self._worker.step_progress.connect(self._on_step_progress)
         self._worker.all_done.connect(self._on_batch_done)
         self._worker.error.connect(self._on_error)
         self._worker.finished.connect(self._on_worker_finished)
@@ -1416,27 +1434,45 @@ class MainWindow(QMainWindow):
                 f"color:{COLORS['success']}; font-size:10pt; font-family:Consolas; font-weight:bold;"
             )
 
+    def _on_segment_secs(self, seg: int, secs: float):
+        self._seg_times_sec[seg] = secs
+
+    def _on_step_progress(self, seg: int, value: int, vmax: int):
+        if vmax <= 0:
+            return
+        frac = min(value / vmax, 1.0)
+        self.progress_bar.setValue(int(((seg - 1) + frac) * 100))
+        eta = self._estimate_eta(seg, frac)
+        eta_txt = f"  —  ~{eta} left" if eta else ""
+        stop_txt = "  (stopping after batch…)" if self._auto_stop_requested else ""
+        self.progress_label.setText(
+            f"Batch — Segment {seg}/{self._seg_count} — step {value}/{vmax}{eta_txt}{stop_txt}"
+        )
+
+    def _estimate_eta(self, seg: int, frac: float) -> str:
+        """Project time left from this session's per-segment wall times.
+        Empty until at least one segment has completed."""
+        if not self._seg_times_sec:
+            return ""
+        avg = sum(self._seg_times_sec.values()) / len(self._seg_times_sec)
+        remaining = 0.0
+        for s in range(seg, self._seg_count + 1):
+            expected = self._seg_times_sec.get(s, avg)
+            remaining += expected * (1.0 - frac) if s == seg else expected
+        m, s_ = divmod(int(remaining), 60)
+        return f"{m}m {s_:02d}s" if m else f"{s_}s"
+
     def _on_segment_done(self, seg: int):
         n = self._seg_count
         if seg - 1 < len(self._seg_dots):
             self._seg_dots[seg - 1].set_done()
-        self.progress_bar.setValue(seg)
+        self.progress_bar.setValue(seg * 100)
         if seg < n:
             if seg < len(self._seg_dots):
                 self._seg_dots[seg].set_active()
             self.progress_label.setText(f"Batch — Segment {seg + 1}/{n} — running...")
         else:
             self.progress_label.setText("Stitching all videos...")
-
-    def _on_stitch_done(self, final_path: str):
-        self._play_completion_sound()
-        self.final_label.setText(f"Final video saved: {final_path}")
-        self.progress_label.setText("Complete!")
-        self.progress_bar.setValue(self._seg_count)
-        dlg = CompletionDialog(final_path, self._seg_count, parent=self)
-        dlg.exec()
-        if not self._show_all_chk.isChecked():
-            self._populate_images()
 
     def _play_completion_sound(self):
         if not self.config.get("completion_sound_enabled", False):
@@ -1467,18 +1503,19 @@ class MainWindow(QMainWindow):
         self.progress_label.setText(f"Batch complete — {n} video{'s' if n != 1 else ''}")
         self.final_label.setText(f"{n} videos saved to final video folder")
 
-        if not self._show_all_chk.isChecked():
-            processed_stems = {Path(p).stem for p in final_paths}
-            self.image_grid.remove_items_by_stems(processed_stems)
+        # Newly stitched videos exist now, so re-filtering hides their images
+        self._apply_image_filter()
 
         # ── Auto mode: skip dialog and continue or stop ───────────────────
         if self._auto_mode:
             if not self._auto_stop_requested and self._select_next_auto_batch():
-                self._auto_next_started = True
-                self._start()
+                # Next batch is started from _on_worker_finished, once the
+                # current worker thread has fully exited — starting it here
+                # would drop the last reference to a still-running QThread.
+                self._auto_continue = True
             else:
                 # No more images, or stop was requested — wind down auto mode
-                remaining = self.image_grid.count()
+                remaining = len(self._visible_image_items())
                 if self._auto_stop_requested:
                     self.progress_label.setText("Auto mode stopped by user.")
                 else:
@@ -1489,8 +1526,6 @@ class MainWindow(QMainWindow):
                 self._auto_mode = False
                 self._auto_stop_requested = False
                 self._update_auto_buttons()
-                if not self._show_all_chk.isChecked():
-                    self._populate_images()
             return
 
         # ── Normal mode: ask to play ──────────────────────────────────────
@@ -1511,8 +1546,6 @@ class MainWindow(QMainWindow):
             if existing:
                 player = VideoPlayerDialog(existing[0], parent=self, playlist=existing)
                 player.exec()
-        if not self._show_all_chk.isChecked():
-            self._populate_images()
 
     def _on_error(self, message: str):
         self._write_daily_log(f"ERROR: {message}")
@@ -1524,9 +1557,9 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Error", message)
 
     def _on_worker_finished(self):
-        if self._auto_next_started:
-            # A new auto batch was already started in _on_batch_done — leave buttons alone
-            self._auto_next_started = False
+        if self._auto_continue:
+            self._auto_continue = False
+            self._start()
             return
         if self._auto_mode:
             # Worker finished without completing a batch (cancelled / error mid-auto)
@@ -1542,9 +1575,11 @@ class MainWindow(QMainWindow):
 
     def _write_daily_log(self, message: str):
         vid_dir = self._effective_video_dir()
-        vid_dir.mkdir(parents=True, exist_ok=True)
         if not vid_dir.exists():
-            return
+            try:
+                vid_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                return
         today = datetime.now().strftime("%m_%d_%Y")
         log_path = vid_dir / f"ComfyUI_Chain_Log_{today}.txt"
         timestamp = datetime.now().strftime("%H:%M:%S")

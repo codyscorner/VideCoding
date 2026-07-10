@@ -32,7 +32,10 @@ r = subprocess.run(
 if r.returncode >= 8:
     print(r.stdout); print(r.stderr)
     sys.exit(1)
-shutil.copy2(ROOT / "main_config.json", OUTPUT / "main_config.json")
+# Never overwrite the live config next to the deployed EXE — it holds the
+# user's current settings (folders, active chain, mode). Seed it only if missing.
+if not (OUTPUT / "main_config.json").exists():
+    shutil.copy2(ROOT / "main_config.json", OUTPUT / "main_config.json")
 shutil.copy2(ROOT / "app_icon.ico", OUTPUT / "app_icon.ico")
 
 print(f"\nCopied to: {OUTPUT}")
