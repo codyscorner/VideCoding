@@ -21,6 +21,7 @@ class BatchChainWorker(QThread):
     segment_time = pyqtSignal(int, str)
     segment_secs = pyqtSignal(int, float)     # segment, elapsed seconds (for ETA)
     step_progress = pyqtSignal(int, int, int)  # segment, step value, step max
+    segment_plan = pyqtSignal(int, int, int)   # segment, expected sampler passes, expected total steps
     all_done = pyqtSignal(list)   # list[str] of final video paths
     error = pyqtSignal(str)
 
@@ -165,6 +166,11 @@ class BatchChainWorker(QThread):
                 self._patch_batch_input(workflow_json, dir_path)
                 self._patch_batch_output_prefix(workflow_json, seg)
 
+                # Tell the UI how much sampler work this segment holds:
+                # every sampler runs once per image in the batch
+                steps_per_image = self._sampler_steps(workflow_json)
+                self.segment_plan.emit(seg, len(steps_per_image) * n, sum(steps_per_image) * n)
+
                 prompt_id = self._queue_prompt(workflow_json)
                 self._active_prompt_id = prompt_id
                 self._log(f"[Segment {seg}/{self._total_segs}] Queued ({prompt_id[:8]}...), polling...")
@@ -232,6 +238,27 @@ class BatchChainWorker(QThread):
             if node.get("class_type") == "VHS_VideoCombine":
                 node["inputs"]["filename_prefix"] = f"Merge/{self._run_id}/Batch_{seg}"
                 break
+
+    @staticmethod
+    def _sampler_steps(workflow: dict) -> list[int]:
+        """Executed steps of every sampler node in the workflow. Each sampler
+        runs once per image (list processing), emitting one progress cycle of
+        this many steps. WAN 2.2's hi/lo KSamplerAdvanced pair with steps=4
+        split at 0-2 / 2-4 yields [2, 2]."""
+        out = []
+        for node in workflow.values():
+            if "sampler" not in node.get("class_type", "").lower():
+                continue
+            inp = node.get("inputs", {})
+            steps = inp.get("steps")
+            if not isinstance(steps, int) or steps <= 0:
+                continue
+            start, end = inp.get("start_at_step"), inp.get("end_at_step")
+            if isinstance(start, int) and isinstance(end, int):
+                steps = max(0, min(end, steps) - max(start, 0))
+            if steps:
+                out.append(steps)
+        return out
 
     def _bust_cache(self, workflow: dict):
         new_seed = int(uuid.uuid4().int % (2**32))
