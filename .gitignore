@@ -92,6 +92,3 @@ package-lock.json
 # SQLite databases (embedding caches, runtime state)
 *.sqlite
 *.db
-
-# Nested repos with their own git history
-PromptArchiver/

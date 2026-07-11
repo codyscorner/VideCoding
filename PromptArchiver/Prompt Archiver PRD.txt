@@ -1,0 +1,119 @@
+PRD: Prompt Archiver
+1. Overview
+
+Name: Prompt Archiver
+Purpose: A desktop application that allows users to store, organize, and view AI prompts alongside their generated outputs (text, images, or videos).
+Goal: Provide a local-first archive system where prompts and their associated outputs are neatly organized for quick reference and reuse.
+
+2. Objectives
+
+Centralize prompt management in a single desktop app.
+
+Automatically create local folders and store prompts with outputs.
+
+Support browsing, viewing, and previewing of different content types (text, images, video).
+
+Enable quick retrieval and reuse of stored prompts.
+
+3. Requirements
+3.1 Functional Requirements
+
+Prompt Entry
+
+Users can input a prompt into the app.
+
+Option to paste/copy or import prompts from external files.
+
+Save & Organize
+
+Save prompts and associated outputs locally.
+
+Auto-create a top-level folder: Prompt_Archive (default location user can configure).
+
+Subfolders by type:
+
+/text/
+
+/image/
+
+/video/
+
+Each prompt gets its own subfolder containing:
+
+The original prompt (prompt.txt).
+
+The generated output (e.g., .txt, .png, .mp4).
+
+Metadata file (metadata.json) containing date/time, tags, type.
+
+Browsing & Search
+
+Built-in file explorer to browse saved prompts.
+
+Ability to filter by type (text, image, video).
+
+Search prompts by keyword or tag.
+
+Viewing & Playback
+
+Display text outputs inside the app.
+
+Preview images inside the app (standard image viewer).
+
+Play videos inside the app (basic embedded media player).
+
+Tagging
+
+Users can add tags to prompts for categorization.
+
+Tags stored in metadata.
+
+Export/Backup
+
+Option to export prompts or entire folders to another location.
+
+Support ZIP compression for exporting.
+
+3.2 Non-Functional Requirements
+
+Platform: Windows desktop app (later expandable to macOS/Linux).
+
+Storage: Local filesystem only (no cloud dependency).
+
+Performance: Should handle thousands of prompts with minimal lag.
+
+Security: Local-only storage; no external data transmission.
+
+Tech Stack (recommended):
+
+Frontend: Electron (JavaScript/React) or .NET (WinUI/WPF).
+
+Backend: Node.js (if Electron) or C#.
+
+Media handling: Built-in OS codecs/libraries.
+
+4. User Flow
+
+Launch app → Main dashboard shows saved prompts.
+
+Add new prompt → Select type (text, image, video) → Save.
+
+App creates folder structure and saves prompt + output.
+
+User can click on an item → View text, preview image, or play video.
+
+Search or filter by tags, type, or date.
+
+Export selected prompts if needed.
+
+5. Future Enhancements
+
+Drag-and-drop file support for adding existing outputs.
+
+Markdown support for text prompts.
+
+Side-by-side comparison view of prompt vs. output.
+
+AI-powered tagging (auto-suggest categories).
+
+Sync option with local NAS or private cloud (optional, not default).
