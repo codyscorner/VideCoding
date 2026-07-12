@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# PyInstaller build artifacts
+/build/
+/dist/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Archive folders (user data)
+Prompt_Archive/
