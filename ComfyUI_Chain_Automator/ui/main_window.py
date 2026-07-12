@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import json
 import re
 import subprocess
 import threading
@@ -438,6 +439,16 @@ class MainWindow(QMainWindow):
         self._auto_stop_requested = False
         self._auto_continue = False
         self._seg_times_sec: dict[int, float] = {}  # per-segment wall times, for ETA
+        self._batch_registry_ctx: tuple | None = None  # (input_dir, chain, keys) of running batch
+        # Sampler-pass tracking: ComfyUI restarts the raw progress cycle for
+        # each sampler node, so we count cycles to keep the segment bar monotonic
+        self._step_seg = 0
+        self._step_last_value = 0
+        self._step_last_max = 0
+        self._step_cycle = 1
+        self._steps_before = 0    # steps finished in this segment's completed passes
+        self._seg_plan = (0, 0)   # (expected passes, expected total steps) from the worker
+        self._cycles_per_seg = 0  # fallback: learned when the first segment completes
 
         self.setWindowTitle(f"ComfyUI Workflow Chain Automator  v{version}")
         self.setMinimumSize(1200, 780)
@@ -841,6 +852,8 @@ class MainWindow(QMainWindow):
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
             self._seg_layout.addWidget(self.progress_bar)
+            self.step_bar = self._make_step_bar()
+            self._seg_layout.addWidget(self.step_bar)
             self.progress_label = QLabel("No workflows configured")
             self.progress_label.setObjectName("subtitle")
             self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -868,6 +881,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self._seg_layout.addWidget(self.progress_bar)
 
+        self.step_bar = self._make_step_bar()
+        self._seg_layout.addWidget(self.step_bar)
+
         self.progress_label = QLabel("Ready")
         self.progress_label.setObjectName("subtitle")
         self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -892,6 +908,18 @@ class MainWindow(QMainWindow):
         times_row.addStretch()
         self._seg_layout.addLayout(times_row)
 
+    def _make_step_bar(self) -> QProgressBar:
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(0)
+        bar.setFixedHeight(16)
+        bar.setFormat("Step —")
+        bar.setStyleSheet(
+            f"QProgressBar {{ font-size: 8pt; }}"
+            f"QProgressBar::chunk {{ background-color: {COLORS['success']}; }}"
+        )
+        return bar
+
     # ------------------------------------------------------------------ #
     # Image picker (Chain view)
     # ------------------------------------------------------------------ #
@@ -912,6 +940,48 @@ class MainWindow(QMainWindow):
                 stems.add(unstamped)
                 stems.add(re.sub(r'_\d+$', '', unstamped))
         return stems
+
+    # ── Per-chain processed registry ──────────────────────────────────
+    # The video files alone aren't a reliable record of what a chain has
+    # processed — finished videos get moved out of the chain's output
+    # folder. This registry (stored with the image folder's thumbnails)
+    # keeps the history per chain, keyed by the chain folder name.
+
+    def _current_input_dir(self) -> Path:
+        return Path(self._input_dir_edit.text().strip() or self.config.get("input_dir", ""))
+
+    def _registry_path(self, input_dir: Path) -> Path:
+        return input_dir / "thumbnails" / "processed_chains.json"
+
+    def _load_registry(self, input_dir: Path) -> dict:
+        try:
+            with open(self._registry_path(input_dir), encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _processed_stems(self) -> set[str]:
+        chain = self.config.get("active_chain_folder", "").strip()
+        if not chain:
+            return set()
+        return set(self._load_registry(self._current_input_dir()).get(chain, {}))
+
+    def _record_processed(self, input_dir: Path, chain: str, keys: list[str]):
+        if not chain or not keys:
+            return
+        reg = self._load_registry(input_dir)
+        entry = reg.setdefault(chain, {})
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for k in keys:
+            entry[Path(k).stem] = stamp
+        path = self._registry_path(input_dir)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(reg, f, indent=1)
+        except OSError:
+            pass
 
     def _populate_images(self):
         input_dir = Path(self._input_dir_edit.text().strip() or self.config.get("input_dir", ""))
@@ -975,7 +1045,8 @@ class MainWindow(QMainWindow):
         """Show/hide grid items to match the active template — images that
         already have a video are hidden (unless 'Show all'). This replaces
         rescanning the image folder when switching chain folders."""
-        excluded = set() if self._show_all_chk.isChecked() else self._existing_video_stems()
+        excluded = set() if self._show_all_chk.isChecked() \
+            else self._existing_video_stems() | self._processed_stems()
         visible = 0
         for i in range(self.image_grid.count()):
             item = self.image_grid.item(i)
@@ -1392,6 +1463,13 @@ class MainWindow(QMainWindow):
             self._write_daily_log(f"  - {Path(k).name}")
         eff_dir = self._effective_video_dir()
         eff_dir.mkdir(parents=True, exist_ok=True)
+        # Snapshot for the processed registry — chain/folder could be switched
+        # in the UI while the batch runs
+        self._batch_registry_ctx = (
+            self._current_input_dir(),
+            self.config.get("active_chain_folder", "").strip(),
+            list(keys),
+        )
         if self._worker:
             self._worker.wait(5000)
         worker_cfg = self.config.get_all()
@@ -1402,6 +1480,7 @@ class MainWindow(QMainWindow):
         self._worker.segment_time.connect(self._on_segment_time)
         self._worker.segment_secs.connect(self._on_segment_secs)
         self._worker.step_progress.connect(self._on_step_progress)
+        self._worker.segment_plan.connect(self._on_segment_plan)
         self._worker.all_done.connect(self._on_batch_done)
         self._worker.error.connect(self._on_error)
         self._worker.finished.connect(self._on_worker_finished)
@@ -1437,16 +1516,56 @@ class MainWindow(QMainWindow):
     def _on_segment_secs(self, seg: int, secs: float):
         self._seg_times_sec[seg] = secs
 
+    def _on_segment_plan(self, seg: int, passes: int, total_steps: int):
+        """Worker parsed the segment's workflow: `passes` sampler executions
+        (samplers × images) totalling `total_steps` steps. (0, 0) if the
+        workflow had no readable sampler nodes."""
+        self._seg_plan = (passes, total_steps)
+
     def _on_step_progress(self, seg: int, value: int, vmax: int):
         if vmax <= 0:
             return
+        # Each sampler pass restarts the raw step counter; count the passes
+        # (and the steps they contained) so progress only ever moves forward.
+        if seg != self._step_seg:
+            self._step_seg = seg
+            self._step_cycle = 1
+            self._steps_before = 0
+        elif value < self._step_last_value:
+            self._step_cycle += 1
+            self._steps_before += self._step_last_max
+        self._step_last_value = value
+        self._step_last_max = vmax
+
         frac = min(value / vmax, 1.0)
-        self.progress_bar.setValue(int(((seg - 1) + frac) * 100))
-        eta = self._estimate_eta(seg, frac)
+        plan_passes, plan_steps = self._seg_plan
+        if plan_steps:
+            # Exact plan from the workflow JSON: step bar fills once across
+            # the whole segment (all samplers × all images)
+            done = min(self._steps_before + value, plan_steps)
+            seg_frac = done / plan_steps
+            self.step_bar.setValue(int(seg_frac * 100))
+            self.step_bar.setFormat(f"Step {done}/{plan_steps}")
+            step_txt = f"step {done}/{plan_steps}"
+        else:
+            # Fallback: per-pass step bar + pass count learned from segment 1
+            self.step_bar.setValue(int(frac * 100))
+            self.step_bar.setFormat(f"Step {value}/{vmax}")
+            step_txt = f"step {value}/{vmax}"
+            if self._cycles_per_seg:
+                seg_frac = min((self._step_cycle - 1 + frac) / self._cycles_per_seg, 1.0)
+            else:
+                seg_frac = frac  # first segment: pass count not yet known
+
+        bar_val = int(((seg - 1) + seg_frac) * 100)
+        if bar_val > self.progress_bar.value():
+            self.progress_bar.setValue(bar_val)
+
+        eta = self._estimate_eta(seg, seg_frac)
         eta_txt = f"  —  ~{eta} left" if eta else ""
         stop_txt = "  (stopping after batch…)" if self._auto_stop_requested else ""
         self.progress_label.setText(
-            f"Batch — Segment {seg}/{self._seg_count} — step {value}/{vmax}{eta_txt}{stop_txt}"
+            f"Batch — Segment {seg}/{self._seg_count} — {step_txt}{eta_txt}{stop_txt}"
         )
 
     def _estimate_eta(self, seg: int, frac: float) -> str:
@@ -1467,6 +1586,10 @@ class MainWindow(QMainWindow):
         if seg - 1 < len(self._seg_dots):
             self._seg_dots[seg - 1].set_done()
         self.progress_bar.setValue(seg * 100)
+        if not self._cycles_per_seg and seg == self._step_seg:
+            self._cycles_per_seg = self._step_cycle
+        self.step_bar.setValue(0)
+        self.step_bar.setFormat("Step —")
         if seg < n:
             if seg < len(self._seg_dots):
                 self._seg_dots[seg].set_active()
@@ -1502,6 +1625,13 @@ class MainWindow(QMainWindow):
         self._write_daily_log(f"=== Batch complete: {n} video{'s' if n != 1 else ''} ===")
         self.progress_label.setText(f"Batch complete — {n} video{'s' if n != 1 else ''}")
         self.final_label.setText(f"{n} videos saved to final video folder")
+
+        # Remember these images as processed for this chain, so the history
+        # survives the finished videos being moved out of the output folder
+        if self._batch_registry_ctx:
+            in_dir, chain, keys = self._batch_registry_ctx
+            self._record_processed(in_dir, chain, keys)
+            self._batch_registry_ctx = None
 
         # Newly stitched videos exist now, so re-filtering hides their images
         self._apply_image_filter()
@@ -1600,6 +1730,15 @@ class MainWindow(QMainWindow):
             lbl.setText("—")
             lbl.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:8pt; font-family:Arial;")
         self.progress_bar.setValue(0)
+        self.step_bar.setValue(0)
+        self.step_bar.setFormat("Step —")
+        self._step_seg = 0
+        self._step_last_value = 0
+        self._step_last_max = 0
+        self._step_cycle = 1
+        self._steps_before = 0
+        self._seg_plan = (0, 0)
+        self._cycles_per_seg = 0
         self.log_list.clear()
 
     def closeEvent(self, event):

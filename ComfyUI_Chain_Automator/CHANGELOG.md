@@ -1,5 +1,21 @@
 # Changelog — ComfyUI Workflow Chain Automator
 
+### v3.7.3
+- **Exact per-segment step totals read from the workflow JSON**: before queueing each segment the worker counts the sampler nodes and their *executed* steps (KSamplerAdvanced honors `start_at_step`/`end_at_step`, so WAN 2.2's hi/lo pair with steps=4 counts as 2+2) and multiplies by the images in the batch — new `segment_plan` signal carries (passes, total steps)
+- Step bar now fills once across the whole segment showing cumulative progress (`Step 5/16` for 4 images × 4 steps) instead of refilling per sampler pass; segment bar and ETA use the same exact fraction, accurate from segment 1 (no more learning from the first segment)
+- Workflows with no readable sampler nodes fall back to the previous behavior (per-pass step bar, pass count learned from the first completed segment)
+
+### v3.7.2
+- **Per-chain processed registry**: each completed batch records its images in `thumbnails/processed_chains.json` inside the image folder, keyed by chain folder name — so the app remembers what each chain has processed even after the finished videos are moved out of the chain's output folder
+- Filtering hides an image if it has a video in the active chain's output folder **or** appears in that chain's registry; other chains are unaffected, so the same images stay available to process with every other workflow
+- 'Show all' still reveals everything, so a registry-hidden image can always be re-run deliberately
+- Registry snapshot is taken at batch start (image folder, chain, selection), so switching chains while a batch runs records against the right chain
+
+### v3.7.1
+- **Separate step progress bar** below the segment bar: fills with the current sampler step (step 1/2 → 50%, step 2/2 → 100%) and resets when a new sampler pass starts, so the within-step motion has its own bar
+- **Segment bar no longer bounces backwards**: each sampler pass in a segment restarts ComfyUI's raw step counter, which used to yank the segment bar back mid-segment; the bar now counts passes (learned from the first completed segment) and only ever moves forward
+- ETA projection uses the same forward-only in-segment fraction, so the time-left estimate no longer oscillates within a segment
+
 ### v3.7.0
 - **Image thumbnails are now cached on disk** in a `thumbnails` subfolder inside the image folder (same pattern as the Library's video thumbnails); each load does a quick sync — generates thumbs for new/changed images (mtime compare), deletes thumbs whose source image is gone — so a 1000-image folder loads in seconds instead of re-decoding every picture
 - **Switching chain folders no longer rescans the image folder** — the grid keeps its loaded thumbnails and just shows/hides images to match the new template (hidden = already has a video for that chain); switching templates back and forth is instant
