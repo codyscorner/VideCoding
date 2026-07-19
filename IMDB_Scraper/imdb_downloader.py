@@ -1,6 +1,6 @@
-"""IMDB Photo Downloader — GUI v1.2.2"""
+"""IMDB Photo Downloader — GUI v1.2.3"""
 
-VERSION = "1.2.2"
+VERSION = "1.2.3"
 
 import csv
 import json
@@ -559,7 +559,7 @@ class MainWindow(QMainWindow):
         self._full_res_chk.setStyleSheet(f"color: {FG_DIM};")
         self._full_res_chk.setChecked(bool(self._settings.get("full_res_default", False)))
         self._full_res_chk.toggled.connect(self._on_full_res_toggled)
-        clear_results_btn = QPushButton("Clear Results")
+        clear_results_btn = QPushButton("Clear List")
         clear_results_btn.setObjectName("browse_btn")
         clear_results_btn.setFixedWidth(110)
         clear_results_btn.clicked.connect(self._clear_search_results)
