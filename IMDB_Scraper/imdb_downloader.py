@@ -1,6 +1,6 @@
-"""IMDB Photo Downloader — GUI v1.2.0"""
+"""IMDB Photo Downloader — GUI v1.2.1"""
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 import csv
 import json
@@ -528,9 +528,14 @@ class MainWindow(QMainWindow):
         search_btn = QPushButton("🔍 Search")
         search_btn.setObjectName("browse_btn")
         search_btn.clicked.connect(self._run_search)
+        clear_results_btn = QPushButton("Clear")
+        clear_results_btn.setObjectName("browse_btn")
+        clear_results_btn.setFixedWidth(50)
+        clear_results_btn.clicked.connect(self._clear_search_results)
         search_row.addWidget(search_lbl)
         search_row.addWidget(self._search_edit)
         search_row.addWidget(search_btn)
+        search_row.addWidget(clear_results_btn)
         root.addLayout(search_row)
 
         self._search_results = QListWidget()
@@ -658,6 +663,12 @@ class MainWindow(QMainWindow):
         self._search_results.setVisible(True)
         self._search_hint.setVisible(True)
         self._status.setText(f"Found {len(results)} match(es).")
+
+    def _clear_search_results(self):
+        self._search_edit.clear()
+        self._search_results.clear()
+        self._search_results.setVisible(False)
+        self._search_hint.setVisible(False)
 
     def _add_search_result(self, item: QListWidgetItem):
         imdb_id = item.data(Qt.ItemDataRole.UserRole)

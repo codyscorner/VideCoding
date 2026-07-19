@@ -63,6 +63,9 @@ Root Folder/
 
 ## Changelog
 
+### v1.2.1
+- Added a small "Clear" button next to the title search box to dismiss search results without running a new search.
+
 ### v1.2.0
 - Added a "Find" search box: look up a movie/show/actor by name via IMDB's public autocomplete endpoint instead of pasting a URL. Results show year, type, and a 📷 indicator when IMDB has poster art for that entry (a quick signal, not a guarantee, that its media gallery has photos too). Double-click a result to append its URL to the queue.
 - Settings now also persist the full-resolution checkbox default and window size across sessions, in addition to the root folder.
