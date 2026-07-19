@@ -1,6 +1,6 @@
-"""IMDB Photo Downloader — GUI v1.2.1"""
+"""IMDB Photo Downloader — GUI v1.2.2"""
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 
 import csv
 import json
@@ -528,14 +528,9 @@ class MainWindow(QMainWindow):
         search_btn = QPushButton("🔍 Search")
         search_btn.setObjectName("browse_btn")
         search_btn.clicked.connect(self._run_search)
-        clear_results_btn = QPushButton("Clear")
-        clear_results_btn.setObjectName("browse_btn")
-        clear_results_btn.setFixedWidth(50)
-        clear_results_btn.clicked.connect(self._clear_search_results)
         search_row.addWidget(search_lbl)
         search_row.addWidget(self._search_edit)
         search_row.addWidget(search_btn)
-        search_row.addWidget(clear_results_btn)
         root.addLayout(search_row)
 
         self._search_results = QListWidget()
@@ -558,12 +553,20 @@ class MainWindow(QMainWindow):
         self._url_edit.setFixedHeight(80)
         root.addWidget(self._url_edit)
 
-        # Full-resolution option
+        # Full-resolution option + clear search results
+        full_res_row = QHBoxLayout()
         self._full_res_chk = QCheckBox("Grab full-resolution images (slower — visits each photo page)")
         self._full_res_chk.setStyleSheet(f"color: {FG_DIM};")
         self._full_res_chk.setChecked(bool(self._settings.get("full_res_default", False)))
         self._full_res_chk.toggled.connect(self._on_full_res_toggled)
-        root.addWidget(self._full_res_chk)
+        clear_results_btn = QPushButton("Clear Results")
+        clear_results_btn.setObjectName("browse_btn")
+        clear_results_btn.setFixedWidth(110)
+        clear_results_btn.clicked.connect(self._clear_search_results)
+        full_res_row.addWidget(self._full_res_chk)
+        full_res_row.addStretch()
+        full_res_row.addWidget(clear_results_btn)
+        root.addLayout(full_res_row)
 
         # Root folder row
         root_row = QHBoxLayout()
@@ -665,7 +668,6 @@ class MainWindow(QMainWindow):
         self._status.setText(f"Found {len(results)} match(es).")
 
     def _clear_search_results(self):
-        self._search_edit.clear()
         self._search_results.clear()
         self._search_results.setVisible(False)
         self._search_hint.setVisible(False)

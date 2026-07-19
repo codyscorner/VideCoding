@@ -63,6 +63,9 @@ Root Folder/
 
 ## Changelog
 
+### v1.2.2
+- Moved the "Clear Results" button down to the full-resolution checkbox row and widened it; it now only clears the results list, leaving the search text box untouched.
+
 ### v1.2.1
 - Added a small "Clear" button next to the title search box to dismiss search results without running a new search.
 
