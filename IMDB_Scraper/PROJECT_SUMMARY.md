@@ -13,8 +13,9 @@ Downloads all gallery photos from any IMDB title or actor/actress page into orga
 - Skips already-downloaded files on re-run
 - Automatic retry with exponential backoff on network failure for each image download
 - Writes `manifest.csv` and `manifest.json` per subfolder listing every image's filename, source URL, caption, and status
-- Persistent root folder setting saved between sessions
+- Persistent settings saved between sessions: root folder, full-resolution default, window size
 - Clickable folder link opens Explorer when download completes
+- Search IMDB by movie/show/actor name (no URL needed) — uses IMDB's public autocomplete API, results flagged with 📷 when IMDB has poster art for them; double-click a result to add its URL to the queue
 
 ## Requirements
 
@@ -62,6 +63,10 @@ Root Folder/
 
 ## Changelog
 
+### v1.2.0
+- Added a "Find" search box: look up a movie/show/actor by name via IMDB's public autocomplete endpoint instead of pasting a URL. Results show year, type, and a 📷 indicator when IMDB has poster art for that entry (a quick signal, not a guarantee, that its media gallery has photos too). Double-click a result to append its URL to the queue.
+- Settings now also persist the full-resolution checkbox default and window size across sessions, in addition to the root folder.
+
 ### v1.1.1
 - Fixed "Executable doesn't exist" Playwright launch error in the packaged EXE — the frozen app was looking for Chromium inside the ephemeral PyInstaller `_MEI...` temp extraction folder instead of the persistent browser cache. Now pins `PLAYWRIGHT_BROWSERS_PATH` to `%LOCALAPPDATA%\ms-playwright` before Playwright is imported, so a one-time `playwright install chromium` on the machine works across every run of the EXE.
 
@@ -82,4 +87,4 @@ Root Folder/
 
 ## Future Enhancements
 
-All planned enhancements shipped in v1.1.0.
+- Ideas not yet built: concurrent/parallel downloads across the URL queue, an image-count preview before committing to a full-res run, filtering search results by type (movie/TV/person only).
