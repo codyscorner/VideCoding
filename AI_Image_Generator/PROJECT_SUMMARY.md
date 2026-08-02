@@ -1,8 +1,8 @@
 # AI Image Studio
 
-**Version:** 3.1.0 | **Status:** Active | **Language:** Python
+**Version:** 3.2.0 | **Status:** Active | **Language:** Python
 
-A four-tab PyQt6 desktop application for AI image generation via ComfyUI (local or RunPod serverless).
+A four-tab PyQt6 desktop application for AI image generation via ComfyUI (local or a RunPod Pod).
 
 ## Tabs
 
@@ -14,7 +14,7 @@ A four-tab PyQt6 desktop application for AI image generation via ComfyUI (local 
 ## Connection Modes (per tab)
 
 - **Local ComfyUI** — default; connects to `http://127.0.0.1:8188` (or any URL)
-- **RunPod Serverless** — enter your RunPod API key + endpoint ID; submits jobs via the RunPod async API and downloads base64-encoded results; images embedded in the request for Scene Composer
+- **RunPod (Pod)** — enter a Pod's proxy URL (`https://<pod-id>-8188.proxy.runpod.net`); a Pod runs the same ComfyUI HTTP API as local, so both modes share the same `ComfyWorker`/`EditorWorker` classes — no separate serverless job submission/polling/base64 handling needed
 
 ## Features
 
@@ -68,6 +68,11 @@ pyinstaller --onefile --windowed ai_image_generator.py
 Output: `P:\Apps\VibeCoded\AI Image Studio\AI Image Studio.exe`
 
 ## Changelog
+
+### v3.2.0
+- Replaced RunPod Serverless (API key + endpoint ID, async job submission/polling, base64 image transfer) with **RunPod (Pod)**: enter a Pod's proxy URL and it's used directly as the ComfyUI HTTP API endpoint, same as local — removed `RunPodWorker`/`RunPodEditorWorker` entirely since `ComfyWorker`/`EditorWorker` now cover both modes via `ConnectionWidget.active_url`
+- **Full-size image viewer**: double-click a Library thumbnail to open it at native size (capped to 90% of the screen) in a dialog showing dimensions/file size/modified date; Esc closes
+- Library grid/preview split is now a draggable `QSplitter` instead of a fixed-width panel
 
 ### v3.1.0 — 2026-07-07
 - **Batch queue** (Text to Image): Add to Queue / Run Queue / remove / clear; jobs run sequentially with per-job status; failures are skipped and counted at the end
