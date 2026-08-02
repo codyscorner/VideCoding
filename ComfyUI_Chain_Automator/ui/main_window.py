@@ -27,6 +27,7 @@ from ui.video_player import VideoPlayerDialog
 from ui.settings_dialog import SettingsDialog
 from ui.segment_editor import SegmentEditorDialog
 from ui.generate_tab import GenerateTab
+from ui.video_settings_dialog import VideoSettingsDialog
 from ui.widgets import ThumbnailGrid, THUMB_SIZE
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -771,6 +772,11 @@ class MainWindow(QMainWindow):
         self._vid_convert_btn.setEnabled(False)
         self._vid_convert_btn.setToolTip("Convert selected videos to AVI, MP4 Baseline, or MOV")
         self._vid_convert_btn.clicked.connect(self._convert_selected_videos)
+        self._vid_settings_btn = QPushButton("ℹ️  Settings")
+        self._vid_settings_btn.setFixedHeight(40)
+        self._vid_settings_btn.setEnabled(False)
+        self._vid_settings_btn.setToolTip("Show the prompt/sampler/model settings used to generate the selected video")
+        self._vid_settings_btn.clicked.connect(self._show_video_settings)
         toolbar.addWidget(vid_folder_lbl)
         toolbar.addWidget(self._vid_dir_edit, stretch=1)
         toolbar.addWidget(vid_browse_btn)
@@ -782,6 +788,8 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._vid_play_btn)
         toolbar.addSpacing(4)
         toolbar.addWidget(self._vid_convert_btn)
+        toolbar.addSpacing(4)
+        toolbar.addWidget(self._vid_settings_btn)
         toolbar.addSpacing(4)
         toolbar.addWidget(self._vid_delete_btn)
         layout.addLayout(toolbar)
@@ -1178,6 +1186,7 @@ class MainWindow(QMainWindow):
         self._vid_play_btn.setEnabled(has_sel)
         self._vid_convert_btn.setEnabled(has_sel)
         self._vid_delete_btn.setEnabled(has_sel)
+        self._vid_settings_btn.setEnabled(len(keys) == 1)
         total = self.video_grid.count()
         if has_sel:
             n = len(keys)
@@ -1232,6 +1241,13 @@ class MainWindow(QMainWindow):
             f"{count} video{'s' if count != 1 else ''} — double-click to play"
             if count > 0 else "No video files found in folder"
         )
+
+    def _show_video_settings(self):
+        keys = self.video_grid.selected_keys()
+        if len(keys) != 1:
+            return
+        dlg = VideoSettingsDialog(keys[0], parent=self)
+        dlg.exec()
 
     def _convert_selected_videos(self):
         keys = self.video_grid.selected_keys()

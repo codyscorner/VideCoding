@@ -1,5 +1,12 @@
 # Changelog — ComfyUI Workflow Chain Automator
 
+### v3.7.4
+- **Library "Settings" button**: select a single video and view the prompt, sampler, video, and model settings used to generate it, one tab per chain segment
+- **`prompts.txt` in every batch zip**: each per-image zip archive now includes a plain-text summary of every segment's prompts/sampler/video settings, so they can be checked in Notepad without opening any file individually
+- Fixed a gap where the final stitched video carried no generation metadata at all — ffmpeg's concat re-encode strips the ComfyUI metadata VHS_VideoCombine embeds in each segment clip; `_stitch()` now extracts every segment's prompt graph before the source clips are discarded, re-embeds them into the final video via an ffmpeg ffmetadata file (avoids the command-line length limit a multi-segment JSON blob could hit as a raw `-metadata` argument), and hands them off to `_zip_segments()` for the text summary
+- New `metadata_parser.py` — shared byte-scan extraction (same technique as the standalone VHS_Metadata_Parser tool), a read-only `SegmentMetadata` view for pulling prompts/sampler/video/model settings out of a segment's prompt graph (used by the Settings dialog), and `build_prompts_text()` for the zip's plain-text summary
+- Only applies to videos stitched from now on — videos created before this update have no embedded metadata to show
+
 ### v3.7.3
 - **Exact per-segment step totals read from the workflow JSON**: before queueing each segment the worker counts the sampler nodes and their *executed* steps (KSamplerAdvanced honors `start_at_step`/`end_at_step`, so WAN 2.2's hi/lo pair with steps=4 counts as 2+2) and multiplies by the images in the batch — new `segment_plan` signal carries (passes, total steps)
 - Step bar now fills once across the whole segment showing cumulative progress (`Step 5/16` for 4 images × 4 steps) instead of refilling per sampler pass; segment bar and ETA use the same exact fraction, accurate from segment 1 (no more learning from the first segment)

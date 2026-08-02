@@ -23,6 +23,8 @@ Automates a chain of ComfyUI segments (up to 10), stitching the outputs into a s
 - Built-in video player with playlist — plays all batch results back-to-back after completion
 - Completion sound (optional, configurable in Settings)
 - Library tab with video browser, sort options, multi-select, **Play Selected** playlist, and delete
+- **Settings button in Library**: re-embeds each segment's ComfyUI prompt graph into the final stitched video (ffmpeg concat normally strips it) and shows prompts/sampler/model settings per segment for a single selected video
+- Every batch zip includes a `prompts.txt` — plain-text summary of every segment's prompts/sampler/video settings, readable in Notepad without opening any file individually
 - **Auto Run mode**: processes an entire folder of images automatically, N at a time, with no pop-ups between batches; configurable batch size; graceful **Stop After Batch** button
 
 ## Requirements

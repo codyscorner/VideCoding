@@ -7,9 +7,12 @@ import time
 import uuid
 import zipfile
 from pathlib import Path
+from typing import Optional
 
 import requests
 from PyQt6.QtCore import QThread, pyqtSignal
+
+from metadata_parser import extract_segment_prompt, ffmetadata_escape, build_prompts_text
 
 logger = logging.getLogger("batch_chain")
 logger.setLevel(logging.DEBUG)
@@ -198,12 +201,12 @@ class BatchChainWorker(QThread):
             final_paths = []
             for i, img_name in enumerate(self._images):
                 chain_videos = [segment_outputs[s][i] for s in range(len(workflows))]
-                final = self._stitch(chain_videos, img_name)
+                final, seg_meta = self._stitch(chain_videos, img_name)
                 final_paths.append(str(final))
                 size_kb = final.stat().st_size // 1024
                 self._log(f"  [{i+1}/{n}] {final.name}  ({size_kb} KB)")
                 src_image = Path(self._config["input_dir"]) / img_name
-                zip_path = self._zip_segments(chain_videos, final, src_image, transition_frames[i])
+                zip_path = self._zip_segments(chain_videos, final, src_image, transition_frames[i], seg_meta)
                 self._log(f"  [{i+1}/{n}] Archive: {zip_path.name}")
 
             self._log(f"Total time: {self._fmt(time.time() - batch_start)}")
@@ -363,7 +366,8 @@ class BatchChainWorker(QThread):
     # Stitch
     # ------------------------------------------------------------------ #
 
-    def _zip_segments(self, videos: list[Path], final_path: Path, src_image: Path, frames: list[Path] | None = None) -> Path:
+    def _zip_segments(self, videos: list[Path], final_path: Path, src_image: Path,
+                       frames: list[Path] | None = None, seg_meta: dict | None = None) -> Path:
         zip_dir = Path(self._config.get("zip_output_dir", self._config.get("final_video_dir", str(final_path.parent))))
         zip_dir.mkdir(parents=True, exist_ok=True)
         zip_path = zip_dir / f"{final_path.stem}.zip"
@@ -376,9 +380,35 @@ class BatchChainWorker(QThread):
             for v in videos:
                 zf.write(v, v.name)
             zf.write(final_path, final_path.name)
+            if seg_meta:
+                zf.writestr("prompts.txt", build_prompts_text(seg_meta))
         return zip_path
 
-    def _stitch(self, videos: list[Path], img_name: str) -> Path:
+    def _extract_all_segment_prompts(self, videos: list[Path]) -> dict:
+        """Pull each segment's embedded ComfyUI prompt graph before the
+        source clips are discarded (ffmpeg concat below re-encodes and
+        drops it)."""
+        segments = {}
+        for idx, v in enumerate(videos, start=1):
+            prompt = extract_segment_prompt(v)
+            if prompt:
+                segments[str(idx)] = prompt
+        return segments
+
+    def _write_ffmetadata_file(self, segments: dict, stem: str) -> Optional[Path]:
+        """Write the per-segment prompt graphs to an ffmpeg ffmetadata file
+        so the stitch below can re-embed them into the final video via
+        -map_metadata (a file avoids the Windows command-line length limit
+        a multi-segment JSON blob could hit as a raw -metadata argument)."""
+        if not segments:
+            return None
+        payload = json.dumps({"chain_automator_segments": segments}, ensure_ascii=False, separators=(',', ':'))
+        meta_path = self._temp_dir / f"meta_{stem}.txt"
+        content = ";FFMETADATA1\ncomment=" + ffmetadata_escape(payload) + "\n"
+        meta_path.write_text(content, encoding='utf-8')
+        return meta_path
+
+    def _stitch(self, videos: list[Path], img_name: str) -> tuple[Path, dict]:
         final_dir = Path(self._config.get("final_video_dir", self._config["output_base_dir"]))
         final_dir.mkdir(parents=True, exist_ok=True)
         stem = Path(img_name).stem
@@ -390,10 +420,19 @@ class BatchChainWorker(QThread):
             inputs += ["-i", str(v)]
         filter_inputs = "".join(f"[{i}:v]" for i in range(n))
         filter_complex = f"{filter_inputs}concat=n={n}:v=1[out]"
+
+        seg_meta = self._extract_all_segment_prompts(videos)
+        meta_path = self._write_ffmetadata_file(seg_meta, stem)
+        extra_args = []
+        if meta_path is not None:
+            inputs += ["-i", str(meta_path)]
+            extra_args = ["-map_metadata", str(n)]
+
         result = subprocess.run(
             [ffmpeg, "-y"] + inputs + [
                 "-filter_complex", filter_complex,
                 "-map", "[out]",
+            ] + extra_args + [
                 "-c:v", "libx264", "-preset", "fast", "-crf", "18",
                 "-an",
                 str(final_path),
@@ -403,7 +442,7 @@ class BatchChainWorker(QThread):
         )
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg stitch failed:\n{result.stderr[-3000:]}")
-        return final_path
+        return final_path, seg_meta
 
     # ------------------------------------------------------------------ #
     # API helpers
