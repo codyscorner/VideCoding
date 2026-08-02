@@ -63,6 +63,19 @@ Root Folder/
 
 ## Changelog
 
+### v1.2.7
+- Widened the per-image download pacing from a sub-second gap to a "someone is actually looking at the photo" delay: never under 2s, usually 2-6s, occasionally lingering up to 10s (`random.triangular(2.0, 10.0, 4.0)`). Only applies between actual downloads — skipped/cached files aren't delayed. This only affects per-image pacing; scroll/page-navigation jitter from v1.2.6 is unchanged.
+
+### v1.2.6
+- Replaced fixed, identical delays (between scrolls, gallery pages, mediaviewer visits, and image downloads) with randomized jitter. Uniform timing on every single request is itself a bot fingerprint on top of the headless-Chromium signals already masked in v1.2.4 — randomized pacing looks less mechanical and is gentler on IMDB's servers. Applied to both `imdb_downloader.py` and `imdb_photos.py`. Skipped (already-downloaded) files no longer get an artificial delay since they don't hit the network.
+
+### v1.2.5
+- Fixed settings (root folder, full-res default, window size) not persisting in the packaged EXE — `SETTINGS_FILE` was anchored to `Path(__file__).parent`, which resolves inside PyInstaller's ephemeral `_MEI` extraction folder when frozen instead of next to the persistent EXE. Now anchors to `sys.executable`'s directory when frozen, matching the pattern used elsewhere in this codebase.
+
+### v1.2.4
+- Fixed gallery scrapes returning 0 images on some titles: IMDB now serves an AWS WAF CAPTCHA ("Human Verification") page to headless browsers instead of the gallery. Masking `navigator.webdriver`, adding `--disable-blink-features=AutomationControlled`, and using a realistic viewport avoids the challenge so the real gallery HTML loads.
+- Fixed a crash in the standalone `imdb_photos.py` CLI script where `extract_title_id()`'s `(id, type)` tuple was passed straight into `scrape_media_gallery()` instead of being unpacked.
+
 ### v1.2.3
 - Renamed the "Clear Results" button to "Clear List" per feedback.
 

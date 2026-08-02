@@ -1,10 +1,11 @@
-"""IMDB Photo Downloader — GUI v1.2.3"""
+"""IMDB Photo Downloader — GUI v1.2.7"""
 
-VERSION = "1.2.3"
+VERSION = "1.2.7"
 
 import csv
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -33,6 +34,22 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 1.0  # seconds, doubles each retry
+
+
+def human_delay(lo: float, hi: float) -> None:
+    """Sleep a randomized interval instead of a fixed one. Uniform, identical
+    gaps between every request/scroll/download is itself a bot fingerprint on
+    top of the headless-Chromium signals; jittering pacing looks (and is)
+    less mechanical, and it's gentler on IMDB's servers too."""
+    time.sleep(random.uniform(lo, hi))
+
+
+def human_view_delay() -> None:
+    """Sleep like someone actually looking at a photo before deciding to save
+    it: never under 2s, usually 2-6s, occasionally lingering up to 10s. Used
+    between image downloads, where a fixed sub-second gap is an obvious tell
+    that cadence-monitoring can key on."""
+    time.sleep(random.triangular(2.0, 10.0, 4.0))
 
 # ------------------------------------------------------------------ #
 # Colors / style
@@ -122,7 +139,12 @@ DOWNLOAD_HEADERS = {
     ),
 }
 
-SETTINGS_FILE = Path(__file__).parent / "imdb_downloader_settings.json"
+# Path(__file__).parent resolves inside PyInstaller's ephemeral _MEI extraction
+# folder when frozen, not next to the persistent EXE, so settings never survive
+# a restart. Anchor to sys.executable's directory instead when frozen.
+SETTINGS_FILE = (
+    Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+) / "imdb_downloader_settings.json"
 
 
 # ------------------------------------------------------------------ #
@@ -355,6 +377,8 @@ class DownloadWorker(QThread):
                         failed += 1
                         status = "failed"
                         self.log.emit(f"[{i}/{total}] FAIL")
+                    # Only pace after an actual request — skipped files never hit the network.
+                    human_view_delay()
 
                 manifest_rows.append({
                     "index": i,
@@ -365,7 +389,6 @@ class DownloadWorker(QThread):
                 })
 
                 self.progress.emit(i, total)
-                time.sleep(0.15)
 
             write_manifest(out, manifest_rows)
             self.log.emit(f"Manifest written: {out / 'manifest.csv'}")
@@ -384,17 +407,28 @@ class DownloadWorker(QThread):
         base = "name" if id_type == "name" else "title"
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_context(
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            context = browser.new_context(
                 user_agent=DOWNLOAD_HEADERS["User-Agent"],
                 locale="en-US",
-            ).new_page()
+                viewport={"width": 1280, "height": 900},
+            )
+            # IMDB's AWS WAF bot-check inspects navigator.webdriver; headless
+            # Chromium sets it true by default, which triggers a CAPTCHA wall
+            # instead of the gallery. Masking it lets the real page load.
+            context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
+            page = context.new_page()
             page.route("**/*.{woff,woff2,ttf,otf}", lambda r: r.abort())
 
             self.log.emit("Opening IMDB media gallery...")
             page.goto(f"https://www.imdb.com/{base}/{imdb_id}/mediaindex/",
                       wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(random.randint(1600, 2800))
 
             # Title
             try:
@@ -426,7 +460,7 @@ class DownloadWorker(QThread):
                 prev_html = ""
                 for _ in range(20):
                     pg.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    pg.wait_for_timeout(800)
+                    pg.wait_for_timeout(random.randint(650, 1400))
                     html = pg.content()
                     if html == prev_html:
                         break  # no new images loaded
@@ -447,7 +481,7 @@ class DownloadWorker(QThread):
                 entries = collect(page)
                 images.extend(entries)
                 self.log.emit(f"Page {pg_num}/{total_pages} — {len(entries)} images")
-                time.sleep(0.5)
+                human_delay(0.8, 2.2)
 
             if self._full_res:
                 self.log.emit("Fetching full-resolution images (visiting each photo page)...")
@@ -461,7 +495,7 @@ class DownloadWorker(QThread):
                         if mv_url.startswith("/"):
                             mv_url = f"https://www.imdb.com{mv_url}"
                         page.goto(mv_url, wait_until="domcontentloaded")
-                        page.wait_for_timeout(500)
+                        page.wait_for_timeout(random.randint(350, 900))
                         entry["url"] = extract_full_res_from_mediaviewer(page.content(), entry["url"])
                     except Exception:
                         pass  # keep gallery-resolution fallback already in entry["url"]
