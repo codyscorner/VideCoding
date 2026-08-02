@@ -20,7 +20,8 @@ from app.ui.image_info_bar import ImageInfoBar
 from app.ui.slideshow import SlideshowWindow
 from app.ui.compare_dialog import CompareDialog
 from app.workers.thumbnail_worker import (
-    ThumbnailWorker, SUPPORTED_EXTENSIONS, is_video, load_video_frame,
+    ThumbnailWorker, SUPPORTED_EXTENSIONS, THUMB_SOURCE_SIZE,
+    is_video, load_video_frame,
 )
 
 FILTER_OPTIONS = [
@@ -82,6 +83,12 @@ class MainWindow(QMainWindow):
         self._splitter.addWidget(self._viewer)
         self._splitter.setStretchFactor(0, 0)
         self._splitter.setStretchFactor(1, 1)
+        self._splitter.setCollapsible(0, False)
+        strip_width = self.config.get(
+            "filmstrip_width", self.config.get("thumbnail_size", 120) + 14
+        )
+        window_width = self.config.get("window_width", 1200)
+        self._splitter.setSizes([strip_width, max(300, window_width - strip_width)])
         root.addWidget(self._splitter, stretch=1)
 
         root.addWidget(self._build_bottom_bar())
@@ -265,6 +272,7 @@ class MainWindow(QMainWindow):
         self.config.set("include_subfolders", self._subfolders_check.isChecked())
         self.config.set("window_width", self.width())
         self.config.set("window_height", self.height())
+        self.config.set("filmstrip_width", self._filmstrip.width())
         self.config.save()
 
     # ── Folder Scanning ───────────────────────────────────────────────────────
@@ -350,7 +358,7 @@ class MainWindow(QMainWindow):
 
         self._thumbnail_worker = ThumbnailWorker(
             self._image_paths,
-            thumbnail_size=self.config.get("thumbnail_size", 120),
+            thumbnail_size=THUMB_SOURCE_SIZE,
         )
         self._thumbnail_worker.thumbnail_ready.connect(self._on_thumbnail_ready)
         self._thumbnail_worker.finished.connect(self._on_thumbnails_done)
@@ -549,7 +557,7 @@ class MainWindow(QMainWindow):
             # Refresh viewer + this file's thumbnail
             self._viewer.show_image(path)
             self._info_bar.update_image(path)
-            worker = ThumbnailWorker([path], self.config.get("thumbnail_size", 120))
+            worker = ThumbnailWorker([path], THUMB_SOURCE_SIZE)
             pix = worker._load_thumbnail(path)
             if pix:
                 self._filmstrip.set_thumbnail(self._current_index, pix)
@@ -623,6 +631,13 @@ class MainWindow(QMainWindow):
                 return
         self._show_image(index)
 
+    def _move_filmstrip_selection(self, delta: int) -> None:
+        if not self._image_paths:
+            return
+        row = self._filmstrip.currentRow()
+        row = 0 if row < 0 else max(0, min(row + delta, len(self._image_paths) - 1))
+        self._filmstrip.select_index(row)
+
     def _navigate(self, delta: int) -> None:
         new_index = self._current_index + delta
         new_index = max(0, min(new_index, len(self._image_paths) - 1))
@@ -650,6 +665,13 @@ class MainWindow(QMainWindow):
             self._navigate(-1)
         elif key == Qt.Key.Key_Right:
             self._navigate(1)
+        elif key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            # Move the filmstrip highlight only; Space loads it into the viewer.
+            self._move_filmstrip_selection(-1 if key == Qt.Key.Key_Up else 1)
+        elif key == Qt.Key.Key_Space:
+            row = self._filmstrip.currentRow()
+            if row >= 0:
+                self._on_image_selected(row)
         elif key == Qt.Key.Key_R:
             if mods & Qt.KeyboardModifier.ShiftModifier:
                 self._viewer.rotate(-90)   # rotate left

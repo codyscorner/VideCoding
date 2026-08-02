@@ -7,6 +7,7 @@ DEFAULT_CONFIG = {
     "slideshow_delay": 5.0,
     "fade_duration": 2.0,
     "thumbnail_size": 120,
+    "filmstrip_width": 134,
     "window_width": 1200,
     "window_height": 750,
     "include_subfolders": False,

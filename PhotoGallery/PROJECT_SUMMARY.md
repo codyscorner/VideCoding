@@ -62,7 +62,7 @@ Output: `dist/PhotoGallery/PhotoGallery.exe`
 
 ## Version
 
-1.2.0
+1.4.0
 
 ## Future Enhancements
 
@@ -71,3 +71,4 @@ Output: `dist/PhotoGallery/PhotoGallery.exe`
 - [x] Compare mode (two images side by side) — v1.2.0
 - [x] Delete-to-recycle-bin with confirm — v1.2.0
 - [x] Video thumbnails in the filmstrip — v1.2.0
+- [x] Resizable filmstrip with scaling thumbnails (drag splitter, width persisted) — v1.3.0
