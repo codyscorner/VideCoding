@@ -27,6 +27,7 @@ from ui.video_player import VideoPlayerDialog
 from ui.settings_dialog import SettingsDialog
 from ui.segment_editor import SegmentEditorDialog
 from ui.generate_tab import GenerateTab
+from ui.prompt_writer_tab import PromptWriterTab
 from ui.video_settings_dialog import VideoSettingsDialog
 from ui.widgets import ThumbnailGrid, THUMB_SIZE
 
@@ -450,6 +451,13 @@ class MainWindow(QMainWindow):
         self._steps_before = 0    # steps finished in this segment's completed passes
         self._seg_plan = (0, 0)   # (expected passes, expected total steps) from the worker
         self._cycles_per_seg = 0  # fallback: learned when the first segment completes
+        # Post-sampler phases (VAE decode, encode, save) have no step-level
+        # progress of their own, so they're tracked as flat ticks appended
+        # to the segment's step total — otherwise the bar reads 100% while
+        # the file is still being decoded/written.
+        self._seg_post_phases = 0
+        self._post_phase_done = 0
+        self._sampler_done = 0    # sampler-only steps completed, cached for phase ticks
 
         self.setWindowTitle(f"ComfyUI Workflow Chain Automator  v{version}")
         self.setMinimumSize(1200, 780)
@@ -534,6 +542,13 @@ class MainWindow(QMainWindow):
         self._generate_btn.setStyleSheet(mode_btn_style)
         self._generate_btn.clicked.connect(lambda: self._switch_view(2))
 
+        self._prompt_btn = QPushButton("📝  Prompt Writer")
+        self._prompt_btn.setCheckable(True)
+        self._prompt_btn.setChecked(False)
+        self._prompt_btn.setFixedHeight(32)
+        self._prompt_btn.setStyleSheet(mode_btn_style)
+        self._prompt_btn.clicked.connect(lambda: self._switch_view(3))
+
         header = QLabel("ComfyUI Workflow Chain Automator")
         header.setObjectName("header")
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -559,6 +574,8 @@ class MainWindow(QMainWindow):
         header_row.addWidget(self._library_btn)
         header_row.addSpacing(4)
         header_row.addWidget(self._generate_btn)
+        header_row.addSpacing(4)
+        header_row.addWidget(self._prompt_btn)
         header_row.addStretch()
         header_row.addWidget(header)
         header_row.addStretch()
@@ -575,6 +592,10 @@ class MainWindow(QMainWindow):
         self._generate_tab.send_to_chain.connect(self._on_send_to_chain)
         self._generate_tab.start_one_shot.connect(self._on_start_one_shot)
         self._stack.addWidget(self._generate_tab)
+
+        self._prompt_writer_tab = PromptWriterTab(self.config, parent=self)
+        self._prompt_writer_tab.send_to_generate.connect(self._on_send_to_generate)
+        self._stack.addWidget(self._prompt_writer_tab)
 
     def _build_chain_page(self) -> QWidget:
         page = QWidget()
@@ -825,11 +846,18 @@ class MainWindow(QMainWindow):
         self._chain_btn.setChecked(index == 0)
         self._library_btn.setChecked(index == 1)
         self._generate_btn.setChecked(index == 2)
+        self._prompt_btn.setChecked(index == 3)
         self._stack.setCurrentIndex(index)
         if index == 1:
             self._populate_videos()
         elif index == 2:
             self._generate_tab.refresh_mode()
+        elif index == 3:
+            self._prompt_writer_tab.refresh_mode()
+
+    def _on_send_to_generate(self, text: str):
+        self._generate_tab.set_positive_prompt(text)
+        self._switch_view(2)
 
     # ------------------------------------------------------------------ #
     # Segment panel
@@ -991,6 +1019,30 @@ class MainWindow(QMainWindow):
         except OSError:
             pass
 
+    def _unrecord_processed(self, input_dir: Path, chain: str, stems: set[str]):
+        """Remove stems from a chain's processed registry entry — used when a
+        library video is deleted, so its source image counts as unprocessed
+        (a bad generation) and reappears in the chain's image list."""
+        if not chain or not stems:
+            return
+        reg = self._load_registry(input_dir)
+        entry = reg.get(chain)
+        if not entry:
+            return
+        changed = False
+        for s in stems:
+            if entry.pop(s, None) is not None:
+                changed = True
+        if not changed:
+            return
+        path = self._registry_path(input_dir)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(reg, f, indent=1)
+        except OSError:
+            pass
+
     def _populate_images(self):
         input_dir = Path(self._input_dir_edit.text().strip() or self.config.get("input_dir", ""))
 
@@ -1081,6 +1133,13 @@ class MainWindow(QMainWindow):
         current = self._input_dir_edit.text().strip()
         folder = QFileDialog.getExistingDirectory(self, "Select Image Folder", current or str(Path.home()))
         if folder:
+            if Path(folder).name.lower() == "thumbnails":
+                QMessageBox.warning(
+                    self, "Wrong Folder",
+                    "That's the thumbnails cache folder — it only holds small downscaled "
+                    "previews. Select the parent folder with the full-size originals instead."
+                )
+                return
             self._input_dir_edit.setText(folder)
             self.config.set("input_dir", folder)
             self.config.save()
@@ -1224,11 +1283,14 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
         errors = []
+        freed_stems: set[str] = set()
         for key in keys:
             path = Path(key)
             try:
                 path.unlink()
                 (path.parent / "thumbnails" / (path.stem + ".jpg")).unlink(missing_ok=True)
+                unstamped = RUN_STAMP_RE.sub("", path.stem)
+                freed_stems.update({path.stem, unstamped, re.sub(r'_\d+$', '', unstamped)})
             except OSError as e:
                 errors.append(f"{path.name}: {e}")
         if errors:
@@ -1241,6 +1303,13 @@ class MainWindow(QMainWindow):
             f"{count} video{'s' if count != 1 else ''} — double-click to play"
             if count > 0 else "No video files found in folder"
         )
+
+        # A deleted video means its source image was a bad generation —
+        # un-mark it as processed so it reappears in the chain's image list.
+        if freed_stems:
+            chain = self.config.get("active_chain_folder", "").strip()
+            self._unrecord_processed(self._current_input_dir(), chain, freed_stems)
+            self._apply_image_filter()
 
     def _show_video_settings(self):
         keys = self.video_grid.selected_keys()
@@ -1367,6 +1436,7 @@ class MainWindow(QMainWindow):
             self._sync_lib_dir_display()
             self._generate_tab.refresh_mode()
             self._generate_tab.refresh_workflows()
+            self._prompt_writer_tab.refresh_mode()
 
     # ------------------------------------------------------------------ #
     # Generate tab signal handlers
@@ -1497,6 +1567,7 @@ class MainWindow(QMainWindow):
         self._worker.segment_secs.connect(self._on_segment_secs)
         self._worker.step_progress.connect(self._on_step_progress)
         self._worker.segment_plan.connect(self._on_segment_plan)
+        self._worker.phase_progress.connect(self._on_phase_progress)
         self._worker.all_done.connect(self._on_batch_done)
         self._worker.error.connect(self._on_error)
         self._worker.finished.connect(self._on_worker_finished)
@@ -1532,11 +1603,16 @@ class MainWindow(QMainWindow):
     def _on_segment_secs(self, seg: int, secs: float):
         self._seg_times_sec[seg] = secs
 
-    def _on_segment_plan(self, seg: int, passes: int, total_steps: int):
+    def _on_segment_plan(self, seg: int, passes: int, total_steps: int, post_phases: int):
         """Worker parsed the segment's workflow: `passes` sampler executions
-        (samplers × images) totalling `total_steps` steps. (0, 0) if the
+        (samplers × images) totalling `total_steps` steps, plus `post_phases`
+        post-sampler stages (VAE decode, encode, save) that have no step-level
+        progress of their own but still take real time. (0, 0, 0) if the
         workflow had no readable sampler nodes."""
         self._seg_plan = (passes, total_steps)
+        self._seg_post_phases = post_phases
+        self._post_phase_done = 0
+        self._sampler_done = 0
 
     def _on_step_progress(self, seg: int, value: int, vmax: int):
         if vmax <= 0:
@@ -1547,6 +1623,7 @@ class MainWindow(QMainWindow):
             self._step_seg = seg
             self._step_cycle = 1
             self._steps_before = 0
+            self._post_phase_done = 0
         elif value < self._step_last_value:
             self._step_cycle += 1
             self._steps_before += self._step_last_max
@@ -1554,20 +1631,36 @@ class MainWindow(QMainWindow):
         self._step_last_max = vmax
 
         frac = min(value / vmax, 1.0)
-        plan_passes, plan_steps = self._seg_plan
+        _, plan_steps = self._seg_plan
+        self._sampler_done = min(self._steps_before + value, plan_steps) if plan_steps else 0
+        self._render_step_progress(seg, frac)
+
+    def _on_phase_progress(self, seg: int):
+        """A post-sampler node (VAE decode, encode, save) started — the
+        sampler already reported 100%, so without this the bar would sit at
+        a false "done" for however long that stage takes."""
+        if seg != self._step_seg or not self._seg_post_phases:
+            return
+        self._post_phase_done = min(self._post_phase_done + 1, self._seg_post_phases)
+        self._render_step_progress(seg, 1.0)
+
+    def _render_step_progress(self, seg: int, frac: float):
+        _, plan_steps = self._seg_plan
+        total = plan_steps + self._seg_post_phases
         if plan_steps:
             # Exact plan from the workflow JSON: step bar fills once across
-            # the whole segment (all samplers × all images)
-            done = min(self._steps_before + value, plan_steps)
-            seg_frac = done / plan_steps
+            # the whole segment (all samplers × all images, then any
+            # post-sampler decode/encode/save phases)
+            done = min(self._sampler_done + self._post_phase_done, total)
+            seg_frac = done / total
             self.step_bar.setValue(int(seg_frac * 100))
-            self.step_bar.setFormat(f"Step {done}/{plan_steps}")
-            step_txt = f"step {done}/{plan_steps}"
+            self.step_bar.setFormat(f"Step {done}/{total}")
+            step_txt = f"step {done}/{total}"
         else:
             # Fallback: per-pass step bar + pass count learned from segment 1
             self.step_bar.setValue(int(frac * 100))
-            self.step_bar.setFormat(f"Step {value}/{vmax}")
-            step_txt = f"step {value}/{vmax}"
+            self.step_bar.setFormat(f"Step {self._step_last_value}/{self._step_last_max}")
+            step_txt = f"step {self._step_last_value}/{self._step_last_max}"
             if self._cycles_per_seg:
                 seg_frac = min((self._step_cycle - 1 + frac) / self._cycles_per_seg, 1.0)
             else:
@@ -1755,6 +1848,9 @@ class MainWindow(QMainWindow):
         self._steps_before = 0
         self._seg_plan = (0, 0)
         self._cycles_per_seg = 0
+        self._seg_post_phases = 0
+        self._post_phase_done = 0
+        self._sampler_done = 0
         self.log_list.clear()
 
     def closeEvent(self, event):

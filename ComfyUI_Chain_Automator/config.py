@@ -9,7 +9,8 @@ class ConfigManager:
         "input_dir": "C:/AI/CumfyUI/input",
         "output_base_dir": "C:/AI/CumfyUI/output/video/Merge",
         "workflow_dir": "C:/AI/CumfyUI/Workflow_API",
-        "workflows": []
+        "workflows": [],
+        "anthropic_api_key": ""
     }
 
     def __init__(self, config_path: Path):

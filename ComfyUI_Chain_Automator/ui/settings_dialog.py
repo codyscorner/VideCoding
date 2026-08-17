@@ -113,6 +113,17 @@ class SettingsDialog(QDialog):
         )
         layout.addWidget(ffmpeg_group)
 
+        # ── AI Prompt Writer ─────────────────────────────────────────────
+        prompt_ai_group = QGroupBox("AI Prompt Writer")
+        prompt_ai_layout = QVBoxLayout(prompt_ai_group)
+        self._anthropic_key_edit, _ = self._text_row(
+            prompt_ai_layout, "API Key:",
+            config.get("anthropic_api_key", ""),
+            "Anthropic API key (console.anthropic.com) — used by the Prompt Writer tab..."
+        )
+        self._anthropic_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        layout.addWidget(prompt_ai_group)
+
         # ── Completion Sound ──────────────────────────────────────────────
         sound_group = QGroupBox("Completion Sound")
         sound_layout = QVBoxLayout(sound_group)
@@ -244,5 +255,6 @@ class SettingsDialog(QDialog):
         self._config.set("ffmpeg_path", self._ffmpeg_edit.text().strip())
         self._config.set("completion_sound_enabled", self._sound_enabled_chk.isChecked())
         self._config.set("completion_sound_path", self._sound_file_edit.text().strip())
+        self._config.set("anthropic_api_key", self._anthropic_key_edit.text().strip())
         self._config.save()
         self.accept()

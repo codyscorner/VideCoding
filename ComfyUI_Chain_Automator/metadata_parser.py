@@ -111,6 +111,15 @@ class SegmentMetadata:
                     text = node.get('inputs', {}).get('text', '')
                     if text:
                         prompts.append(text)
+        if not prompts:
+            # MiniMax H3 nodes (MiniMaxH3ImageToVideo etc.) pack the whole
+            # structured prompt into a single `prompt` field — no separate
+            # positive/negative split.
+            for node_id, node in self.prompt_data.items():
+                if node.get('class_type', '').startswith('MiniMaxH3'):
+                    text = node.get('inputs', {}).get('prompt', '')
+                    if text:
+                        prompts.append(text)
         return prompts
 
     def get_negative_prompts(self) -> List[str]:

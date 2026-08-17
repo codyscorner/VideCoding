@@ -1,6 +1,6 @@
 """
 ComfyUI Workflow Chain Automator
-Version: 3.7.3
+Version: 3.9.1
 """
 
 import sys
@@ -8,11 +8,12 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
+from PyQt6.QtCore import QTimer
 
 from config import ConfigManager
 from ui.main_window import MainWindow
 
-VERSION = "3.7.4"
+VERSION = "3.9.1"
 
 # Windows taskbar icon fix — must be called before QApplication
 try:
@@ -59,6 +60,12 @@ def main():
 
     window = MainWindow(config_manager, VERSION)
     window.show()
+    window.raise_()
+    window.activateWindow()
+    # Windows' foreground lock can still leave a just-launched window behind
+    # others painted after it — a second raise once the event loop (and the
+    # window's first paint) have settled wins the fight reliably.
+    QTimer.singleShot(200, lambda: (window.raise_(), window.activateWindow()))
     sys.exit(app.exec())
 
 
