@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
 )
 
 from config import ConfigManager
-from llm_worker import PromptWorker
+from llm_worker import PromptWorker, ModelListWorker
 from providers import PROVIDERS
 from ui.styles import COLORS
 from ui.history import HistoryDialog, append_history
@@ -59,6 +59,7 @@ class PromptTab(QWidget):
         super().__init__(parent)
         self._config = config
         self._worker: PromptWorker | None = None
+        self._model_worker: ModelListWorker | None = None
         self._build_ui()
         self._restore_state()
         self._on_provider_changed()
@@ -94,11 +95,17 @@ class PromptTab(QWidget):
         self._model_combo.setFixedHeight(30)
         self._model_combo.setMinimumWidth(240)
 
+        self._refresh_models_btn = QPushButton("⟳")
+        self._refresh_models_btn.setFixedSize(30, 30)
+        self._refresh_models_btn.setToolTip("Fetch the live model list from this provider's API")
+        self._refresh_models_btn.clicked.connect(self._on_refresh_models)
+
         provider_row.addWidget(provider_lbl)
         provider_row.addWidget(self._provider_combo)
         provider_row.addSpacing(16)
         provider_row.addWidget(model_lbl)
         provider_row.addWidget(self._model_combo, stretch=1)
+        provider_row.addWidget(self._refresh_models_btn)
         top_layout.addLayout(provider_row)
 
         format_row = QHBoxLayout()
@@ -243,17 +250,54 @@ class PromptTab(QWidget):
         self._mode_lbl.setVisible(is_h3)
         self._mode_combo.setVisible(is_h3)
 
-    def _refresh_key_state(self):
+    def _update_button_states(self):
         provider_id = self._current_provider_id()
-        key_config = PROVIDERS[provider_id]["key_config"]
-        has_key = bool(self._config.get(key_config, "").strip())
+        has_key = bool(self._config.get(PROVIDERS[provider_id]["key_config"], "").strip())
         busy = self._worker is not None and self._worker.isRunning()
+        models_busy = self._model_worker is not None and self._model_worker.isRunning()
         self._gen_btn.setEnabled(has_key and not busy)
+        # OpenRouter's model list is public and works without a key.
+        self._refresh_models_btn.setEnabled((has_key or provider_id == "openrouter") and not models_busy)
+
+    def _refresh_key_state(self):
+        self._update_button_states()
+        provider_id = self._current_provider_id()
+        has_key = bool(self._config.get(PROVIDERS[provider_id]["key_config"], "").strip())
+        busy = self._worker is not None and self._worker.isRunning()
         if not has_key:
             label = PROVIDERS[provider_id]["label"]
             self._status_lbl.setText(f"Set your {label} API key in Settings to use this provider.")
         elif not busy:
             self._status_lbl.setText("")
+
+    def _on_refresh_models(self):
+        provider_id = self._current_provider_id()
+        api_key = self._config.get(PROVIDERS[provider_id]["key_config"], "").strip()
+
+        self._refresh_models_btn.setEnabled(False)
+        self._status_lbl.setText("Fetching model list...")
+
+        self._model_worker = ModelListWorker(provider_id, api_key)
+        self._model_worker.result_ready.connect(lambda models: self._on_models_fetched(provider_id, models))
+        self._model_worker.error.connect(self._on_error)
+        self._model_worker.finished.connect(self._update_button_states)
+        self._model_worker.start()
+
+    def _on_models_fetched(self, provider_id: str, models: list):
+        if provider_id != self._current_provider_id():
+            return  # user switched providers while the request was in flight
+        current = self._current_model()
+        self._model_combo.blockSignals(True)
+        self._model_combo.clear()
+        for model_id, label in models:
+            self._model_combo.addItem(label, model_id)
+        idx = self._model_combo.findData(current)
+        if idx >= 0:
+            self._model_combo.setCurrentIndex(idx)
+        else:
+            self._model_combo.setEditText(current)
+        self._model_combo.blockSignals(False)
+        self._status_lbl.setText(f"Loaded {len(models)} model(s) from {PROVIDERS[provider_id]['label']}.")
 
     def _build_system_prompt(self) -> str:
         fmt = self._format_combo.currentText()
@@ -308,7 +352,7 @@ class PromptTab(QWidget):
         self._worker = PromptWorker(provider_id, model, api_key, system_prompt, user_message)
         self._worker.result_ready.connect(lambda text: self._on_result(text, provider_id, model, idea, notes))
         self._worker.error.connect(self._on_error)
-        self._worker.finished.connect(lambda: self._refresh_key_state())
+        self._worker.finished.connect(self._update_button_states)
         self._worker.start()
 
     def _on_result(self, text: str, provider_id: str, model: str, idea: str, notes: str):

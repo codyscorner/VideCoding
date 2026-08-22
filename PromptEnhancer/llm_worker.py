@@ -1,6 +1,6 @@
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from providers import call_llm, LLMError
+from providers import call_llm, list_models, LLMError
 
 
 class PromptWorker(QThread):
@@ -28,3 +28,22 @@ class PromptWorker(QThread):
             self.error.emit(str(e))
             return
         self.result_ready.emit(text)
+
+
+class ModelListWorker(QThread):
+    """Fetches the live list of available models for a provider in the background."""
+    result_ready = pyqtSignal(list)
+    error = pyqtSignal(str)
+
+    def __init__(self, provider_id: str, api_key: str):
+        super().__init__()
+        self._provider_id = provider_id
+        self._api_key = api_key
+
+    def run(self):
+        try:
+            models = list_models(self._provider_id, self._api_key)
+        except LLMError as e:
+            self.error.emit(str(e))
+            return
+        self.result_ready.emit(models)
