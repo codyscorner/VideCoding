@@ -380,6 +380,17 @@ APPS = [
             "modern Windows app icon design, 512x512"
         ),
     },
+    {
+        "name": "PromptEnhancer",
+        "project_folder": "PromptEnhancer",
+        "prompt": (
+            "Minimalist flat app icon, dark violet background #14103a, "
+            "a glowing magic wand with a sparkle trail transforming a plain "
+            "line of text into a glowing structured paragraph, representing "
+            "AI prompt writing and enhancement, clean vector style, no text, "
+            "square icon, sharp edges, modern Windows app icon design, 512x512"
+        ),
+    },
 ]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -500,7 +511,7 @@ def find_projects_missing_icon(projects_root: Path = PROJECTS_ROOT) -> list[str]
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 NEW_APPS = {
-    "ComfyUIStyleRandomizer",
+    "PromptEnhancer",
 }
 
 
