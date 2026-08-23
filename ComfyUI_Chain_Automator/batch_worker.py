@@ -439,16 +439,30 @@ class BatchChainWorker(QThread):
         zip_path = zip_dir / f"{final_path.stem}.zip"
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zf:
             if src_image.exists():
-                zf.write(src_image, src_image.name)
+                self._zip_write_safe(zf, src_image, src_image.name)
             for seg_idx, frame in enumerate(frames or [], start=2):
                 if frame.exists():
-                    zf.write(frame, f"frame_start_seg{seg_idx}.png")
+                    self._zip_write_safe(zf, frame, f"frame_start_seg{seg_idx}.png")
             for v in videos:
-                zf.write(v, v.name)
-            zf.write(final_path, final_path.name)
+                self._zip_write_safe(zf, v, v.name)
+            self._zip_write_safe(zf, final_path, final_path.name)
             if seg_meta:
                 zf.writestr("prompts.txt", build_prompts_text(seg_meta))
         return zip_path
+
+    @staticmethod
+    def _zip_write_safe(zf: zipfile.ZipFile, path: Path, arcname: str):
+        try:
+            zf.write(path, arcname)
+        except (OSError, ValueError):
+            # A corrupted/out-of-range file mtime (seen on some exported
+            # source images) makes ZipInfo.from_file crash in time.localtime
+            # with [Errno 22] on Windows — fall back to a manual ZipInfo
+            # stamped with the current time instead of failing the batch.
+            info = zipfile.ZipInfo(arcname, date_time=time.localtime()[:6])
+            info.compress_type = zipfile.ZIP_STORED
+            info.external_attr = 0o644 << 16
+            zf.writestr(info, path.read_bytes())
 
     def _extract_all_segment_prompts(self, videos: list[Path]) -> dict:
         """Pull each segment's embedded ComfyUI prompt graph before the

@@ -5,10 +5,10 @@ from typing import Any
 
 class ConfigManager:
     DEFAULT = {
-        "comfyui_url": "http://127.0.0.1:8000",
-        "input_dir": "C:/AI/CumfyUI/input",
-        "output_base_dir": "C:/AI/CumfyUI/output/video/Merge",
-        "workflow_dir": "C:/AI/CumfyUI/Workflow_API",
+        "comfyui_url": "http://127.0.0.1:8188",
+        "input_dir": "P:/AI/ComfyLocal/ComfyUI_windows_portable/ComfyUI/input",
+        "output_base_dir": "P:/AI/ComfyLocal/ComfyUI_windows_portable/ComfyUI/output/video/Merge",
+        "workflow_dir": "P:/AI/ComfyLocal/ComfyUI_windows_portable/Workflow_API",
         "workflows": [],
         "anthropic_api_key": ""
     }

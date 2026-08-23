@@ -1,5 +1,15 @@
 # Changelog — ComfyUI Workflow Chain Automator
 
+### v3.9.4
+- Fix: Library showed an empty grid for a folder full of videos when the configured ffmpeg no longer existed (it lived inside the since-deleted ComfyUI venv) — thumbnail generation failed silently and the loader skipped every video without a thumbnail. Videos with no thumbnail now show a flat placeholder tile instead of being hidden
+- ffmpeg path is now resolved with fallbacks everywhere (Library thumbnails, stitching, frame extraction, conversion): configured path if it exists → `ffmpeg.exe` next to the app → system PATH. An `ffmpeg.exe` is now deployed alongside the EXE so the app no longer depends on ComfyUI's venv copy
+
+### v3.9.3
+- Library: browsing for the Video Folder and picking the active chain's own folder (instead of its parent root) made the library look in an empty doubled `<chain>/<chain>` path — the picker now detects this and steps up to the parent automatically, with a dialog explaining the adjustment
+
+### v3.9.2
+- Fix: batch crashed with `[Errno 22] Invalid argument` while building a zip archive when a source image (or other archived file) carried a corrupted/out-of-range file timestamp — Python's zipfile chokes converting such an mtime on Windows. Archive writes now fall back to a manually built zip entry stamped with the current time instead of failing the whole batch
+
 ### v3.9.1
 - Library: deleting a video now un-marks its source image as processed in that chain's registry, so it reappears in the Chain tab's image list to redo — a deleted video is treated as a bad generation, not a finished one
 - Stitch: segments are now normalized (scale/setsar/fps/pixel format, matched to the first segment) before ffmpeg's concat filter — a chain mixing segments with different resolution/fps/SAR previously produced a rippling "underwater" warp in the stitched output even though each segment played back fine on its own

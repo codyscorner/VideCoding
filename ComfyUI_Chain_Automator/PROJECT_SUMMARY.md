@@ -26,6 +26,12 @@ Automates a chain of ComfyUI segments (up to 10), stitching the outputs into a s
 - **Settings button in Library**: re-embeds each segment's ComfyUI prompt graph into the final stitched video (ffmpeg concat normally strips it) and shows prompts/sampler/model settings per segment for a single selected video
 - Every batch zip includes a `prompts.txt` — plain-text summary of every segment's prompts/sampler/video settings, readable in Notepad without opening any file individually
 - **Auto Run mode**: processes an entire folder of images automatically, N at a time, with no pop-ups between batches; configurable batch size; graceful **Stop After Batch** button
+- **MiniMax H3 workflow support**: handles ComfyUI's native `SaveVideo` output node and `BasicScheduler`-driven samplers; segments with generated audio are stitched with their audio tracks (video-only WAN chains unchanged)
+- Single-segment chains skip ffmpeg entirely — the raw downloaded video is copied to the final name (no pointless re-encode)
+- Mixed segments are normalized (resolution/SAR/fps/pixel format) before concat, preventing warp artifacts when a chain mixes workflow templates with different output settings
+- **Prompt history** per workflow JSON (`<name>.prompt_history.json`) with searchable reload in the Generate tab and Segment Editor
+- Bundled `ffmpeg.exe` ships next to the EXE; the app resolves ffmpeg as configured path → app-local copy → system PATH, so a moved/deleted ComfyUI install can't break stitching or thumbnails
+- Library videos whose thumbnails can't be generated show a placeholder tile instead of being hidden
 
 ## Requirements
 
@@ -33,7 +39,7 @@ Automates a chain of ComfyUI segments (up to 10), stitching the outputs into a s
 - PyQt6
 - requests
 - websocket-client (live step progress; app falls back to polling without it)
-- FFmpeg on PATH (or configured in Settings)
+- FFmpeg — configured in Settings, or an `ffmpeg.exe` next to the EXE, or on PATH (checked in that order)
 
 Install dependencies:
 ```
@@ -66,7 +72,7 @@ Edit `main_config.json` or use the ⚙ Settings button in the app.
 | `input_dir` | Folder containing starting images |
 | `workflow_dir` | Folder containing workflow JSON files |
 | `workflows` | Array of segment definitions (see below) |
-| `final_video_dir` | Output folder for stitched video |
+| `final_video_dir` | ROOT output folder for stitched videos — the active chain's name is appended as a subfolder automatically |
 | `zip_output_dir` | Output folder for zip archives |
 | `ffmpeg_path` | Path to ffmpeg executable |
 | `batch_dir_local` | Local folder for staging batch images (local mode) |

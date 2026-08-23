@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
-from PyQt6.QtGui import QPixmap, QIcon, QPainter, QImage
+from PyQt6.QtGui import QPixmap, QIcon, QPainter, QImage, QColor
 
 from config import ConfigManager
 from batch_worker import BatchChainWorker
@@ -183,10 +183,16 @@ class VideoLoaderThread(QThread):
             thumb_path = thumb_dir / (vid_path.stem + ".jpg")
             img = QImage(str(thumb_path))
             if img.isNull():
-                continue
-            img = img.scaled(THUMB_SIZE, THUMB_SIZE,
-                             Qt.AspectRatioMode.KeepAspectRatio,
-                             Qt.TransformationMode.SmoothTransformation)
+                # Thumbnail generation failed (usually a broken ffmpeg path)
+                # — show the video anyway with a flat placeholder tile.
+                # Skipping it here made whole folders look empty with no
+                # hint that anything was wrong.
+                img = QImage(THUMB_SIZE, THUMB_SIZE, QImage.Format.Format_RGB32)
+                img.fill(QColor("#2a2a3e"))
+            else:
+                img = img.scaled(THUMB_SIZE, THUMB_SIZE,
+                                 Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.SmoothTransformation)
             self.video_ready.emit(img, str(vid_path), vid_path.name)
             loaded += 1
         self.finished_loading.emit(loaded)
@@ -480,7 +486,17 @@ class MainWindow(QMainWindow):
         return min(max(len(self.config.get("workflows", [])), 1), MAX_SEGMENTS)
 
     def _ffmpeg_path(self) -> str:
-        return self.config.get("ffmpeg_path", "ffmpeg") or "ffmpeg"
+        # The configured ffmpeg can vanish out from under us (e.g. it lived
+        # inside a ComfyUI venv that got deleted) — fall back to an
+        # ffmpeg.exe shipped next to the app, then to PATH, so thumbnails,
+        # stitching, and frame extraction keep working.
+        configured = (self.config.get("ffmpeg_path", "") or "").strip()
+        if configured and Path(configured).exists():
+            return configured
+        bundled = Path(self.config.get("_base_dir", ".")) / "ffmpeg.exe"
+        if bundled.exists():
+            return str(bundled)
+        return "ffmpeg"
 
     def _effective_video_dir(self) -> Path:
         """Root final-video folder + active chain subfolder (auto-created on use)."""
@@ -1234,6 +1250,21 @@ class MainWindow(QMainWindow):
         root = self.config.get("final_video_dir", "")
         folder = QFileDialog.getExistingDirectory(self, "Select Root Video Folder", root or str(Path.home()))
         if folder:
+            # Users naturally pick the chain's own folder (where they see the
+            # videos), but this setting is the ROOT the chain name gets
+            # appended to — keeping their pick as-is would make the library
+            # look in <chain>/<chain>, an empty doubled path. Step up to the
+            # parent so the effective dir lands back on the folder they chose.
+            chain = self.config.get("active_chain_folder", "").strip()
+            picked = Path(folder)
+            if chain and picked.name == chain:
+                folder = str(picked.parent)
+                QMessageBox.information(
+                    self, "Root Folder Adjusted",
+                    f"You picked the chain folder itself:\n{picked}\n\n"
+                    f"This setting is the root folder — the active chain name "
+                    f"(“{chain}”) is added automatically. Using its parent:\n{folder}",
+                )
             self.config.set("final_video_dir", folder)
             self.config.save()
             self._sync_lib_dir_display()
@@ -1560,6 +1591,7 @@ class MainWindow(QMainWindow):
             self._worker.wait(5000)
         worker_cfg = self.config.get_all()
         worker_cfg["final_video_dir"] = str(eff_dir)
+        worker_cfg["ffmpeg_path"] = self._ffmpeg_path()
         self._worker = BatchChainWorker(worker_cfg, keys)
         self._worker.log.connect(self._on_log)
         self._worker.segment_done.connect(self._on_segment_done)
