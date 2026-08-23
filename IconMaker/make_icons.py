@@ -17,7 +17,7 @@ from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 COMFY_URL     = "http://127.0.0.1:8000"
-COMFY_OUTPUT  = Path("C:/AI/CumfyUI/output")
+COMFY_OUTPUT  = Path("P:/AI/ComfyLocal/ComfyUI_windows_portable/ComfyUI/output")
 OUTPUT_DIR    = Path(__file__).parent / "output"
 WORKFLOW_FILE = Path(__file__).parent / "qwen_T2Image_2512_API.json"
 PROJECTS_ROOT = Path(__file__).parent.parent
@@ -282,7 +282,7 @@ APPS = [
     },
     {
         "name": "ComfyUIChainAutomator",
-        "project_folder": "CumfyUI_API",
+        "project_folder": "ComfyUI_Chain_Automator",
         "prompt": (
             "Minimalist flat app icon, dark navy background #0a0f1f, "
             "a glowing chain of connected film frames with a play button "
