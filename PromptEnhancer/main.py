@@ -1,6 +1,6 @@
 """
 Prompt Enhancer
-Version: 1.0.0
+Version: 1.0.1
 """
 
 import sys
@@ -13,7 +13,7 @@ from PyQt6.QtCore import QTimer
 from config import ConfigManager
 from ui.main_window import MainWindow
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 # Windows taskbar icon fix — must be called before QApplication
 try:
