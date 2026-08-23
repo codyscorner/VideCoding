@@ -50,12 +50,12 @@ class PinPromptDialog(QDialog):
 
         cancel_btn = QPushButton("Cancel")
         cancel_btn.setObjectName("cancel_btn")
-        cancel_btn.setFixedWidth(90)
+        cancel_btn.setMinimumWidth(90)
         cancel_btn.clicked.connect(self.reject)
         bottom.addWidget(cancel_btn)
 
         pin_btn = QPushButton("Pin")
-        pin_btn.setFixedWidth(90)
+        pin_btn.setMinimumWidth(90)
         pin_btn.clicked.connect(self._pin)
         bottom.addWidget(pin_btn)
 

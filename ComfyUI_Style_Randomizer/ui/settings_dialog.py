@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 from config import ConfigManager
+from providers import PROVIDERS
 from ui.styles import COLORS
 
 
@@ -90,6 +91,21 @@ class SettingsDialog(QDialog):
         options_layout.addWidget(self._skip_cb)
         layout.addWidget(options_group)
 
+        # ── AI Scene Generator ───────────────────────────────────────────
+        ai_group = QGroupBox("AI Scene Generator — API Keys")
+        ai_layout = QVBoxLayout(ai_group)
+        ai_layout.setSpacing(10)
+
+        self._key_edits: dict[str, QLineEdit] = {}
+        for provider_id, info in PROVIDERS.items():
+            edit = self._key_row(
+                ai_layout, info["label"] + ":",
+                config.get(info["key_config"], ""),
+                info["key_hint"], info["key_url"],
+            )
+            self._key_edits[provider_id] = edit
+        layout.addWidget(ai_group)
+
         # OK / Cancel
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -168,6 +184,28 @@ class SettingsDialog(QDialog):
         parent_layout.addLayout(row)
         return edit, extra_btn
 
+    def _key_row(self, parent_layout, label: str, value: str, hint: str, url: str) -> QLineEdit:
+        row = QHBoxLayout()
+        lbl = QLabel(label)
+        lbl.setFixedWidth(150)
+        edit = QLineEdit(value)
+        edit.setPlaceholderText(hint)
+        edit.setEchoMode(QLineEdit.EchoMode.Password)
+        row.addWidget(lbl)
+        row.addWidget(edit, stretch=1)
+        parent_layout.addLayout(row)
+
+        hint_lbl = QLabel(f'<a href="{url}" style="color:{COLORS["accent_hover"]};">{hint}</a>')
+        hint_lbl.setObjectName("subtitle")
+        hint_lbl.setOpenExternalLinks(True)
+        hint_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        hint_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        hint_row = QHBoxLayout()
+        hint_row.addSpacing(150)
+        hint_row.addWidget(hint_lbl)
+        parent_layout.addLayout(hint_row)
+        return edit
+
     # ------------------------------------------------------------------ #
     # Browse helpers
     # ------------------------------------------------------------------ #
@@ -192,7 +230,7 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "No File", "Select a Prompts File first.")
             return
         from ui.prompt_editor import PromptEditorDialog
-        dlg = PromptEditorDialog(path, self)
+        dlg = PromptEditorDialog(path, self._config, self)
         dlg.exec()
 
     # ------------------------------------------------------------------ #
@@ -207,5 +245,7 @@ class SettingsDialog(QDialog):
         self._config.set("workflow_path",  self._wf_edit.text().strip())
         self._config.set("prompts_file",   self._pr_edit.text().strip())
         self._config.set("skip_existing",  self._skip_cb.isChecked())
+        for provider_id, edit in self._key_edits.items():
+            self._config.set(PROVIDERS[provider_id]["key_config"], edit.text().strip())
         self._config.save()
         self.accept()

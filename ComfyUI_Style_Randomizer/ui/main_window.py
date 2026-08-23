@@ -704,13 +704,13 @@ class MainWindow(QMainWindow):
         bottom_row.addSpacing(8)
 
         self._start_btn = QPushButton("Start")
-        self._start_btn.setFixedWidth(100)
+        self._start_btn.setMinimumWidth(100)
         self._start_btn.clicked.connect(lambda: self._start())
         bottom_row.addWidget(self._start_btn)
 
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.setObjectName("cancel_btn")
-        self._cancel_btn.setFixedWidth(100)
+        self._cancel_btn.setMinimumWidth(100)
         self._cancel_btn.setEnabled(False)
         self._cancel_btn.clicked.connect(self._cancel)
         bottom_row.addWidget(self._cancel_btn)
@@ -868,6 +868,7 @@ class MainWindow(QMainWindow):
 
     def _on_input_edited(self):
         self._config.set("input_dir", self._input_edit.text())
+        self._config.save()
         self._reload_images()
 
     # ------------------------------------------------------------------ #
@@ -1186,6 +1187,7 @@ class MainWindow(QMainWindow):
             image_paths=[source],
             fixed_prompt=new_prompt,
             prompt_mode="random",
+            base_dir=self._base_dir,
         )
         self._reroll_worker.log.connect(self._append_log)
         self._reroll_worker.all_done.connect(self._on_reroll_done)
@@ -1212,7 +1214,7 @@ class MainWindow(QMainWindow):
         if not prompts_file.is_file():
             self._append_log("No prompts file set — configure it in ⚙ Settings.")
             return
-        dlg = PromptEditorDialog(prompts_file, self)
+        dlg = PromptEditorDialog(prompts_file, self._config, self)
         if dlg.exec():
             self._reload_prompts()
 
@@ -1330,6 +1332,7 @@ class MainWindow(QMainWindow):
             fixed_prompt=fixed_prompt,
             prompt_mode=self._prompt_order_combo.currentData(),
             pinned=pinned,
+            base_dir=self._base_dir,
         )
         self._worker.progress.connect(lambda cur, _: self._progress.setValue(cur))
         self._worker.log.connect(self._append_log)

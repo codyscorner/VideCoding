@@ -82,6 +82,22 @@ Every successful generation appends a row to `prompt_log.csv` in the output fold
 
 ## Changelog
 
+### v1.6.3
+- **Daily processing log** — every run now also writes to `logs/YYYY-MM-DD.txt` next to the EXE (created automatically), with a run-start header (image/prompt counts), one line per image recording the filename and the full prompt used, and a Done/Cancelled footer with elapsed time. Uses the same frozen-EXE-aware base directory as `csr_config.json`, so it always lands next to the EXE regardless of PyInstaller's working directory quirks.
+- Fixed a settings-persistence gap — editing the Input Folder field now saves immediately instead of only on app close or Start
+
+### v1.6.2
+- **Total elapsed time** logged when a batch run finishes ("Done! N images processed in Xm Ys.") or is cancelled ("Cancelled. (Xm Ys)")
+- **Longer prompt previews in the log** — the chosen-prompt preview shown per image went from 60 to 255 characters, so longer style prompts aren't cut off mid-thought
+
+### v1.6.1
+- **Scenario field** in the AI scene generator — an optional fixed shot/subject template (e.g. `"Close-up, upper body in frame. A couple set in <scene description>."`) kept word-for-word across every generated prompt; only the `<scene description>` placeholder varies per generation, driven by the Idea field. Persisted in config so it's only typed once. Leave blank for the old free-form behavior.
+
+### v1.6.0
+- **Generate Scenes with AI** — the Edit Prompts dialog now has a built-in scene generator: type a scene/theme idea, pick a provider (Anthropic, Google Gemini, Groq, or OpenRouter) and model, set a count (1-30), and it generates that many distinct style-prompt variations directly into the editor in the app's own `---- PROMPT START -----` format — no more writing them by hand or in an outside chat tool
+- **⚙ Settings** now has an "AI Scene Generator — API Keys" section (one key per provider, same as Prompt Enhancer)
+- Fixed Cancel/Save/Pin buttons showing clipped text (e.g. "ance" instead of "Cancel") in the prompt editor and pin dialogs — fixed-width buttons were narrower than their padding+text needed
+
 ### v1.5.0
 - **Prompt weighting** — optional `x<N>` weight suffix on the prompt separator biases random selection
 - **Per-image prompt pinning** — double-click a thumbnail to pin a specific style; shown with a 📌 badge
