@@ -48,7 +48,11 @@
       "Bash(start \"\" \"p:/AI/VideCoding/Calculator/dist/MidnightCalculator.exe\")",
       "PowerShell($logFile = \"p:\\\\AI\\\\VideCoding\\\\FluxGenerator\\\\error_log.txt\")",
       "PowerShell(Get-Process -Name \"python\" -ErrorAction SilentlyContinue)",
-      "PowerShell(Stop-Process -Force)"
+      "PowerShell(Stop-Process -Force)",
+      "Bash(curl -s \"https://api.github.com/repos/MiniMax-AI/MiniMax-H3/contents/skills\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/MiniMax-AI/MiniMax-H3/main/skills/README.md\")",
+      "Bash(ls -la ~/.claude/skills/ 2>&1 | head -30; echo \"---\"; ls -la ~/.claude/ 2>&1 | head -30)",
+      "Bash(find /c/Users/cody/Downloads /c/Users/cody/Desktop /c/Users/cody/Documents -iname \"*glasswire*\" 2>/dev/null)"
     ],
     "deny": [],
     "ask": []
