@@ -1,6 +1,6 @@
 """
 ComfyUI Workflow Editor
-Version: 1.1.0
+Version: 1.2.0
 """
 
 import sys
@@ -12,7 +12,7 @@ from PyQt6.QtGui import QIcon
 from ui.main_window import MainWindow
 from settings import Settings
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 
 def get_script_dir() -> Path:

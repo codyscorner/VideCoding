@@ -16,6 +16,8 @@ COLORS = {
     "lora_color":       "#9c6fdb",
     "sampler_color":    "#ffb74d",
     "checkpoint_color": "#4fc3f7",
+    "output_color":     "#f06292",
+    "media_color":      "#26c6da",
     "generic_color":    "#606090",
     "success": "#4caf8a",
     "error":   "#ef5350",

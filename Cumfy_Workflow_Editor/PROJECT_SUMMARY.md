@@ -2,23 +2,50 @@
 
 ## Overview
 
-A simple desktop form editor for ComfyUI workflow JSON files.
-Open a `.json` workflow, edit the fields that matter most (prompts, LoRA strengths, sampler settings),
-and save. No node canvas, no wires — just a clean scrollable form.
+A desktop form editor for ComfyUI workflow JSON files.
+Open a `.json` workflow and every node appears as its own card with all of its editable
+settings — prompts, LoRA strengths, sampler settings, resolutions, file names, flags —
+then save. No node canvas, no wires: just a clean, filterable scrollable form.
+
+Everything in the JSON the editor doesn't show (links, positions, groups, metadata) is
+passed through untouched on save.
 
 ---
 
-## What It Edits
+## Supported File Formats
 
-| Node type | Section shown | Fields |
-|-----------|--------------|--------|
-| CLIPTextEncode | **Prompts** | `text` (multiline) — negative tinted red |
-| LoraLoader / LoraLoaderModelOnly | **LoRA Strengths** | `strength_model`, `strength_clip` |
-| Lora Loader Stack (rgthree) | **LoRA Strengths** | all `strength_NN` slots |
-| KSampler / KSamplerAdvanced | **KSampler** | steps, CFG, sampler, scheduler, seed |
-| WanImageToVideo / WanVideoToVideo | **Video Settings** | frame count |
+| Format | Detected by | Field names come from |
+|--------|-------------|-----------------------|
+| **API format** (`Save (API)` in ComfyUI) | top-level `{id: {class_type, inputs, _meta}}` | the `inputs` keys |
+| **UI / graph format** (normal `Save`) | top-level `nodes[]` + `links[]` | `WIDGET_NAMES` table in `workflow.py` for known node types; `Value N` otherwise |
 
-Everything else in the JSON is passed through untouched on save.
+In the API format, an input whose value is `[node_id, slot]` is a connection and is shown
+read-only. In the UI format, an input that has a `widget.name` and a link is a converted
+widget and its positional value is shown read-only.
+
+---
+
+## What Each Node Card Shows
+
+- **Header** — node title, class type, `#id`, and a BYPASSED / MUTED badge (UI format `mode`).
+  Click the arrow to collapse.
+- **Fields** — one editor per scalar value, chosen by type:
+
+  | JSON value | Editor |
+  |------------|--------|
+  | `true` / `false` | checkbox |
+  | int | spin box (range/step by field name; seeds and >32-bit ints use a plain text box) |
+  | float — or an int in a float-named field (`cfg: 1`) | double spin box, written back as int while whole |
+  | string in `CHOICES` (`sampler_name`, `scheduler`, `control_after_generate`, `upscale_method`, `weight_dtype`, …) | editable drop-down |
+  | string named `text` / `prompt` / `expression` / … or multi-line / >100 chars | text area (negative prompts tinted red) |
+  | any other string | line edit |
+
+- **Connections** — dim footer listing `input ← Source node [id]` for wired inputs.
+
+Cards are grouped and colour-coded by category, in this order:
+**Prompts · LoRAs · Sampling · Image / Video / Latent · Loaders · Output · Other · Notes**.
+A node with a paragraph field named `text` / `prompt` / `positive` / `negative` is a
+Prompt node regardless of its class type.
 
 ---
 
@@ -29,6 +56,13 @@ Everything else in the JSON is passed through untouched on save.
   Non-JSON drags are refused; dropping multiple files opens the first `.json`.
 - Either route prompts to save first when the open workflow has unsaved edits.
 
+## Navigating Big Graphs
+
+- **Find node** box in the toolbar (Ctrl+F) filters cards by title, class type, or `#id`.
+- **Show all nodes** toggle — nodes with no editable fields (VAEDecode,
+  ReferenceLatent, switches, …) are hidden by default; the setting is remembered.
+- **View → Expand all / Collapse all** (Ctrl+Shift+E / Ctrl+Shift+C).
+
 ---
 
 ## Tech Stack
@@ -38,50 +72,33 @@ Everything else in the JSON is passed through untouched on save.
 
 ---
 
-## UI Layout
-
-```
-┌─ Menu: File ─────────────────────────────────────────────────┐
-├─ Toolbar: [Open] [Save]  filename.json ──────────────────────┤
-│                                                              │
-│  ┌── Prompts ─────────────────────────────────────────────┐  │
-│  │  Positive Prompt  (CLIPTextEncode #6)                  │  │
-│  │  ┌──────────────────────────────────────────────────┐  │  │
-│  │  │ beautiful landscape, detailed...                  │  │  │
-│  │  └──────────────────────────────────────────────────┘  │  │
-│  │  Negative Prompt  (CLIPTextEncode #7)                  │  │
-│  │  ┌──────────────────────────────────────────────────┐  │  │
-│  │  │ blurry, ugly...                                   │  │  │
-│  │  └──────────────────────────────────────────────────┘  │  │
-│  └────────────────────────────────────────────────────────┘  │
-│                                                              │
-│  ┌── LoRA Strengths ────────────────────────────────────┐    │
-│  │  my_lora_v2         Model: [0.80]  CLIP: [0.80]      │    │
-│  └──────────────────────────────────────────────────────┘    │
-│                                                              │
-│  ┌── KSampler ──────────────────────────────────────────┐    │
-│  │  Steps: [20]  CFG: [7.0]  Sampler: [euler ▾]         │    │
-│  │  Seed:  [123456789]                                   │    │
-│  └──────────────────────────────────────────────────────┘    │
-│                                                              │
-├─ Status bar: filename — N nodes — M editable fields ─────────┤
-└──────────────────────────────────────────────────────────────┘
-```
-
----
-
 ## File Structure
 
 ```
 Cumfy_Workflow_Editor/
-  main.py                  ← entry point (v1.1.0)
+  main.py                  ← entry point (v1.2.0)
+  run.bat                  ← run from source via the shared .venv
+  workflow.py              ← format detection + document model (parse_workflow, NodeInfo, Field,
+                              WIDGET_NAMES / CHOICES tables, number_hint)
+  settings.py              ← last_dir, show_all_nodes  (workflow_editor_config.json)
   ui/
     __init__.py
-    styles.py              ← dark theme (shared with Chain Automator)
-    main_window.py         ← all form logic + file open/save + drag-and-drop
+    styles.py              ← dark theme + category colours (shared with Chain Automator)
+    main_window.py         ← window chrome, toolbar filter, file open/save, drag-and-drop
+    node_section.py        ← NodeSection card widget + make_editor() factory
     node_cards.py          ← (unused, kept for future canvas mode)
     canvas.py              ← (unused, kept for future canvas mode)
+  Test files/              ← sample workflows (local only, not committed)
 ```
+
+---
+
+## Extending
+
+- **New choice list:** add the field name to `CHOICES` in `workflow.py`.
+- **UI-format names for a node type:** add its widget order to `WIDGET_NAMES`.
+- **Numeric range/step:** add a rule to `_known_hint()`.
+- **Category rules:** `_category_for()`.
 
 ---
 
@@ -89,8 +106,7 @@ Cumfy_Workflow_Editor/
 
 - Node canvas / drag-drop node layout
 - Adding, removing, or rewiring nodes
-- Connecting to the ComfyUI server
-- Custom node types beyond the list above
+- Connecting to the ComfyUI server (would let the UI format use real widget names via `/object_info`)
 
 ---
 
