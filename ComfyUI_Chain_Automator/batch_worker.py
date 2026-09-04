@@ -18,6 +18,144 @@ logger = logging.getLogger("batch_chain")
 logger.setLevel(logging.DEBUG)
 
 
+LIST_LOADER_TYPE = "LoadImageListFromDir //Inspire"
+LIST_LOADER_TITLE = "Load Image List From Dir (Inspire)"
+BATCH_FILE_GLOB = "workflow_segment_*_batch.json"
+
+
+def check_batch_workflow_wiring(workflow: dict, json_file: str) -> list[str]:
+    """Verify that one batch workflow (API-format JSON) will actually fan out.
+
+    ComfyUI only renders one video per image when the list loader's output
+    feeds the rest of the graph. If the loader is missing, or present but
+    orphaned (the graph still takes its first frame from a plain LoadImage
+    node), the server runs the workflow exactly once regardless of batch
+    size and the run dies late with a misleading "expected N output videos,
+    ComfyUI returned 1" error.
+
+    Raises RuntimeError with a specific, actionable message on a blocking
+    problem. Returns a list of non-blocking warning strings."""
+    if not isinstance(workflow, dict) or not workflow:
+        raise RuntimeError(
+            f"{json_file}: the file is empty or is not a ComfyUI API-format "
+            f"workflow (expected a JSON object of node-id -> node). In ComfyUI "
+            f"use Workflow > Export (API) and save it over this file."
+        )
+
+    def _title(nid: str) -> str:
+        node = workflow.get(nid, {})
+        return node.get("_meta", {}).get("title") or node.get("class_type", "?")
+
+    loader_ids = [
+        nid for nid, node in workflow.items()
+        if isinstance(node, dict) and node.get("class_type") == LIST_LOADER_TYPE
+    ]
+    plain_loaders = [
+        nid for nid, node in workflow.items()
+        if isinstance(node, dict) and node.get("class_type") == "LoadImage"
+    ]
+
+    if not loader_ids:
+        hint = ""
+        if plain_loaders:
+            fixed = ", ".join(
+                f"'{workflow[nid].get('inputs', {}).get('image', '?')}' (node {nid})"
+                for nid in plain_loaders
+            )
+            hint = (
+                f" The image source is currently a plain 'Load Image' node "
+                f"fixed to {fixed}, which would feed the same picture to "
+                f"every item in the batch."
+            )
+        raise RuntimeError(
+            f"{json_file}: no '{LIST_LOADER_TITLE}' node in the workflow.{hint}\n"
+            f"Fix: in ComfyUI add a '{LIST_LOADER_TITLE}' node, connect its "
+            f"IMAGE output to the image-scale / first-frame input that the "
+            f"Load Image node currently feeds, delete the Load Image node, "
+            f"then Workflow > Export (API) and save it over this file."
+        )
+
+    # Node inputs that are links look like [source_node_id, slot]
+    def _consumers(src_id: str) -> list[str]:
+        out = []
+        for nid, node in workflow.items():
+            if nid == src_id or not isinstance(node, dict):
+                continue
+            for value in node.get("inputs", {}).values():
+                if (isinstance(value, list) and len(value) == 2
+                        and str(value[0]) == src_id):
+                    out.append(nid)
+                    break
+        return out
+
+    for loader_id in loader_ids:
+        if _consumers(loader_id):
+            continue
+        # Name the node that currently feeds the graph instead, if we can.
+        feeding = ""
+        if plain_loaders:
+            parts = []
+            for pid in plain_loaders:
+                targets = _consumers(pid)
+                img = workflow[pid].get("inputs", {}).get("image", "?")
+                if targets:
+                    tnames = ", ".join(f"'{_title(t)}' (node {t})" for t in targets)
+                    parts.append(
+                        f"'Load Image' node {pid} (fixed to '{img}') feeds {tnames}"
+                    )
+                else:
+                    parts.append(f"'Load Image' node {pid} (fixed to '{img}')")
+            feeding = " Instead, " + "; ".join(parts) + "."
+        raise RuntimeError(
+            f"{json_file}: the '{LIST_LOADER_TITLE}' node (node {loader_id}) "
+            f"is not connected to anything, so ComfyUI would render only one "
+            f"image no matter how many are in the batch.{feeding}\n"
+            f"Fix: in ComfyUI connect the IMAGE output of node {loader_id} to "
+            f"the image-scale / first-frame input, remove the plain Load Image "
+            f"node, then Workflow > Export (API) and save it over this file."
+        )
+
+    warnings = []
+    if plain_loaders:
+        warnings.append(
+            f"{json_file} still contains a plain 'Load Image' node "
+            f"(node {', '.join(plain_loaders)}). The batch never patches it, so "
+            f"anything it feeds will use the same fixed image for every item."
+        )
+    return warnings
+
+
+def validate_batch_chain_dir(chain_dir: Path) -> tuple[list[str], list[str]]:
+    """Validate every batch workflow the chain would run, in segment order.
+
+    Returns (errors, warnings). Any error means the batch must not start.
+    Each message names the file, the node, and what to change."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    chain_dir = Path(chain_dir)
+    if not chain_dir.is_dir():
+        return [f"Chain folder not found: {chain_dir}"], warnings
+    files = sorted(chain_dir.glob(BATCH_FILE_GLOB))
+    if not files:
+        return [
+            f"No {BATCH_FILE_GLOB} files in {chain_dir}. Batch mode needs at "
+            f"least workflow_segment_01_batch.json exported from ComfyUI "
+            f"(Workflow > Export (API))."
+        ], warnings
+    for f in files:
+        try:
+            with open(f, "r", encoding="utf-8") as fh:
+                workflow = json.load(fh)
+        except Exception as e:  # any read/parse failure blocks the batch
+            errors.append(f"{f.name}: cannot read the workflow JSON ({e}).")
+            continue
+        try:
+            warnings.extend(check_batch_workflow_wiring(workflow, f.name))
+        except RuntimeError as e:
+            errors.append(str(e))
+    return errors, warnings
+
+
 class BatchChainWorker(QThread):
     log = pyqtSignal(str)
     segment_done = pyqtSignal(int)
@@ -104,14 +242,22 @@ class BatchChainWorker(QThread):
                 )
                 return
 
+            workflows = self._build_effective_workflows()
+            self._total_segs = len(workflows)
+
+            # Pre-flight every segment before touching temp files or
+            # uploading anything: a batch workflow with no list loader, or
+            # one whose loader is orphaned, would only ever render one
+            # image, so refuse to start rather than fail after minutes of
+            # server time.
+            for wf in workflows:
+                self._check_batch_wiring(self._load_workflow(wf), wf["json_file"])
+
             self._temp_dir.mkdir(exist_ok=True)
             self._clean_temp_dir()
             self._batch_dir_local.mkdir(parents=True, exist_ok=True)
             n = len(self._images)
             self._log(f"Batch: {n} image{'s' if n != 1 else ''}")
-
-            workflows = self._build_effective_workflows()
-            self._total_segs = len(workflows)
 
             # Local mode: prepare fixed per-segment subdirs
             seg_subdirs = {}
@@ -247,11 +393,24 @@ class BatchChainWorker(QThread):
             )
         resp.raise_for_status()
 
+    _LIST_LOADER_TYPE = LIST_LOADER_TYPE
+
     def _patch_batch_input(self, workflow: dict, directory: str):
         for node in workflow.values():
-            if node.get("class_type") == "LoadImageListFromDir //Inspire":
+            if node.get("class_type") == self._LIST_LOADER_TYPE:
                 node["inputs"]["directory"] = directory
                 return
+
+    def _check_batch_wiring(self, workflow: dict, json_file: str):
+        """Pre-flight (run for every segment before the batch starts).
+
+        The UI already validates the whole chain folder when it is selected
+        and refuses to start on problems (see validate_batch_chain_dir);
+        this is the last line of defence in case a file was edited between
+        selection and Start. Raises RuntimeError on a blocking problem and
+        logs any non-blocking warnings."""
+        for warning in check_batch_workflow_wiring(workflow, json_file):
+            self._log(f"  Warning: {warning}")
 
     _VIDEO_OUTPUT_TYPES = {"VHS_VideoCombine", "SaveVideo"}
 

@@ -1,12 +1,14 @@
 # ComfyUI Workflow Chain Automator
 
+Version: 3.9.5
+
 Automates a chain of ComfyUI segments (up to 10), stitching the outputs into a single final video. Supports both local ComfyUI and RunPod deployments.
 
 ## Features
 
 - Chains multiple ComfyUI workflow segments automatically
 - Segment count driven by your workflow config — no hardcoded limits (max 10)
-- **Batch mode**: run N images simultaneously — one model load per segment, N outputs (uses `LoadImageListFromDir //Inspire`)
+- **Batch mode**: run N images simultaneously — one model load per segment, N outputs (uses `LoadImageListFromDir //Inspire`); every segment's batch workflow is validated when the chain is selected (and at startup) — a missing or unwired list loader disables Start Batch / Auto Run and shows exactly which file/node to fix, instead of a late "expected N videos, got 1"
 - Dual workflow sets: `workflow_segment_XX_batch.json` in chain subfolder
 - Split-pane UI: image browser (with sort) on the left, controls on the right
 - Background image loading — UI appears instantly, thumbnails load progressively

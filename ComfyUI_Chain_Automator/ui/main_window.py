@@ -14,14 +14,14 @@ from PyQt6.QtWidgets import (
     QProgressBar, QListWidget, QListWidgetItem, QGroupBox,
     QVBoxLayout, QHBoxLayout, QStackedWidget, QSpinBox,
     QDialog, QMessageBox, QAbstractItemView, QFileDialog, QCheckBox, QComboBox,
-    QProgressDialog,
+    QProgressDialog, QTextEdit, QDialogButtonBox
 )
 
-from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap, QIcon, QPainter, QImage, QColor
 
 from config import ConfigManager
-from batch_worker import BatchChainWorker
+from batch_worker import BatchChainWorker, validate_batch_chain_dir
 from ui.styles import STYLESHEET, COLORS
 from ui.video_player import VideoPlayerDialog
 from ui.settings_dialog import SettingsDialog
@@ -443,6 +443,10 @@ class MainWindow(QMainWindow):
         self._last_vid_dir: str = ""
         self._seg_dots: list[SegmentDot] = []
         self._seg_time_labels: list[QLabel] = []
+        # Result of the last batch-workflow validation of the active chain.
+        # Start / Auto Run stay disabled while _chain_errors is non-empty.
+        self._chain_errors: list[str] = []
+        self._chain_warnings: list[str] = []
         self._auto_mode = False
         self._auto_stop_requested = False
         self._auto_continue = False
@@ -690,6 +694,17 @@ class MainWindow(QMainWindow):
         chain_sel_row.addWidget(self._chain_folder_combo, stretch=1)
         chain_sel_row.addWidget(refresh_chain_btn)
         right.addLayout(chain_sel_row)
+
+        # Validation verdict for the selected chain's batch workflows —
+        # hidden when everything checks out, red with the problem otherwise.
+        self._chain_status_label = QLabel("")
+        self._chain_status_label.setWordWrap(True)
+        self._chain_status_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._chain_status_label.setStyleSheet(
+            f"color:{COLORS['error']}; font-size:9pt; padding:2px 4px;")
+        self._chain_status_label.hide()
+        right.addWidget(self._chain_status_label)
 
         self._seg_group = QGroupBox("Segment Progress")
         self._seg_layout = QVBoxLayout(self._seg_group)
@@ -1076,7 +1091,7 @@ class MainWindow(QMainWindow):
             self.selected_label.setText("No images found in input folder")
             self.progress_bar.setRange(0, self._seg_count * 100)
             self.progress_label.setText("Ready")
-            self.start_btn.setEnabled(True)
+            self._update_start_enabled()
             return
 
         # Warn if any stem appears with more than one extension
@@ -1114,7 +1129,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setRange(0, self._seg_count * 100)
         self.progress_bar.setValue(0)
         self.progress_label.setText("Ready")
-        self.start_btn.setEnabled(True)
+        self._update_start_enabled()
         self._apply_image_filter()
 
     def _apply_image_filter(self):
@@ -1434,15 +1449,119 @@ class MainWindow(QMainWindow):
         # Rebuild segment panel to reflect the now-selected folder
         self._rebuild_seg_panel()
         self._sync_lib_dir_display()
+        # Pre-validate the chain that came up selected (startup restores the
+        # last-used one without any dropdown interaction) so the user learns
+        # right away whether it needs fixing. Only pop the dialog once the
+        # window is on screen; at startup it is deferred to showEvent.
+        self._validate_active_chain(show_dialog=self.isVisible())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not getattr(self, "_startup_validation_shown", False):
+            self._startup_validation_shown = True
+            if self._chain_errors:
+                # Let the window paint first, then explain what is wrong.
+                QTimer.singleShot(0, lambda: self._report_chain_validation(startup=True))
 
     def _on_chain_folder_changed(self, _idx: int):
         folder = self._chain_folder_combo.currentText()
         self.config.set("active_chain_folder", folder)
         self.config.save()
         self._rebuild_seg_panel()
+        self._validate_active_chain(show_dialog=True)
         # Re-filter in place — no rescan of the image folder
         self._apply_image_filter()
         self._sync_lib_dir_display()
+
+    # ------------------------------------------------------------------ #
+    # Batch workflow validation
+    # ------------------------------------------------------------------ #
+
+    def _active_chain_dir(self) -> Path:
+        wf_dir = Path(self.config.get("workflow_dir", ""))
+        folder = self.config.get("active_chain_folder", "").strip()
+        return wf_dir / folder if folder else wf_dir
+
+    def _validate_active_chain(self, show_dialog: bool) -> bool:
+        """Check every workflow_segment_*_batch.json the active chain would
+        run. Updates the status line under the Chain selector, gates the
+        Start / Auto Run buttons, and (optionally) pops a dialog spelling
+        out exactly what must change. Returns True when the chain is OK."""
+        self._chain_errors, self._chain_warnings = validate_batch_chain_dir(
+            self._active_chain_dir())
+        folder = self._chain_folder_combo.currentText() or "(none)"
+        if self._chain_errors:
+            n = len(self._chain_errors)
+            # One line per problem (file + what is wrong); the full text with
+            # the fix for each lives in the dialog and the tooltip.
+            shown = [e.split("\n", 1)[0] for e in self._chain_errors[:3]]
+            more = n - len(shown)
+            lines = [f"• {e}" for e in shown]
+            if more:
+                lines.append(f"• … and {more} more")
+            lines.append("Start Batch is disabled — fix the workflow(s), re-export (API), "
+                         "then press ↻ or re-select the chain.")
+            self._chain_status_label.setStyleSheet(
+                f"color:{COLORS['error']}; font-size:9pt; padding:2px 4px;")
+            self._chain_status_label.setText(
+                f"⚠ Chain '{folder}' cannot run — {n} problem{'s' if n != 1 else ''} "
+                f"in its batch workflows:\n" + "\n".join(lines)
+            )
+            self._chain_status_label.setToolTip("\n\n".join(self._chain_errors))
+            self._chain_status_label.show()
+            self.start_btn.setToolTip(
+                "Disabled: fix the batch workflow problems listed under the Chain selector")
+        elif self._chain_warnings:
+            self._chain_status_label.setStyleSheet(
+                f"color:{COLORS['warning']}; font-size:9pt; padding:2px 4px;")
+            self._chain_status_label.setText(
+                "\n".join(f"• {w}" for w in self._chain_warnings))
+            self._chain_status_label.show()
+            self.start_btn.setToolTip("")
+        else:
+            self._chain_status_label.clear()
+            self._chain_status_label.hide()
+            self.start_btn.setToolTip("")
+        self._update_start_enabled()
+        self._update_auto_buttons()
+        if show_dialog and self._chain_errors:
+            self._report_chain_validation(startup=False)
+        return not self._chain_errors
+
+    def _report_chain_validation(self, startup: bool):
+        folder = self._chain_folder_combo.currentText() or "(none)"
+        lead = (
+            f"The chain '{folder}' loaded at startup cannot be run as a batch."
+            if startup else
+            f"The chain '{folder}' cannot be run as a batch."
+        )
+        body = "\n\n".join(
+            f"{i}. {e}" for i, e in enumerate(self._chain_errors, 1))
+        text = (
+            f"{lead}\n\n{body}\n\n"
+            "Start Batch stays disabled until every problem above is fixed. "
+            "After re-exporting the workflow, press ↻ next to the Chain selector "
+            "or re-select the chain to check again."
+        )
+        # A plain QMessageBox grows with its text and can run off the screen
+        # when a chain has several broken segments — use a scrollable dialog.
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Batch workflow needs fixing")
+        dlg.setMinimumSize(760, 440)
+        lay = QVBoxLayout(dlg)
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setPlainText(text)
+        lay.addWidget(view)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        btns.accepted.connect(dlg.accept)
+        lay.addWidget(btns)
+        dlg.exec()
+
+    def _update_start_enabled(self):
+        running = self._worker is not None and self._worker.isRunning()
+        loading = self._img_loader is not None and self._img_loader.isRunning()
+        self.start_btn.setEnabled(not running and not loading and not self._chain_errors)
 
     def _on_seg_dot_double_clicked(self, segment: int):
         workflow_dir = Path(self.config.get("workflow_dir", ""))
@@ -1547,8 +1666,12 @@ class MainWindow(QMainWindow):
     def _update_auto_buttons(self):
         show_all = self._show_all_chk.isChecked()
         running = self._auto_mode and not self._auto_stop_requested
-        self._auto_btn.setEnabled(not self._auto_mode and not show_all)
+        blocked = bool(self._chain_errors)
+        self._auto_btn.setEnabled(not self._auto_mode and not show_all and not blocked)
         self._auto_btn.setToolTip(
+            "Disabled: the selected chain's batch workflows failed validation — "
+            "see the message under the Chain selector"
+            if blocked else
             "Disabled: uncheck 'Show all' before using Auto Run"
             if show_all else
             "Automatically process all images N at a time, no prompts between batches"
@@ -1566,6 +1689,14 @@ class MainWindow(QMainWindow):
         keys = self.image_grid.selected_keys()
         if not keys:
             QMessageBox.critical(self, "Error", "Select at least one image for the batch.")
+            return
+        # Re-check right before starting — the JSON may have been edited (or
+        # broken) since the chain was selected.
+        if not self._validate_active_chain(show_dialog=True):
+            if self._auto_mode:
+                self._auto_mode = False
+                self._auto_stop_requested = False
+                self._update_auto_buttons()
             return
         self._reset_ui()
         self.start_btn.setEnabled(False)
@@ -1837,7 +1968,7 @@ class MainWindow(QMainWindow):
             self._auto_mode = False
             self._auto_stop_requested = False
             self._update_auto_buttons()
-        self.start_btn.setEnabled(True)
+        self._update_start_enabled()
         self.cancel_btn.setEnabled(False)
 
     # ------------------------------------------------------------------ #
