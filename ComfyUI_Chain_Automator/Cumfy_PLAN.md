@@ -277,3 +277,18 @@ FFmpeg needed for the final stitch — must be on system PATH. Segments 2–7 up
    - Segments 2–3: `VHS_LoadVideo` → node `126` / `133`, field `video`
    - Segments 4: `VHS_LoadVideo` → node `133`, field `video`
    - Segments 5–7: `VHS_LoadVideo` → node `139`, field `video`
+
+
+---
+
+## LoRA check & sync (v3.10.0, 2026-09-04)
+
+**Problem:** batch workflows name LoRAs by bare filename; the pod's `models/loras` folder rarely matches the local one (13 vs 92 files on 2026-09-04), so RunPod runs failed minutes in with "missing file" errors.
+
+**Design**
+- `lora_sync.py` — `collect_chain_loras(chain_dir)` scans every `workflow_segment_*_batch.json` for `lora_name` / `lora_NN` inputs; `check_local_loras(loras_dir, names)` (recursive, flags case-only mismatches); `check_remote_loras(config, names)` lists the pod prefix via boto3; `RemoteLoraCheckWorker` (QThread) keeps the network off the UI thread; `LoraUploadWorker` uploads with retry/backoff, "already landed" check, size verification.
+- Settings: local LoRA folder stays in Folders (portable ComfyUI moves — never hard-code); new "RunPod Volume (S3)" group (profile / endpoint / region / bucket / LoRA prefix, import from S3 Browser config, test).
+- Main window: `_validate_active_chain()` = wiring check + LoRA check; results feed the status line under the Chain selector and gate Start / Auto Run. Missing locally = blocking error. Missing on pod = queued upload: Start prompts, uploads, re-checks, then starts itself. ⇅ LoRAs button = upload on demand.
+- Local mode does only the local check. RunPod mode without S3 configured / reachable = warning, not a block.
+
+**Not done / ideas:** quick LoRA swap panel on the main window (segment editor already has per-slot dropdowns); pushing edited workflows to the pod; checking model/VAE/CLIP files the same way.

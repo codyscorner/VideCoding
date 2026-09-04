@@ -10,7 +10,13 @@ class ConfigManager:
         "output_base_dir": "P:/AI/ComfyLocal/ComfyUI_windows_portable/ComfyUI/output/video/Merge",
         "workflow_dir": "P:/AI/ComfyLocal/ComfyUI_windows_portable/Workflow_API",
         "workflows": [],
-        "anthropic_api_key": ""
+        "anthropic_api_key": "",
+        "lora_check_enabled": True,
+        "s3_profile_name": "runpod-s3",
+        "s3_region": "",
+        "s3_endpoint_url": "",
+        "s3_bucket_name": "",
+        "s3_loras_prefix": "runpod-slim/ComfyUI/models/loras/"
     }
 
     def __init__(self, config_path: Path):
