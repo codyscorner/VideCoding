@@ -1,5 +1,10 @@
 # S3 Browser — Changelog
 
+## v1.0.8 (2026-09-04)
+- Downloads now skip files you already have. If the destination has a file with the same name, the app compares size and MD5 against the object's S3 ETag (RunPod stores the plain content MD5 - verified against a 44MB video) and skips the download when they match, so re-grabbing a batch of clips never leaves `name (1).mp4` duplicates. Different content under the same name is still saved as `name (N).ext`.
+- Objects with a composite multipart ETag (`...-N`, only seen on multi-GB model files) can't be compared without the bytes: those download under a new name, then the copy is hashed and deleted if it turns out identical.
+- The end-of-transfer dialog now lists both skipped-identical and renamed files.
+
 ## v1.0.7 (2026-09-04)
 - `config.json` (profile/region/endpoint/bucket) now lives next to the EXE (`P:\Apps\VibeCoded\S3 Browser\config.json`; project root when run from source) instead of the hidden `%APPDATA%\S3Browser\` folder, so it is always easy to find. An existing AppData config is copied over automatically on first launch (the old file is left in place). Credentials stay in `~/.aws/credentials` as before.
 - Settings dialog now shows the full path of the settings file.
