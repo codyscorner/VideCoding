@@ -1,10 +1,25 @@
 import json
 import os
+import shutil
+import sys
 import configparser
 from pathlib import Path
 
-APP_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "S3Browser"
+
+def _app_dir() -> Path:
+    """Folder the app lives in: next to the EXE when frozen by PyInstaller,
+    otherwise the project root (parent of the s3_browser package) when run
+    from source. The config file always sits here so it's easy to find."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+APP_DIR = _app_dir()
 CONFIG_PATH = APP_DIR / "config.json"
+# Pre-v1.0.7 location (%APPDATA%\S3Browser\config.json) — migrated on first load.
+LEGACY_APP_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "S3Browser"
+LEGACY_CONFIG_PATH = LEGACY_APP_DIR / "config.json"
 AWS_CREDENTIALS_PATH = Path.home() / ".aws" / "credentials"
 AWS_CONFIG_PATH = Path.home() / ".aws" / "config"
 
@@ -16,7 +31,19 @@ DEFAULT_CONFIG = {
 }
 
 
+def _migrate_legacy_config() -> None:
+    """Copy the old AppData config next to the EXE once, so settings saved by
+    earlier versions carry over. The old file is left in place untouched."""
+    if CONFIG_PATH.exists() or not LEGACY_CONFIG_PATH.exists():
+        return
+    try:
+        shutil.copyfile(LEGACY_CONFIG_PATH, CONFIG_PATH)
+    except OSError:
+        pass
+
+
 def load_config() -> dict:
+    _migrate_legacy_config()
     if CONFIG_PATH.exists():
         try:
             data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))

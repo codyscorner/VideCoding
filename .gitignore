@@ -94,3 +94,4 @@ package-lock.json
 # SQLite databases (embedding caches, runtime state)
 *.sqlite
 *.db
+S3_Broswer/config.json

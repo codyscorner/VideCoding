@@ -1,5 +1,18 @@
 # S3 Browser — Changelog
 
+## v1.0.8 (2026-09-04)
+- Downloads now skip files you already have. If the destination has a file with the same name, the app compares size and MD5 against the object's S3 ETag (RunPod stores the plain content MD5 - verified against a 44MB video) and skips the download when they match, so re-grabbing a batch of clips never leaves `name (1).mp4` duplicates. Different content under the same name is still saved as `name (N).ext`.
+- Objects with a composite multipart ETag (`...-N`, only seen on multi-GB model files) can't be compared without the bytes: those download under a new name, then the copy is hashed and deleted if it turns out identical.
+- The end-of-transfer dialog now lists both skipped-identical and renamed files.
+
+## v1.0.7 (2026-09-04)
+- `config.json` (profile/region/endpoint/bucket) now lives next to the EXE (`P:\Apps\VibeCoded\S3 Browser\config.json`; project root when run from source) instead of the hidden `%APPDATA%\S3Browser\` folder, so it is always easy to find. An existing AppData config is copied over automatically on first launch (the old file is left in place). Credentials stay in `~/.aws/credentials` as before.
+- Settings dialog now shows the full path of the settings file.
+
+## v1.0.6 (2026-09-04)
+- Downloads no longer overwrite existing local files. If the destination already has a file with the same name, the download is saved as `name (1).ext`, `name (2).ext`, ... (first free number) instead. Applies to single-file and recursive folder downloads. Previously the download went straight through boto3's `download_file`, which silently replaced whatever was on disk.
+- After a transfer, a dialog lists every file that was renamed this way (original name -> saved name) so you know which ones to look at.
+
 ## v1.0.5 (2026-08-28)
 - Fixed connection settings (bucket/region/endpoint/profile) never being saved to disk — `save_config` existed but was never called, so OK in the Settings dialog only updated the running process and every restart fell back to `config.json`'s last saved state or the built-in defaults. Present since v1.0.0; masked by long-running app instances. Credentials were unaffected (always written to `~/.aws/credentials`).
 

@@ -405,13 +405,15 @@ class MainWindow(QMainWindow):
         jobs: list[TransferJob] = []
         for entry in entries:
             if entry.is_folder:
-                for key, size in self.client.list_all_with_sizes(entry.key):
+                for key, size, etag in self.client.list_all_files(entry.key):
                     rel = key[len(entry.key):]
                     local_path = os.path.join(dest_dir, entry.name, *rel.split("/"))
-                    jobs.append(TransferJob(local_path, key, size, "download", os.path.basename(local_path)))
+                    jobs.append(
+                        TransferJob(local_path, key, size, "download", os.path.basename(local_path), etag=etag)
+                    )
             else:
                 local_path = os.path.join(dest_dir, entry.name)
-                jobs.append(TransferJob(local_path, entry.key, entry.size, "download", entry.name))
+                jobs.append(TransferJob(local_path, entry.key, entry.size, "download", entry.name, etag=entry.etag))
         if jobs:
             self._run_transfer(jobs, "Downloading")
 
@@ -516,6 +518,26 @@ class MainWindow(QMainWindow):
             if errors:
                 detail = "\n".join(f"{k}: {e}" for k, e in errors[:10])
                 QMessageBox.warning(self, f"{verb} completed with errors", detail)
+            if worker.skipped or worker.renamed:
+                parts = []
+                if worker.skipped:
+                    names = worker.skipped[:15]
+                    if len(worker.skipped) > 15:
+                        names.append(f"... and {len(worker.skipped) - 15} more")
+                    parts.append(
+                        f"{len(worker.skipped)} file(s) skipped - an identical copy (same size and MD5) "
+                        "was already in the destination:" + '\n\n' + '\n'.join(names)
+                    )
+                if worker.renamed:
+                    lines = [f"{orig}  ->  {os.path.basename(new)}" for orig, new in worker.renamed[:15]]
+                    if len(worker.renamed) > 15:
+                        lines.append(f"... and {len(worker.renamed) - 15} more")
+                    parts.append(
+                        f"{len(worker.renamed)} file(s) had a different file with the same name in the "
+                        "destination and were saved under a new name instead of overwriting it:"
+                        + '\n\n' + '\n'.join(lines)
+                    )
+                QMessageBox.information(self, "Existing files", '\n\n'.join(parts))
             self.refresh()
 
         worker.progress.connect(on_progress)

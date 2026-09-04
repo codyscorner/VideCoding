@@ -12,6 +12,7 @@ class S3Entry:
     is_folder: bool
     size: int = 0
     last_modified: datetime | None = None
+    etag: str = ""  # RunPod returns the plain content MD5 (hex) for normally-uploaded objects
 
 
 class S3Client:
@@ -61,6 +62,7 @@ class S3Client:
                         is_folder=False,
                         size=obj["Size"],
                         last_modified=obj["LastModified"],
+                        etag=obj.get("ETag", "").strip('"'),
                     )
                 )
         return entries
@@ -70,20 +72,25 @@ class S3Client:
         folder marker objects. Use for delete/rename, which must only ever
         touch keys that are real objects (RunPod errors on deleting a
         virtual/non-existent prefix key)."""
-        return [key for key, _size in self._list_all_raw(prefix)]
+        return [key for key, _size, _etag in self._list_all_raw(prefix)]
 
     def list_all_with_sizes(self, prefix: str) -> list[tuple[str, int]]:
         """Real files under prefix, excluding zero-byte folder marker
         objects. Use for downloads, where a marker key isn't a file to
         write to disk."""
-        return [(k, s) for k, s in self._list_all_raw(prefix) if not (k.endswith("/") and s == 0)]
+        return [(k, s) for k, s, _e in self._list_all_raw(prefix) if not (k.endswith("/") and s == 0)]
 
-    def _list_all_raw(self, prefix: str) -> list[tuple[str, int]]:
-        results: list[tuple[str, int]] = []
+    def list_all_files(self, prefix: str) -> list[tuple[str, int, str]]:
+        """Like list_all_with_sizes but also returns each object's ETag
+        (content MD5 on RunPod), for skip-if-identical downloads."""
+        return [(k, s, e) for k, s, e in self._list_all_raw(prefix) if not (k.endswith("/") and s == 0)]
+
+    def _list_all_raw(self, prefix: str) -> list[tuple[str, int, str]]:
+        results: list[tuple[str, int, str]] = []
         paginator = self._client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix):
             for obj in page.get("Contents", []):
-                results.append((obj["Key"], obj["Size"]))
+                results.append((obj["Key"], obj["Size"], obj.get("ETag", "").strip('"')))
         return results
 
     def create_folder(self, prefix: str) -> None:

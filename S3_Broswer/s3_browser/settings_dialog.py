@@ -36,6 +36,8 @@ class SettingsDialog(QDialog):
 
         cred_note = QLabel(
             "Credentials are stored in your local AWS credentials file, never in this app's config."
+            + chr(10)
+            + f"Settings file: {cfg.CONFIG_PATH}"
         )
         cred_note.setWordWrap(True)
         cred_note.setStyleSheet("color: gray; font-size: 11px;")
