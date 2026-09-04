@@ -12,6 +12,7 @@ PyQt6 file-explorer-style browser for RunPod's S3-compatible network-volume stor
 ## RunPod S3 API quirks (learned the hard way)
 
 - RunPod's S3 endpoint can return a transient `403` on `HeadObject` for an object that's perfectly accessible on retry — hence the backoff retries on every transfer
+- After `CompleteMultipartUpload`, RunPod merges the uploaded chunks server-side (visible as `.s3compat-merge-*.tmp` in the console) with no response until done — multi-GB files take minutes, so the client uses a 30-minute `read_timeout` and the UI shows a "waiting on S3 to merge" message; upload retries `HeadObject` the key first so a lost merge response never triggers a full re-upload
 - Endpoint and region follow the datacenter of the network volume (e.g. `https://s3api-eur-is-1.runpod.io`)
 
 ## Layout

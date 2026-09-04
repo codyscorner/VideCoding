@@ -85,4 +85,5 @@ class SettingsDialog(QDialog):
             "endpoint_url": endpoint,
             "bucket_name": bucket,
         }
+        cfg.save_config(self.result_config)
         self.accept()

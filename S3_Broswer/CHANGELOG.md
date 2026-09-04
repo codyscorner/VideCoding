@@ -1,5 +1,15 @@
 # S3 Browser — Changelog
 
+## v1.0.5 (2026-08-28)
+- Fixed connection settings (bucket/region/endpoint/profile) never being saved to disk — `save_config` existed but was never called, so OK in the Settings dialog only updated the running process and every restart fell back to `config.json`'s last saved state or the built-in defaults. Present since v1.0.0; masked by long-running app instances. Credentials were unaffected (always written to `~/.aws/credentials`).
+
+## v1.0.4 (2026-08-28)
+- Large multipart uploads no longer look frozen (or worse, silently restart) while RunPod merges the uploaded chunks server-side (`.s3compat-merge-*.tmp` in the console):
+  - Progress dialog now switches to "All data sent — waiting on S3 to merge <file>" once every byte is on the wire, with a note that no transfer progress is shown during the merge
+  - During the merge wait, a background poller lists the destination folder every 5s and reports whether the `.s3compat-merge-*.tmp` file is still present (with its size and elapsed time), so you can see the merge is alive
+  - boto3 `read_timeout` raised from the 60s default to 30 minutes so the client waits out the merge instead of timing out on `CompleteMultipartUpload` and re-uploading the whole file
+  - Upload retries now `HeadObject` the key first and skip the re-upload when the object already landed at the expected size (e.g. the merge finished but the response was lost)
+
 ## v1.0.3 (2026-08-07)
 - Transfer retries bumped from 3 attempts (flat 1s delay) to 6 attempts with exponential backoff (1s/2s/4s/8s/16s) — RunPod's transient 403 on `HeadObject` during downloads was still outlasting the old fixed 1s retry window on some days
 

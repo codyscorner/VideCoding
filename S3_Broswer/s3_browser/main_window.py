@@ -492,6 +492,25 @@ class MainWindow(QMainWindow):
             progress.setValue(pct)
             progress.setLabelText(f"{verb} {filename}  ({files_done}/{files_total} files)")
 
+        def on_merging(filename):
+            progress.setLabelText(
+                f"All data sent — waiting on S3 to merge {filename}.\n"
+                "No transfer progress during this step; large files\n"
+                "can take several minutes. Please be patient."
+            )
+
+        def on_merging_status(filename, tmp_bytes, elapsed):
+            mins, secs = divmod(elapsed, 60)
+            if tmp_bytes >= 0:
+                detail = f"S3 merge file present ({human_size(tmp_bytes)}) — still merging"
+            else:
+                detail = "S3 merge file no longer listed — finishing up"
+            progress.setLabelText(
+                f"All data sent — waiting on S3 to merge {filename}.\n"
+                f"{detail}  ·  {mins}m {secs:02d}s elapsed.\n"
+                "No transfer progress during this step. Please be patient."
+            )
+
         def on_finished(errors):
             progress.setValue(100)
             if errors:
@@ -500,6 +519,8 @@ class MainWindow(QMainWindow):
             self.refresh()
 
         worker.progress.connect(on_progress)
+        worker.merging.connect(on_merging)
+        worker.merging_status.connect(on_merging_status)
         worker.finished.connect(on_finished)
         progress.canceled.connect(worker.cancel)
         self._keep(worker)
