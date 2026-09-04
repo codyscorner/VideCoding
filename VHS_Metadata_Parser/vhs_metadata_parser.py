@@ -1586,6 +1586,9 @@ def main():
         app.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow()
     window.show()
+    # Optional: open a metadata file passed on the command line (run.bat file.mp4)
+    if len(sys.argv) > 1 and Path(sys.argv[1]).is_file():
+        window.load_file(sys.argv[1])
     sys.exit(app.exec())
 
 

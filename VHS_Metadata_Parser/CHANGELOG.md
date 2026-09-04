@@ -13,6 +13,7 @@
 - Batch: `summarize_file()` rows gain `duration_s` / `has_audio`; Diff dialog and batch CSV include Duration (s) and Audio.
 - Fix: prompt-section rows are re-fitted when the tab is shown / columns resized (rows were sized before layout and came out huge); `&` in button/menu labels escaped so it is not eaten as a mnemonic.
 - Version bumped to 1.3.0 (docstring, window title, docs).
+- Added `run.bat` (runs from source via the shared `..\.venv`, falls back to `python` on PATH) and an optional command-line file argument: `run.bat path\to\file.mp4` opens it on launch.
 
 ## v1.2.0 — 2026-07-08
 - New **Batch / Search** tab: scan a folder (optionally recursive) for `.mp4`/`.json`/`.txt` metadata files on a background `QThread`, with a live progress status label.
