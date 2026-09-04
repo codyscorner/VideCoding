@@ -25,7 +25,15 @@ class S3Client:
             "s3",
             region_name=region,
             endpoint_url=endpoint_url,
-            config=BotoConfig(s3={"addressing_style": "path"}, signature_version="s3v4"),
+            # RunPod merges multipart chunks server-side after
+            # CompleteMultipartUpload and can take many minutes to respond for
+            # multi-GB files; the default 60s read timeout would abort the
+            # wait and trigger a full re-upload.
+            config=BotoConfig(
+                s3={"addressing_style": "path"},
+                signature_version="s3v4",
+                read_timeout=1800,
+            ),
         )
 
     def test_connection(self) -> None:
@@ -121,6 +129,14 @@ class S3Client:
 
     def download_file(self, key: str, local_path: str, progress_callback=None) -> None:
         self._client.download_file(self.bucket_name, key, local_path, Callback=progress_callback)
+
+    def get_merge_tmp_size(self, parent_prefix: str) -> int | None:
+        """Size of RunPod's server-side multipart merge file
+        (.s3compat-merge-*.tmp) under parent_prefix, or None if absent."""
+        for entry in self.list_entries(parent_prefix):
+            if not entry.is_folder and entry.name.startswith(".s3compat-merge-") and entry.name.endswith(".tmp"):
+                return entry.size
+        return None
 
     def get_object_size(self, key: str) -> int:
         head = self._client.head_object(Bucket=self.bucket_name, Key=key)
