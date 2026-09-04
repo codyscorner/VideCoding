@@ -32,12 +32,18 @@
   it is *not* kept always-on-top.
 
 ### Changed
-- `workflow.py` now holds the format-aware document model (`parse_workflow`,
+- `workflow_model.py` now holds the format-aware document model (`parse_workflow`,
   `WorkflowDoc`, `NodeInfo`, `Field`); `ui/node_section.py` holds the card widget and
   editor factory. `main_window.py` shrank to window chrome + file I/O.
 - Whole floats stored as ints in the JSON (`cfg: 1`, `denoise: 1`) get a float editor and
   are written back as ints while they stay whole, so untouched files don't churn.
 - Float noise such as `8.000000000000002` is rounded on save.
+
+### Fixed
+- EXE build aborted with `Failed to import module __PyInstaller_hooks_0_workflow` — the new
+  `workflow.py` collided with PyInstaller's contrib hook for the PyPI package `workflow`.
+  Renamed to `workflow_model.py`. `build_exe.py` now passes the shared-venv exclude list and
+  pauses at the end when double-clicked; added `build.bat`.
 
 ### Removed
 - The old fixed sections (Prompts / LoRA Strengths / KSampler / Video Settings) — all of

@@ -21,7 +21,7 @@ from PyQt6.QtGui import QRegularExpressionValidator
 from PyQt6.QtCore import Qt, QRegularExpression
 
 from ui.styles import COLORS
-from workflow import (
+from workflow_model import (
     NodeInfo, Field, number_hint,
     CAT_PROMPT, CAT_LORA, CAT_SAMPLER, CAT_OUTPUT, CAT_LOADER, CAT_MEDIA, CAT_NOTES,
 )

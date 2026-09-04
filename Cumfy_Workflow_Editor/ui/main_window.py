@@ -11,7 +11,7 @@ from PyQt6.QtCore import Qt
 from ui.styles import APP_STYLESHEET, COLORS
 from ui.node_section import NodeSection, category_color
 from settings import Settings
-from workflow import WorkflowDoc, parse_workflow
+from workflow_model import WorkflowDoc, parse_workflow
 
 
 class MainWindow(QMainWindow):
