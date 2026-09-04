@@ -1,5 +1,9 @@
 # S3 Browser — Changelog
 
+## v1.0.6 (2026-09-04)
+- Downloads no longer overwrite existing local files. If the destination already has a file with the same name, the download is saved as `name (1).ext`, `name (2).ext`, ... (first free number) instead. Applies to single-file and recursive folder downloads. Previously the download went straight through boto3's `download_file`, which silently replaced whatever was on disk.
+- After a transfer, a dialog lists every file that was renamed this way (original name -> saved name) so you know which ones to look at.
+
 ## v1.0.5 (2026-08-28)
 - Fixed connection settings (bucket/region/endpoint/profile) never being saved to disk — `save_config` existed but was never called, so OK in the Settings dialog only updated the running process and every restart fell back to `config.json`'s last saved state or the built-in defaults. Present since v1.0.0; masked by long-running app instances. Credentials were unaffected (always written to `~/.aws/credentials`).
 

@@ -9,6 +9,22 @@ TRANSFER_RETRY_ATTEMPTS = 6
 TRANSFER_RETRY_BASE_DELAY_SECONDS = 1.0
 
 
+def unique_local_path(path: str) -> str:
+    """Return `path` if nothing exists there, otherwise the first free
+    `name (1).ext`, `name (2).ext`, ... variant in the same directory so a
+    download never overwrites an existing local file."""
+    if not os.path.exists(path):
+        return path
+    directory, filename = os.path.split(path)
+    stem, ext = os.path.splitext(filename)
+    n = 1
+    while True:
+        candidate = os.path.join(directory, f"{stem} ({n}){ext}")
+        if not os.path.exists(candidate):
+            return candidate
+        n += 1
+
+
 class ActionWorker(QThread):
     """Runs a single callable on a background thread and reports result/error."""
 
@@ -49,6 +65,9 @@ class TransferWorker(QThread):
         super().__init__()
         self.client = client
         self.jobs = jobs
+        # (original local filename, actual local path) for every download
+        # that was renamed to avoid clobbering an existing file
+        self.renamed: list[tuple[str, str]] = []
         self._cancelled = False
         self._total_bytes = sum(job.size for job in jobs)
 
@@ -61,6 +80,17 @@ class TransferWorker(QThread):
         for i, job in enumerate(self.jobs):
             if self._cancelled:
                 break
+
+            if job.direction == "download":
+                # Never overwrite: pick a free "name (N).ext" if the target exists.
+                # Resolved once per job (not per retry attempt) — boto3 writes
+                # to a temp file and renames on success, so a failed attempt
+                # leaves nothing at the final path.
+                target = unique_local_path(job.local_path)
+                if target != job.local_path:
+                    self.renamed.append((job.display_name, target))
+                    job.local_path = target
+                    job.display_name = os.path.basename(target)
 
             last_error: Exception | None = None
             for attempt in range(1, TRANSFER_RETRY_ATTEMPTS + 1):

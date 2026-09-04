@@ -516,6 +516,16 @@ class MainWindow(QMainWindow):
             if errors:
                 detail = "\n".join(f"{k}: {e}" for k, e in errors[:10])
                 QMessageBox.warning(self, f"{verb} completed with errors", detail)
+            if worker.renamed:
+                lines = [f"{orig}  ->  {os.path.basename(new)}" for orig, new in worker.renamed[:15]]
+                if len(worker.renamed) > 15:
+                    lines.append(f"... and {len(worker.renamed) - 15} more")
+                QMessageBox.information(
+                    self,
+                    "Existing files kept",
+                    f"{len(worker.renamed)} file(s) already existed in the destination and were "
+                    "saved under a new name instead of being overwritten:\n\n" + "\n".join(lines),
+                )
             self.refresh()
 
         worker.progress.connect(on_progress)
