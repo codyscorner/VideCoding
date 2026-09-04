@@ -67,6 +67,8 @@ def _process_single_image(args) -> Optional[str]:
 
 class MainWindow(QMainWindow):
     _search_done = pyqtSignal(list, object)  # matches, error_str_or_None
+    _result_added = pyqtSignal(str)          # thread-safe append to results list
+    _progress = pyqtSignal(int, int, str)    # current, total, message
 
     def __init__(self, config_manager: ConfigManager, version: str):
         super().__init__()
@@ -78,13 +80,25 @@ class MainWindow(QMainWindow):
         self._explorer_process = None
 
         self.setWindowTitle(f"FaceFinder v{self.version}")
-        self.setMinimumSize(700, 600)
+        self.setMinimumSize(760, 850)
         self.setStyleSheet(STYLESHEET)
-        self.resize(750, 650)
+        self.resize(900, 980)
+        self._center_on_screen()
 
         self._build_ui()
         self._load_config()
         self._search_done.connect(self._on_search_done)
+        self._result_added.connect(self._on_result_added)
+        self._progress.connect(self._on_progress)
+
+    def _center_on_screen(self):
+        from PyQt6.QtWidgets import QApplication
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        frame = self.frameGeometry()
+        frame.moveCenter(screen.availableGeometry().center())
+        self.move(frame.topLeft())
 
     def _build_ui(self):
         central = QWidget()
@@ -223,8 +237,14 @@ class MainWindow(QMainWindow):
         legacy = self.config.get("default_reference_image", "")
         if not refs and legacy:
             refs = [legacy]
+        # Drop refs whose files are gone (e.g. pasted screenshots cleaned from %TEMP%)
+        missing = [p for p in refs if not Path(p).exists()]
         for path in refs:
-            self._add_reference(path, save=False)
+            if path not in missing:
+                self._add_reference(path, save=False)
+        if missing:
+            self._save_references()
+            self._add_result(f"Removed {len(missing)} saved reference(s) whose files no longer exist")
 
         self.folder_edit.setText(self.config.get("default_search_folder", ""))
         tol = self.config.get("tolerance", 0.6)
@@ -386,7 +406,10 @@ class MainWindow(QMainWindow):
                     img = bg
                 elif img.mode != 'RGB':
                     img = img.convert('RGB')
-                temp_path = os.path.join(tempfile.gettempdir(), "facefinder_clipboard_ref.png")
+                # Unique name per paste so multiple pasted screenshots become
+                # multiple references instead of overwriting each other
+                stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                temp_path = os.path.join(tempfile.gettempdir(), f"facefinder_clipboard_{stamp}.png")
                 img.save(temp_path, 'PNG')
                 self._set_reference(temp_path)
                 self._add_result("(Pasted from clipboard)")
@@ -511,23 +534,21 @@ class MainWindow(QMainWindow):
         return list(files_set)
 
     def _update_progress(self, current: int, total: int, message: str):
-        # Called from worker thread — use signal-safe approach via QTimer.singleShot via lambda in main thread
-        # Since pyqtSignal can't be called from non-main easily without a dedicated signal,
-        # we use a simple approach: post to the main thread via QTimer trick won't work from worker.
-        # Instead emit a dedicated signal. But we keep it simple: _search_done handles final state.
-        # For progress we update via direct invocation since QLabel/QProgressBar are thread-safe for reads.
-        # Actually in Qt you CANNOT update widgets from non-main threads. Use the existing queue pattern.
-        pass  # Progress is approximate — final state handled by _search_done
+        # Safe from any thread — cross-thread emits are queued to the main thread
+        self._progress.emit(current, total, message)
+
+    def _on_progress(self, current: int, total: int, message: str):
+        self.progress_label.setText(message)
+        if total > 0:
+            self.progress_bar.setValue(int(current / total * 100))
 
     def _add_result(self, message: str):
-        # This gets called from worker thread; use invokeMethod pattern via signal
-        # We'll queue via QTimer in main thread using a lightweight approach
-        import PyQt6.QtCore as _qc
-        _qc.QMetaObject.invokeMethod(
-            self.results_list, "addItem",
-            _qc.Qt.ConnectionType.QueuedConnection,
-            _qc.Q_ARG(str, message)
-        )
+        # Safe from any thread — cross-thread emits are queued to the main thread
+        self._result_added.emit(message)
+
+    def _on_result_added(self, message: str):
+        self.results_list.addItem(message)
+        self.results_list.scrollToBottom()
 
     def _on_search_done(self, matches: List[str], error):
         self.search_btn.setEnabled(True)

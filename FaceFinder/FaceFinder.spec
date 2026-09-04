@@ -1,12 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
 import face_recognition_models
-import tkinterdnd2
 
 # Get the path to face_recognition_models data files
 models_path = face_recognition_models.__path__[0]
 
-# Get the path to tkinterdnd2 data files (contains platform-specific DLLs)
-tkdnd_path = tkinterdnd2.__path__[0]
+# The shared VideCoding venv carries heavy ML packages FaceFinder doesn't use;
+# without these excludes the EXE balloons ~10x. (numpy/PIL/dlib stay — needed.)
+HEAVY_EXCLUDES = [
+    'torch', 'torchvision', 'torchaudio', 'tensorflow', 'transformers',
+    'cv2', 'scipy', 'pandas', 'matplotlib', 'onnx', 'onnxruntime',
+    'triton', 'IPython', 'jupyter', 'sklearn', 'numba', 'jax',
+    'safetensors', 'tokenizers', 'einops', 'av', 'soundfile',
+    'tkinterdnd2',
+]
 
 a = Analysis(
     ['main.py'],
@@ -14,7 +20,6 @@ a = Analysis(
     binaries=[],
     datas=[
         (models_path, 'face_recognition_models'),
-        (tkdnd_path, 'tkinterdnd2'),
         ('app_icon.ico', '.'),
     ],
     hiddenimports=[
@@ -23,13 +28,11 @@ a = Analysis(
         'dlib',
         'PIL',
         'numpy',
-        'tkinter',
-        'tkinterdnd2',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=HEAVY_EXCLUDES,
     noarchive=False,
     optimize=0,
 )
