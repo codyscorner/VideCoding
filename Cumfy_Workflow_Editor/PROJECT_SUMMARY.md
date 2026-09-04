@@ -17,7 +17,7 @@ passed through untouched on save.
 | Format | Detected by | Field names come from |
 |--------|-------------|-----------------------|
 | **API format** (`Save (API)` in ComfyUI) | top-level `{id: {class_type, inputs, _meta}}` | the `inputs` keys |
-| **UI / graph format** (normal `Save`) | top-level `nodes[]` + `links[]` | `WIDGET_NAMES` table in `workflow.py` for known node types; `Value N` otherwise |
+| **UI / graph format** (normal `Save`) | top-level `nodes[]` + `links[]` | `WIDGET_NAMES` table in `workflow_model.py` for known node types; `Value N` otherwise |
 
 In the API format, an input whose value is `[node_id, slot]` is a connection and is shown
 read-only. In the UI format, an input that has a `widget.name` and a link is a converted
@@ -83,7 +83,7 @@ Prompt node regardless of its class type.
 Cumfy_Workflow_Editor/
   main.py                  ← entry point (v1.2.0)
   run.bat                  ← run from source via the shared .venv
-  workflow.py              ← format detection + document model (parse_workflow, NodeInfo, Field,
+  workflow_model.py        ← format detection + document model (parse_workflow, NodeInfo, Field,
                               WIDGET_NAMES / CHOICES tables, number_hint)
   settings.py              ← last_dir, show_all_nodes  (workflow_editor_config.json)
   ui/
@@ -100,7 +100,7 @@ Cumfy_Workflow_Editor/
 
 ## Extending
 
-- **New choice list:** add the field name to `CHOICES` in `workflow.py`.
+- **New choice list:** add the field name to `CHOICES` in `workflow_model.py`.
 - **UI-format names for a node type:** add its widget order to `WIDGET_NAMES`.
 - **Numeric range/step:** add a rule to `_known_hint()`.
 - **Category rules:** `_category_for()`.
@@ -112,6 +112,18 @@ Cumfy_Workflow_Editor/
 - Node canvas / drag-drop node layout
 - Adding, removing, or rewiring nodes
 - Connecting to the ComfyUI server (would let the UI format use real widget names via `/object_info`)
+
+---
+
+## Build
+
+Double-click `build.bat` (or run `python build_exe.py`). The script passes the shared-venv
+`--exclude-module` list (torch, tensorflow, cv2, …) — mandatory, or the EXE balloons ~10× —
+and copies the result to the EXE target below.
+
+**Gotcha:** the model module is `workflow_model.py`, not `workflow.py`. PyInstaller ships a
+contrib hook for a PyPI package called `workflow`; a local module with that name makes the
+build abort with `Failed to import module __PyInstaller_hooks_0_workflow`.
 
 ---
 
