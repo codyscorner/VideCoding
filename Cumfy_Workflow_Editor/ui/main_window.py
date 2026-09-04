@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QFrame, QFileDialog, QMessageBox,
     QSizePolicy, QLineEdit,
 )
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QDragEnterEvent, QDragMoveEvent, QDropEvent
 from PyQt6.QtCore import Qt
 
 from ui.styles import APP_STYLESHEET, COLORS
@@ -135,6 +135,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"ComfyUI Workflow Editor  v{version}")
         self.resize(780, 860)
         self.setStyleSheet(APP_STYLESHEET)
+        self.setAcceptDrops(True)
 
         self._build_menu()
         self._build_toolbar()
@@ -196,10 +197,15 @@ class MainWindow(QMainWindow):
         empty_lbl = QLabel("Open a ComfyUI workflow JSON to begin editing")
         empty_lbl.setStyleSheet(f"color: {COLORS['fg_dim']}; font-size: 12pt;")
         empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        drop_lbl = QLabel("or drag a .json file anywhere onto this window")
+        drop_lbl.setStyleSheet(f"color: {COLORS['fg_dim']}; font-size: 9pt;")
+        drop_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         open_btn = QPushButton("Open Workflow…")
         open_btn.setFixedWidth(200)
         open_btn.clicked.connect(self.open_file)
         el.addWidget(empty_lbl)
+        el.addSpacing(4)
+        el.addWidget(drop_lbl)
         el.addSpacing(16)
         el.addWidget(open_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         self._central_layout.addWidget(self._empty)
@@ -208,6 +214,8 @@ class MainWindow(QMainWindow):
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setAcceptDrops(False)
+        self._scroll.viewport().setAcceptDrops(False)
         self._scroll.hide()
         self._central_layout.addWidget(self._scroll)
 
@@ -484,10 +492,29 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
         self._scroll.setWidget(container)
+        self._disable_child_drops(container)
+
+    @staticmethod
+    def _disable_child_drops(root: QWidget):
+        """Stop form widgets from swallowing file drops so the window handles them.
+
+        QTextEdit/QLineEdit/QSpinBox accept text drags by default, which would paste
+        the dropped path into a field instead of opening the workflow.
+        """
+        for child in root.findChildren(QWidget):
+            child.setAcceptDrops(False)
+            viewport = getattr(child, "viewport", None)
+            if callable(viewport):
+                vp = viewport()
+                if vp is not None:
+                    vp.setAcceptDrops(False)
+        root.setAcceptDrops(False)
 
     # ── file operations ───────────────────────────────────────────────────
 
     def open_file(self):
+        if not self._confirm_discard():
+            return
         start_dir = self._settings.get("last_dir", "")
         path, _ = QFileDialog.getOpenFileName(
             self, "Open ComfyUI Workflow", start_dir,
@@ -495,15 +522,26 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+        self.load_path(Path(path))
+
+    def load_path(self, path: Path) -> bool:
+        """Load a workflow JSON from disk and rebuild the form. Returns True on success."""
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as exc:
             QMessageBox.critical(self, "Open failed", f"Could not load:\n{exc}")
-            return
+            return False
 
-        self._path = Path(path)
-        self._settings.set("last_dir", str(self._path.parent))
+        if not isinstance(data, dict):
+            QMessageBox.critical(
+                self, "Open failed",
+                f"{path.name} is not a ComfyUI workflow — expected a JSON object of nodes.",
+            )
+            return False
+
+        self._path = path
+        self._settings.set("last_dir", str(path.parent))
         self._workflow = data
         self._modified = False
 
@@ -513,8 +551,25 @@ class MainWindow(QMainWindow):
         self._update_title()
 
         node_count = sum(1 for v in data.values() if isinstance(v, dict) and "class_type" in v)
-        self._status_lbl.setText(f"{self._path.name}  —  {node_count} nodes  —  {len(self._editors)} editable fields")
-        self._file_lbl.setText(f"  {self._path.name}")
+        self._status_lbl.setText(f"{path.name}  —  {node_count} nodes  —  {len(self._editors)} editable fields")
+        self._file_lbl.setText(f"  {path.name}")
+        return True
+
+    def _confirm_discard(self) -> bool:
+        """Ask about unsaved changes before replacing the workflow that is open."""
+        if not self._modified:
+            return True
+        reply = QMessageBox.question(
+            self, "Unsaved changes",
+            "You have unsaved changes. Save before opening another workflow?",
+            QMessageBox.StandardButton.Save |
+            QMessageBox.StandardButton.Discard |
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply == QMessageBox.StandardButton.Save:
+            self.save_file()
+            return not self._modified
+        return reply == QMessageBox.StandardButton.Discard
 
     def save_file(self):
         if not self._workflow:
@@ -567,6 +622,48 @@ class MainWindow(QMainWindow):
             self._status_lbl.setText(f"Saved  —  {path.name}")
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", f"Could not save:\n{exc}")
+
+    # ── drag and drop ────────────────────────────────────
+
+    @staticmethod
+    def _dropped_json_paths(mime) -> list[Path]:
+        """Local .json files carried by a drag, in the order they were dropped."""
+        if not mime.hasUrls():
+            return []
+        paths = []
+        for url in mime.urls():
+            if not url.isLocalFile():
+                continue
+            path = Path(url.toLocalFile())
+            if path.suffix.lower() == ".json" and path.is_file():
+                paths.append(path)
+        return paths
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if self._dropped_json_paths(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent):
+        if self._dropped_json_paths(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent):
+        paths = self._dropped_json_paths(event.mimeData())
+        if not paths:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+
+        if not self._confirm_discard():
+            return
+        if self.load_path(paths[0]) and len(paths) > 1:
+            self._status_lbl.setText(
+                f"{self._status_lbl.text()}  (opened first of {len(paths)} dropped files)"
+            )
 
     # ── helpers ───────────────────────────────────────────────────────────
 
