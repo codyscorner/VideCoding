@@ -2,9 +2,9 @@
 
 A tool for searching matching faces in image collections using face recognition.
 
-## Version 1.4.0
+## Version 1.4.2
 
-**Multi-reference search, move/copy to folder, saved profiles** — add multiple reference images for better recall, select and move/copy matches straight from the results grid, and save named search profiles to reload later.
+**Clipboard-paste and live-progress fixes** — pasting a screenshot no longer pops a QMetaObject error, each paste becomes its own reference (unique temp filename), stale/missing saved references are dropped at startup, and the progress bar now updates live during a search (thread-safe signals replace the old invokeMethod hack).
 
 ## Features
 
@@ -181,6 +181,19 @@ MIT License - See LICENSE file for details.
 Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
+
+### v1.4.2
+- Fixed: clipboard paste raised "QMetaObject.invokeMethod() call failed" (`addItem` isn't an invokable slot in PyQt6) — replaced with `pyqtSignal`s for results and progress
+- Fixed: progress bar/label never updated during search (`_update_progress` was a stub) — now live
+- Fixed: repeated screenshot pastes overwrote one temp file — now unique timestamped names, so each paste is its own reference
+- Startup drops saved references whose files no longer exist (pasted temp screenshots)
+
+### v1.4.1
+- Fixed: PyInstaller splash screen never closed (missing `pyi_splash.close()` after the main window shows)
+- Fixed: window opened at 750×650, clipping the Search Options group and buttons — now 900×980 default, 760×850 minimum
+- Window opens centered on the screen and raised to the front at startup
+- Added `make_splash.py` — regenerates `splash.png` with the version read from `main.py` (old splash said v1.0.0)
+- Spec cleanup: shared-venv heavy ML excludes added; unused tkinter/tkinterdnd2 bundling removed
 
 ### v1.4.0
 - **Multiple reference images per search** — add any number of reference images (Add.../Paste); a photo counts as a match if a face matches *any* reference, improving recall for one person across different angles/lighting

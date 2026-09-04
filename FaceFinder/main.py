@@ -1,6 +1,6 @@
 """
 FaceFinder - Main Entry Point
-Version: 1.4.0
+Version: 1.4.2
 """
 
 import sys
@@ -13,7 +13,7 @@ from PyQt6.QtGui import QIcon
 from config import ConfigManager
 from ui.main_window import MainWindow
 
-VERSION = "1.4.0"
+VERSION = "1.4.2"
 
 
 def get_script_dir() -> Path:
@@ -36,6 +36,19 @@ def main():
 
     window = MainWindow(config_manager, VERSION)
     window.show()
+
+    # Close the PyInstaller splash screen once the main window is up
+    try:
+        import pyi_splash
+        pyi_splash.close()
+    except ImportError:
+        pass
+
+    # Bring the window to the front on startup so it isn't buried
+    # behind other windows (one-time — not always-on-top)
+    window.raise_()
+    window.activateWindow()
+
     sys.exit(app.exec())
 
 
