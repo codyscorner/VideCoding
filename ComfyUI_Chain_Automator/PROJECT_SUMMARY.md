@@ -1,12 +1,15 @@
 # ComfyUI Workflow Chain Automator
 
+Version: 3.10.2
+
 Automates a chain of ComfyUI segments (up to 10), stitching the outputs into a single final video. Supports both local ComfyUI and RunPod deployments.
 
 ## Features
 
 - Chains multiple ComfyUI workflow segments automatically
 - Segment count driven by your workflow config — no hardcoded limits (max 10)
-- **Batch mode**: run N images simultaneously — one model load per segment, N outputs (uses `LoadImageListFromDir //Inspire`)
+- **Batch mode**: run N images simultaneously — one model load per segment, N outputs (uses `LoadImageListFromDir //Inspire`); every segment's batch workflow is validated when the chain is selected (and at startup) — a missing or unwired list loader disables Start Batch / Auto Run and shows exactly which file/node to fix, instead of a late "expected N videos, got 1"
+- **LoRA check & sync**: every LoRA a chain names is verified in the local LoRA folder (Settings > Folders) and, in RunPod mode, on the pod's volume via RunPod's S3 API (Settings > RunPod Volume). Missing-locally blocks Start with the file/segment named; missing-on-pod is uploaded from the local folder on Start (or via the ⇅ LoRAs button) before the batch runs. Module: `lora_sync.py`
 - Dual workflow sets: `workflow_segment_XX_batch.json` in chain subfolder
 - Split-pane UI: image browser (with sort) on the left, controls on the right
 - Background image loading — UI appears instantly, thumbnails load progressively

@@ -3,12 +3,16 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox,
     QLabel, QLineEdit, QPushButton, QRadioButton, QButtonGroup,
-    QFileDialog, QDialogButtonBox, QCheckBox,
+    QFileDialog, QDialogButtonBox, QCheckBox, QWidget,
 )
 from PyQt6.QtCore import Qt
 
 from config import ConfigManager
 from ui.styles import COLORS
+from lora_sync import (
+    CFG_S3_PROFILE, CFG_S3_REGION, CFG_S3_ENDPOINT, CFG_S3_BUCKET,
+    CFG_S3_LORAS_PREFIX, CFG_LORA_CHECK, S3_DEFAULTS, import_s3_browser_config,
+)
 
 
 class SettingsDialog(QDialog):
@@ -16,13 +20,34 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self._config = config
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(750)
+        self.setMinimumWidth(1400)
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint)
         self.setStyleSheet(parent.styleSheet() if parent else "")
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
         layout.setContentsMargins(20, 20, 20, 20)
+
+        # Two columns so the dialog stays short enough for a 1080p screen:
+        # left = server + folders + batch + ffmpeg, right = S3 / LoRA sync,
+        # AI prompt writer, completion sound. OK/Cancel span both.
+        columns = QHBoxLayout()
+        columns.setSpacing(16)
+        left_w = QWidget()
+        right_w = QWidget()
+        left = QVBoxLayout(left_w)
+        left.setSpacing(12)
+        left.setContentsMargins(0, 0, 0, 0)
+        right = QVBoxLayout(right_w)
+        right.setSpacing(12)
+        right.setContentsMargins(0, 0, 0, 0)
+        # Equal minimum widths so neither column's longest label can
+        # squeeze the other.
+        for w in (left_w, right_w):
+            w.setMinimumWidth(660)
+        columns.addWidget(left_w, stretch=1)
+        columns.addWidget(right_w, stretch=1)
+        layout.addLayout(columns)
 
         # ── ComfyUI Server ────────────────────────────────────────────────
         server_group = QGroupBox("ComfyUI Server")
@@ -53,7 +78,7 @@ class SettingsDialog(QDialog):
             config.get("runpod_url", ""),
             "https://xxxxxx-8188.proxy.runpod.net"
         )
-        layout.addWidget(server_group)
+        left.addWidget(server_group)
 
         # ── Folders ───────────────────────────────────────────────────────
         folders_group = QGroupBox("Folders")
@@ -68,7 +93,7 @@ class SettingsDialog(QDialog):
         self._loras_edit, _ = self._folder_row(
             folders_layout, "LoRAs:",
             config.get("loras_dir", ""),
-            "ComfyUI models/loras folder (used by the segment editor dropdown)..."
+            "ComfyUI models/loras folder of the portable install you run (segment editor dropdown + LoRA check)..."
         )
         self._final_edit, _ = self._folder_row(
             folders_layout, "Final Video:",
@@ -80,7 +105,7 @@ class SettingsDialog(QDialog):
             config.get("zip_output_dir", ""),
             "Folder for completed zip archives..."
         )
-        layout.addWidget(folders_group)
+        left.addWidget(folders_group)
 
         # ── Batch Processing ─────────────────────────────────────────────
         batch_group = QGroupBox("Batch Processing")
@@ -101,7 +126,56 @@ class SettingsDialog(QDialog):
             config.get("runpod_input_dir", "/workspace/runpod-slim/ComfyUI/input"),
             "Absolute path to ComfyUI's input folder on RunPod..."
         )
-        layout.addWidget(batch_group)
+        left.addWidget(batch_group)
+
+        # ── RunPod Volume (S3) — LoRA check / sync ───────────────────────
+        s3_group = QGroupBox("RunPod Volume (S3) — LoRA check && sync")
+        s3_layout = QVBoxLayout(s3_group)
+        s3_layout.setSpacing(10)
+        self._lora_check_chk = QCheckBox(
+            "Verify a chain's LoRAs exist locally (and on the pod in RunPod mode) before starting")
+        self._lora_check_chk.setChecked(bool(config.get(CFG_LORA_CHECK, S3_DEFAULTS[CFG_LORA_CHECK])))
+        s3_layout.addWidget(self._lora_check_chk)
+        self._s3_profile_edit, _ = self._text_row(
+            s3_layout, "AWS Profile:",
+            config.get(CFG_S3_PROFILE, S3_DEFAULTS[CFG_S3_PROFILE]),
+            "Profile name in %USERPROFILE%\\.aws\\credentials holding the RunPod S3 keys (e.g. runpod-s3)..."
+        )
+        self._s3_endpoint_edit, _ = self._text_row(
+            s3_layout, "Endpoint URL:",
+            config.get(CFG_S3_ENDPOINT, ""),
+            "https://s3api-<datacenter>.runpod.io"
+        )
+        self._s3_region_edit, _ = self._text_row(
+            s3_layout, "Region:",
+            config.get(CFG_S3_REGION, ""),
+            "RunPod datacenter id (e.g. us-ks-2)"
+        )
+        self._s3_bucket_edit, _ = self._text_row(
+            s3_layout, "Bucket:",
+            config.get(CFG_S3_BUCKET, ""),
+            "Network volume id (e.g. pjez3nxwp9)"
+        )
+        self._s3_prefix_edit, _ = self._text_row(
+            s3_layout, "LoRA Prefix:",
+            config.get(CFG_S3_LORAS_PREFIX, S3_DEFAULTS[CFG_S3_LORAS_PREFIX]),
+            "Path of ComfyUI's models/loras folder inside the bucket (e.g. runpod-slim/ComfyUI/models/loras/)"
+        )
+        s3_btn_row = QHBoxLayout()
+        s3_btn_row.addStretch()
+        import_btn = QPushButton("Import from S3 Browser config...")
+        import_btn.setToolTip("Copy profile / endpoint / region / bucket from the S3 Browser app's config.json")
+        import_btn.clicked.connect(self._import_s3_browser)
+        test_btn = QPushButton("Test connection")
+        test_btn.clicked.connect(self._test_s3)
+        s3_btn_row.addWidget(import_btn)
+        s3_btn_row.addWidget(test_btn)
+        s3_layout.addLayout(s3_btn_row)
+        self._s3_status = QLabel("")
+        self._s3_status.setWordWrap(True)
+        self._s3_status.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:9pt;")
+        s3_layout.addWidget(self._s3_status)
+        right.addWidget(s3_group)
 
         # ── FFmpeg ────────────────────────────────────────────────────────
         ffmpeg_group = QGroupBox("FFmpeg")
@@ -111,7 +185,7 @@ class SettingsDialog(QDialog):
             config.get("ffmpeg_path", "ffmpeg"),
             "Path to ffmpeg.exe (or 'ffmpeg' if on PATH)..."
         )
-        layout.addWidget(ffmpeg_group)
+        left.addWidget(ffmpeg_group)
 
         # ── AI Prompt Writer ─────────────────────────────────────────────
         prompt_ai_group = QGroupBox("AI Prompt Writer")
@@ -122,7 +196,7 @@ class SettingsDialog(QDialog):
             "Anthropic API key (console.anthropic.com) — used by the Prompt Writer tab..."
         )
         self._anthropic_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addWidget(prompt_ai_group)
+        right.addWidget(prompt_ai_group)
 
         # ── Completion Sound ──────────────────────────────────────────────
         sound_group = QGroupBox("Completion Sound")
@@ -139,7 +213,10 @@ class SettingsDialog(QDialog):
             config.get("completion_sound_path", ""),
             "Path to a .wav or .mp3 audio file..."
         )
-        layout.addWidget(sound_group)
+        right.addWidget(sound_group)
+
+        left.addStretch()
+        right.addStretch()
 
         # OK / Cancel
         buttons = QDialogButtonBox(
@@ -241,8 +318,52 @@ class SettingsDialog(QDialog):
         if path:
             edit.setText(path)
 
+    def _s3_config_from_fields(self) -> dict:
+        return {
+            CFG_S3_PROFILE: self._s3_profile_edit.text().strip(),
+            CFG_S3_ENDPOINT: self._s3_endpoint_edit.text().strip(),
+            CFG_S3_REGION: self._s3_region_edit.text().strip(),
+            CFG_S3_BUCKET: self._s3_bucket_edit.text().strip(),
+            CFG_S3_LORAS_PREFIX: self._s3_prefix_edit.text().strip() or S3_DEFAULTS[CFG_S3_LORAS_PREFIX],
+        }
+
+    def _import_s3_browser(self):
+        start = Path(r"P:/Apps/VibeCoded/S3 Browser/config.json")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select the S3 Browser config.json",
+            str(start if start.exists() else Path.home()),
+            "JSON (*.json);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            values = import_s3_browser_config(path)
+        except Exception as e:  # noqa: BLE001
+            self._s3_status.setText(f"Could not read {path}: {e}")
+            return
+        self._s3_profile_edit.setText(values.get(CFG_S3_PROFILE, self._s3_profile_edit.text()))
+        self._s3_endpoint_edit.setText(values.get(CFG_S3_ENDPOINT, self._s3_endpoint_edit.text()))
+        self._s3_region_edit.setText(values.get(CFG_S3_REGION, self._s3_region_edit.text()))
+        self._s3_bucket_edit.setText(values.get(CFG_S3_BUCKET, self._s3_bucket_edit.text()))
+        self._s3_status.setText(f"Imported {len(values)} value(s) from {Path(path).name}. Press Test connection to verify.")
+
+    def _test_s3(self):
+        from lora_sync import S3LoraStore
+        self._s3_status.setText("Connecting...")
+        self._s3_status.repaint()
+        try:
+            store = S3LoraStore(self._s3_config_from_fields())
+            store.test_connection()
+            count = len(store.list_remote())
+            self._s3_status.setText(f"OK — {count} LoRA file(s) found under {store.prefix}")
+        except Exception as e:  # noqa: BLE001
+            self._s3_status.setText(f"Failed: {type(e).__name__}: {e}")
+
     def _save(self):
         self._config.set("mode", "local" if self._local_radio.isChecked() else "runpod")
+        self._config.set(CFG_LORA_CHECK, self._lora_check_chk.isChecked())
+        for key, value in self._s3_config_from_fields().items():
+            self._config.set(key, value)
         self._config.set("comfyui_url", self._local_url_edit.text().strip())
         self._config.set("runpod_url", self._runpod_edit.text().strip())
         self._config.set("workflow_dir", self._workflow_edit.text().strip())

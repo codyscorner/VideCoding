@@ -14,14 +14,18 @@ from PyQt6.QtWidgets import (
     QProgressBar, QListWidget, QListWidgetItem, QGroupBox,
     QVBoxLayout, QHBoxLayout, QStackedWidget, QSpinBox,
     QDialog, QMessageBox, QAbstractItemView, QFileDialog, QCheckBox, QComboBox,
-    QProgressDialog,
+    QProgressDialog, QTextEdit, QDialogButtonBox
 )
 
-from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap, QIcon, QPainter, QImage, QColor
 
 from config import ConfigManager
-from batch_worker import BatchChainWorker
+from batch_worker import BatchChainWorker, validate_batch_chain_dir
+from lora_sync import (
+    CFG_LORA_CHECK, collect_chain_loras, check_local_loras, s3_configured,
+    RemoteLoraCheckWorker, LoraUploadWorker, LoraUploadJob,
+)
 from ui.styles import STYLESHEET, COLORS
 from ui.video_player import VideoPlayerDialog
 from ui.settings_dialog import SettingsDialog
@@ -443,6 +447,20 @@ class MainWindow(QMainWindow):
         self._last_vid_dir: str = ""
         self._seg_dots: list[SegmentDot] = []
         self._seg_time_labels: list[QLabel] = []
+        # Result of the last batch-workflow validation of the active chain.
+        # Start / Auto Run stay disabled while _chain_errors is non-empty.
+        self._chain_errors: list[str] = []
+        self._chain_warnings: list[str] = []
+        # LoRA inventory for the active chain (see _validate_active_chain)
+        self._lora_refs: dict[str, list[str]] = {}
+        self._lora_remote_pending = False
+        self._lora_remote_note = ""          # status text for the pod check
+        self._lora_remote_error = ""         # pod check failed (network/config)
+        self._pod_missing_jobs: list[LoraUploadJob] = []
+        self._remote_check_worker: RemoteLoraCheckWorker | None = None
+        self._remote_check_token = 0
+        self._lora_upload_worker: LoraUploadWorker | None = None
+        self._start_after_upload = False
         self._auto_mode = False
         self._auto_stop_requested = False
         self._auto_continue = False
@@ -689,7 +707,28 @@ class MainWindow(QMainWindow):
         chain_sel_row.addWidget(chain_sel_lbl)
         chain_sel_row.addWidget(self._chain_folder_combo, stretch=1)
         chain_sel_row.addWidget(refresh_chain_btn)
+        self._sync_loras_btn = QPushButton("⇅ LoRAs")
+        # The global QPushButton padding (10px 28px @ 11pt) needs ~40px of
+        # height; this button sits in the 30px chain row, so give it its
+        # own compact padding instead of clipping the text.
+        self._sync_loras_btn.setMinimumHeight(30)
+        self._sync_loras_btn.setStyleSheet("QPushButton { padding: 4px 12px; font-size: 10pt; }")
+        self._sync_loras_btn.setToolTip(
+            "Upload the LoRAs this chain uses that are missing on the pod (RunPod mode)")
+        self._sync_loras_btn.clicked.connect(self._sync_loras_clicked)
+        chain_sel_row.addWidget(self._sync_loras_btn)
         right.addLayout(chain_sel_row)
+
+        # Validation verdict for the selected chain's batch workflows —
+        # hidden when everything checks out, red with the problem otherwise.
+        self._chain_status_label = QLabel("")
+        self._chain_status_label.setWordWrap(True)
+        self._chain_status_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._chain_status_label.setStyleSheet(
+            f"color:{COLORS['error']}; font-size:9pt; padding:2px 4px;")
+        self._chain_status_label.hide()
+        right.addWidget(self._chain_status_label)
 
         self._seg_group = QGroupBox("Segment Progress")
         self._seg_layout = QVBoxLayout(self._seg_group)
@@ -1076,7 +1115,7 @@ class MainWindow(QMainWindow):
             self.selected_label.setText("No images found in input folder")
             self.progress_bar.setRange(0, self._seg_count * 100)
             self.progress_label.setText("Ready")
-            self.start_btn.setEnabled(True)
+            self._update_start_enabled()
             return
 
         # Warn if any stem appears with more than one extension
@@ -1114,7 +1153,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setRange(0, self._seg_count * 100)
         self.progress_bar.setValue(0)
         self.progress_label.setText("Ready")
-        self.start_btn.setEnabled(True)
+        self._update_start_enabled()
         self._apply_image_filter()
 
     def _apply_image_filter(self):
@@ -1434,15 +1473,306 @@ class MainWindow(QMainWindow):
         # Rebuild segment panel to reflect the now-selected folder
         self._rebuild_seg_panel()
         self._sync_lib_dir_display()
+        # Pre-validate the chain that came up selected (startup restores the
+        # last-used one without any dropdown interaction) so the user learns
+        # right away whether it needs fixing. Only pop the dialog once the
+        # window is on screen; at startup it is deferred to showEvent.
+        self._validate_active_chain(show_dialog=self.isVisible())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not getattr(self, "_startup_validation_shown", False):
+            self._startup_validation_shown = True
+            if self._chain_errors:
+                # Let the window paint first, then explain what is wrong.
+                QTimer.singleShot(0, lambda: self._report_chain_validation(startup=True))
 
     def _on_chain_folder_changed(self, _idx: int):
         folder = self._chain_folder_combo.currentText()
         self.config.set("active_chain_folder", folder)
         self.config.save()
         self._rebuild_seg_panel()
+        self._validate_active_chain(show_dialog=True)
         # Re-filter in place — no rescan of the image folder
         self._apply_image_filter()
         self._sync_lib_dir_display()
+
+    # ------------------------------------------------------------------ #
+    # Batch workflow validation
+    # ------------------------------------------------------------------ #
+
+    def _active_chain_dir(self) -> Path:
+        wf_dir = Path(self.config.get("workflow_dir", ""))
+        folder = self.config.get("active_chain_folder", "").strip()
+        return wf_dir / folder if folder else wf_dir
+
+    def _validate_active_chain(self, show_dialog: bool, remote: bool = True) -> bool:
+        """Check every workflow_segment_*_batch.json the active chain would
+        run (wiring + LoRA inventory). Updates the status line under the
+        Chain selector, gates the Start / Auto Run buttons, and (optionally)
+        pops a dialog spelling out exactly what must change. Returns True
+        when the chain is OK. remote=False skips re-launching the
+        background pod check (used by Start, which needs a sync answer)."""
+        self._chain_errors, self._chain_warnings = validate_batch_chain_dir(
+            self._active_chain_dir())
+        self._check_chain_loras(remote=remote)
+        self._refresh_chain_status()
+        if show_dialog and self._chain_errors:
+            self._report_chain_validation(startup=False)
+        return not self._chain_errors
+
+    def _check_chain_loras(self, remote: bool):
+        """Every LoRA the chain's batch workflows name must exist in the
+        local LoRA folder (blocking) and, in RunPod mode, on the pod's
+        volume (checked via S3 in the background; missing ones are queued
+        for upload rather than blocking)."""
+        self._pod_missing_jobs = []
+        self._lora_remote_error = ""
+        if remote:
+            self._lora_remote_pending = False
+            self._lora_remote_note = ""
+        self._lora_refs = {}
+        if not self.config.get(CFG_LORA_CHECK, True):
+            return
+        self._lora_refs = collect_chain_loras(self._active_chain_dir())
+        if not self._lora_refs:
+            return
+        loras_dir = (self.config.get("loras_dir", "") or "").strip()
+        if not loras_dir or not Path(loras_dir).is_dir():
+            self._chain_errors.append(
+                f"LoRA folder is not set or does not exist ({loras_dir or 'blank'}). "
+                f"This chain uses {len(self._lora_refs)} LoRA(s); set Settings > Folders > "
+                f"LoRA Folder to the models/loras folder of the ComfyUI install you run."
+            )
+            return
+        local = check_local_loras(loras_dir, self._lora_refs.keys())
+        for name in local.missing:
+            files = ", ".join(self._lora_refs[name])
+            self._chain_errors.append(
+                f"LoRA '{name}' (used by {files}) is not in the local LoRA folder "
+                f"{loras_dir}. Put the file there, or double-click the segment's dot and "
+                f"pick a different LoRA from the dropdown."
+            )
+        for name, actual in local.case_mismatch.items():
+            self._chain_warnings.append(
+                f"LoRA '{name}' is on disk as '{actual}' (different capitalization). Windows "
+                f"finds it, the Linux pod will not — rename the file or fix the workflow."
+            )
+        if self.config.get("mode", "local") != "runpod":
+            return
+        cfg = self.config.get_all()
+        if not s3_configured(cfg):
+            self._chain_warnings.append(
+                "RunPod mode: S3 volume access is not configured (Settings > RunPod Volume), so "
+                "the LoRAs on the pod were not verified — a missing file will fail on the server."
+            )
+            return
+        if not remote:
+            # Start re-validates synchronously; keep the last pod result.
+            self._pod_missing_jobs = self._last_pod_missing_jobs(local)
+            return
+        self._lora_remote_pending = True
+        self._lora_remote_note = "Checking which LoRAs are on the pod..."
+        self._remote_check_token += 1
+        token = self._remote_check_token
+        worker = RemoteLoraCheckWorker(cfg, sorted(self._lora_refs.keys()), local)
+        worker.done.connect(lambda status, t=token, l=local: self._on_remote_lora_check(t, l, status))
+        self._remote_check_worker = worker
+        worker.start()
+
+    def _last_pod_missing_jobs(self, local) -> list[LoraUploadJob]:
+        names = getattr(self, "_last_pod_missing_names", [])
+        jobs = []
+        for name in names:
+            path = local.present.get(name)
+            if path is not None:
+                jobs.append(LoraUploadJob(name, path, path.stat().st_size))
+        return jobs
+
+    def _on_remote_lora_check(self, token: int, local, status):
+        if token != self._remote_check_token:
+            return  # a newer check superseded this one
+        self._lora_remote_pending = False
+        if status.error:
+            self._lora_remote_error = status.error
+            self._lora_remote_note = (
+                f"Could not check the pod's LoRA folder ({status.error}). "
+                f"The batch can still start, but a LoRA missing on the pod will fail there."
+            )
+            self._last_pod_missing_names = []
+        else:
+            self._last_pod_missing_names = list(status.missing)
+            jobs = []
+            for name in status.missing:
+                path = local.present.get(name)
+                if path is not None:
+                    jobs.append(LoraUploadJob(name, path, path.stat().st_size))
+            self._pod_missing_jobs = jobs
+            parts = []
+            if jobs:
+                total_mb = sum(j.size for j in jobs) / 1e6
+                parts.append(
+                    f"{len(jobs)} LoRA(s) missing on the pod ({total_mb:.0f} MB) — they will be "
+                    f"uploaded when you press Start Batch, or press ⇅ LoRAs now: "
+                    + ", ".join(j.name for j in jobs)
+                )
+            if status.size_mismatch:
+                parts.append("Size differs local vs pod (re-upload with ⇅ LoRAs to be safe): " + ", ".join(
+                    f"{n} ({l / 1e6:.0f} MB vs {r / 1e6:.0f} MB)" for n, (l, r) in status.size_mismatch.items()))
+            if not parts:
+                parts.append(f"All {len(status.present)} LoRA(s) this chain uses are on the pod.")
+            self._lora_remote_note = "\n".join(parts)
+        self._refresh_chain_status()
+        if self._start_after_upload:
+            self._start_after_upload = False
+            if self._pod_missing_jobs:
+                QMessageBox.critical(
+                    self, "LoRA upload incomplete",
+                    "Some LoRAs are still missing on the pod after the upload:\n  "
+                    + "\n  ".join(j.name for j in self._pod_missing_jobs)
+                    + "\n\nThe batch was not started.")
+            elif not self._lora_remote_error:
+                self._start()
+
+    def _refresh_chain_status(self):
+        folder = self._chain_folder_combo.currentText() or "(none)"
+        if self._chain_errors:
+            n = len(self._chain_errors)
+            # One line per problem (file + what is wrong); the full text with
+            # the fix for each lives in the dialog and the tooltip.
+            shown = [e.split("\n", 1)[0] for e in self._chain_errors[:3]]
+            more = n - len(shown)
+            lines = [f"• {e}" for e in shown]
+            if more:
+                lines.append(f"• … and {more} more")
+            lines.append("Start Batch is disabled — fix the workflow(s), re-export (API), "
+                         "then press ↻ or re-select the chain.")
+            self._chain_status_label.setStyleSheet(
+                f"color:{COLORS['error']}; font-size:9pt; padding:2px 4px;")
+            self._chain_status_label.setText(
+                f"⚠ Chain '{folder}' cannot run — {n} problem{'s' if n != 1 else ''} "
+                f"in its batch workflows:\n" + "\n".join(lines)
+            )
+            self._chain_status_label.setToolTip("\n\n".join(self._chain_errors))
+            self._chain_status_label.show()
+            self.start_btn.setToolTip(
+                "Disabled: fix the batch workflow problems listed under the Chain selector")
+        elif self._chain_warnings:
+            self._chain_status_label.setStyleSheet(
+                f"color:{COLORS['warning']}; font-size:9pt; padding:2px 4px;")
+            self._chain_status_label.setText(
+                "\n".join(f"• {w}" for w in self._chain_warnings))
+            self._chain_status_label.show()
+            self.start_btn.setToolTip("")
+        else:
+            self._chain_status_label.clear()
+            self._chain_status_label.hide()
+            self.start_btn.setToolTip("")
+        # Pod LoRA status rides along under the wiring/local verdict
+        if self._lora_remote_note and not self._chain_errors:
+            color = COLORS['warning'] if (self._pod_missing_jobs or self._lora_remote_error
+                                          or self._lora_remote_pending) else COLORS['success']
+            existing = self._chain_status_label.text()
+            self._chain_status_label.setStyleSheet(
+                f"color:{color}; font-size:9pt; padding:2px 4px;")
+            self._chain_status_label.setText(
+                (existing + "\n" if existing else "") + self._lora_remote_note)
+            self._chain_status_label.show()
+        self._sync_loras_btn.setEnabled(
+            bool(self._pod_missing_jobs) and not self._lora_remote_pending
+            and not (self._lora_upload_worker and self._lora_upload_worker.isRunning()))
+        self._update_start_enabled()
+        self._update_auto_buttons()
+
+    def _report_chain_validation(self, startup: bool):
+        folder = self._chain_folder_combo.currentText() or "(none)"
+        lead = (
+            f"The chain '{folder}' loaded at startup cannot be run as a batch."
+            if startup else
+            f"The chain '{folder}' cannot be run as a batch."
+        )
+        body = "\n\n".join(
+            f"{i}. {e}" for i, e in enumerate(self._chain_errors, 1))
+        text = (
+            f"{lead}\n\n{body}\n\n"
+            "Start Batch stays disabled until every problem above is fixed. "
+            "After re-exporting the workflow, press ↻ next to the Chain selector "
+            "or re-select the chain to check again."
+        )
+        # A plain QMessageBox grows with its text and can run off the screen
+        # when a chain has several broken segments — use a scrollable dialog.
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Batch workflow needs fixing")
+        dlg.setMinimumSize(760, 440)
+        lay = QVBoxLayout(dlg)
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setPlainText(text)
+        lay.addWidget(view)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        btns.accepted.connect(dlg.accept)
+        lay.addWidget(btns)
+        dlg.exec()
+
+    def _update_start_enabled(self):
+        running = self._worker is not None and self._worker.isRunning()
+        loading = self._img_loader is not None and self._img_loader.isRunning()
+        uploading = self._lora_upload_worker is not None and self._lora_upload_worker.isRunning()
+        self.start_btn.setEnabled(
+            not running and not loading and not uploading
+            and not self._lora_remote_pending and not self._chain_errors)
+
+    # ------------------------------------------------------------------ #
+    # LoRA upload to the pod
+    # ------------------------------------------------------------------ #
+
+    def _sync_loras_clicked(self):
+        if not self._pod_missing_jobs:
+            QMessageBox.information(self, "LoRAs", "Nothing to upload — every LoRA this chain uses is on the pod.")
+            return
+        self._start_after_upload = False
+        self._run_lora_upload()
+
+    def _run_lora_upload(self):
+        jobs = list(self._pod_missing_jobs)
+        if not jobs:
+            return
+        self._lora_upload_worker = LoraUploadWorker(self.config.get_all(), jobs)
+        self._lora_upload_worker.log.connect(self._on_log)
+        self._lora_upload_worker.progress.connect(self._on_lora_upload_progress)
+        self._lora_upload_worker.finished_ok.connect(self._on_lora_upload_done)
+        total_mb = sum(j.size for j in jobs) / 1e6
+        self._on_log(f"Uploading {len(jobs)} LoRA(s) ({total_mb:.0f} MB) to the pod's LoRA folder...")
+        self.progress_label.setText(f"Uploading LoRAs 0/{len(jobs)}...")
+        self.progress_bar.setRange(0, 1000)
+        self.progress_bar.setValue(0)
+        self.cancel_btn.setEnabled(True)
+        self._lora_upload_worker.start()
+        self._update_start_enabled()
+        self._sync_loras_btn.setEnabled(False)
+
+    def _on_lora_upload_progress(self, done: int, total: int, name: str, files_done: int, files_total: int):
+        self.progress_bar.setValue(int(done * 1000 / total) if total else 0)
+        self.progress_label.setText(
+            f"Uploading LoRAs {files_done}/{files_total} — {name}  ({done / 1e6:.0f} / {total / 1e6:.0f} MB)")
+
+    def _on_lora_upload_done(self, errors: list):
+        self.cancel_btn.setEnabled(False)
+        self.progress_bar.setValue(0)
+        if errors:
+            self.progress_label.setText("LoRA upload failed")
+            self._start_after_upload = False
+            QMessageBox.critical(
+                self, "LoRA upload failed",
+                "These LoRAs did not make it to the pod:\n\n"
+                + "\n".join(f"{n}: {e}" for n, e in errors)
+                + "\n\nFix the problem and press ⇅ LoRAs to retry. The batch was not started.")
+        else:
+            self.progress_label.setText("LoRA upload complete — re-checking the pod...")
+            self._on_log("All LoRAs uploaded. Re-checking the pod's LoRA folder...")
+        # Re-run the pod check; if a Start was waiting on the upload it
+        # resumes from _on_remote_lora_check once the pod confirms the files.
+        self._validate_active_chain(show_dialog=False)
 
     def _on_seg_dot_double_clicked(self, segment: int):
         workflow_dir = Path(self.config.get("workflow_dir", ""))
@@ -1547,8 +1877,12 @@ class MainWindow(QMainWindow):
     def _update_auto_buttons(self):
         show_all = self._show_all_chk.isChecked()
         running = self._auto_mode and not self._auto_stop_requested
-        self._auto_btn.setEnabled(not self._auto_mode and not show_all)
+        blocked = bool(self._chain_errors)
+        self._auto_btn.setEnabled(not self._auto_mode and not show_all and not blocked)
         self._auto_btn.setToolTip(
+            "Disabled: the selected chain's batch workflows failed validation — "
+            "see the message under the Chain selector"
+            if blocked else
             "Disabled: uncheck 'Show all' before using Auto Run"
             if show_all else
             "Automatically process all images N at a time, no prompts between batches"
@@ -1566,6 +1900,35 @@ class MainWindow(QMainWindow):
         keys = self.image_grid.selected_keys()
         if not keys:
             QMessageBox.critical(self, "Error", "Select at least one image for the batch.")
+            return
+        # Re-check right before starting — the JSON may have been edited (or
+        # broken) since the chain was selected.
+        if not self._validate_active_chain(show_dialog=True, remote=False):
+            if self._auto_mode:
+                self._auto_mode = False
+                self._auto_stop_requested = False
+                self._update_auto_buttons()
+            return
+        if self._pod_missing_jobs:
+            names = "\n  ".join(f"{j.name} ({j.size / 1e6:.0f} MB)" for j in self._pod_missing_jobs)
+            total_mb = sum(j.size for j in self._pod_missing_jobs) / 1e6
+            answer = QMessageBox.question(
+                self, "Upload missing LoRAs?",
+                f"This chain uses {len(self._pod_missing_jobs)} LoRA(s) that are not on the pod "
+                f"({total_mb:.0f} MB total):\n\n  {names}\n\n"
+                "Upload them from the local LoRA folder now? The batch starts automatically "
+                "once the pod confirms the files.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                if self._auto_mode:
+                    self._auto_mode = False
+                    self._auto_stop_requested = False
+                    self._update_auto_buttons()
+                return
+            self._start_after_upload = True
+            self._run_lora_upload()
             return
         self._reset_ui()
         self.start_btn.setEnabled(False)
@@ -1608,6 +1971,10 @@ class MainWindow(QMainWindow):
         self.progress_label.setText(f"Batch: {len(keys)} images — Segment 1/{self._seg_count}...")
 
     def _cancel(self):
+        if self._lora_upload_worker and self._lora_upload_worker.isRunning():
+            self._lora_upload_worker.cancel()
+            self._start_after_upload = False
+            self._on_log("Cancelling LoRA upload after the current file...")
         if self._worker:
             self._worker.cancel()
         self.cancel_btn.setEnabled(False)
@@ -1837,7 +2204,7 @@ class MainWindow(QMainWindow):
             self._auto_mode = False
             self._auto_stop_requested = False
             self._update_auto_buttons()
-        self.start_btn.setEnabled(True)
+        self._update_start_enabled()
         self.cancel_btn.setEnabled(False)
 
     # ------------------------------------------------------------------ #
