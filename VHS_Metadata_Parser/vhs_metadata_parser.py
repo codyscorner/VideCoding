@@ -1071,25 +1071,28 @@ class MainWindow(QMainWindow):
         sections_layout.addWidget(self.prompt_sections_table)
         splitter.addWidget(sections_group)
 
-        raw_widget = QWidget()
-        raw_layout = QVBoxLayout(raw_widget)
-        raw_layout.setContentsMargins(0, 0, 0, 0)
-
+        # Positive and Negative are separate splitter panes so each can be dragged (or collapsed)
         pos_group = QGroupBox("Positive Prompts (raw)")
         pos_layout = QVBoxLayout(pos_group)
         self.positive_prompts_edit = QTextEdit(); self.positive_prompts_edit.setReadOnly(True)
+        self.positive_prompts_edit.setMinimumHeight(24)
         pos_layout.addWidget(self.positive_prompts_edit)
-        raw_layout.addWidget(pos_group)
+        pos_group.setMinimumHeight(48)
+        splitter.addWidget(pos_group)
 
         neg_group = QGroupBox("Negative Prompts (raw)")
         neg_layout = QVBoxLayout(neg_group)
         self.negative_prompts_edit = QTextEdit(); self.negative_prompts_edit.setReadOnly(True)
+        self.negative_prompts_edit.setMinimumHeight(24)
         neg_layout.addWidget(self.negative_prompts_edit)
-        raw_layout.addWidget(neg_group)
-        splitter.addWidget(raw_widget)
+        neg_group.setMinimumHeight(48)
+        splitter.addWidget(neg_group)
 
+        splitter.setChildrenCollapsible(True)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(2, 1)
+        self.prompts_splitter = splitter
         layout.addWidget(splitter)
 
         self.tab_widget.addTab(tab, "Prompts")
@@ -1478,6 +1481,7 @@ class MainWindow(QMainWindow):
         negative = self.parser.get_negative_prompts()
         self.positive_prompts_edit.setPlainText('\n\n---\n\n'.join(positive) if positive else 'No positive prompts found')
         self.negative_prompts_edit.setPlainText('\n\n---\n\n'.join(negative) if negative else 'No negative prompts found')
+        self._layout_prompt_panes(bool(negative))
 
         rows = self.parser.get_prompt_sections()
         self.prompt_sections_table.setRowCount(len(rows))
@@ -1496,12 +1500,33 @@ class MainWindow(QMainWindow):
         self.prompt_sections_table.setCurrentItem(None)
         self._refit_prompt_sections()
 
+    def _layout_prompt_panes(self, has_negative: bool):
+        """Give the Negative pane real space only when there is a negative prompt; otherwise shrink it to one line."""
+        self._prompt_panes_pending = has_negative
+        self._apply_prompt_panes()
+
+    def _apply_prompt_panes(self):
+        # The splitter has no usable geometry while the Prompts tab is hidden, so this is retried
+        # from _refit_prompt_sections() (tab change) until it can actually be applied.
+        pending = getattr(self, '_prompt_panes_pending', None)
+        splitter = getattr(self, 'prompts_splitter', None)
+        if pending is None or splitter is None or not splitter.isVisible():
+            return
+        total = sum(splitter.sizes())
+        if total < 200:
+            return
+        neg = int(total * 0.2) if pending else 64
+        rest = total - neg
+        splitter.setSizes([int(rest * 0.6), rest - int(rest * 0.6), neg])
+        self._prompt_panes_pending = None
+
     def _refit_prompt_sections(self):
         # Row heights depend on the Content column width, which is only final once the tab is laid out.
         # (Also fires from tab_widget.currentChanged while tabs are still being built, hence the guard.)
         table = getattr(self, 'prompt_sections_table', None)
         if table is None:
             return
+        self._apply_prompt_panes()
         table.resizeRowsToContents()
         QTimer.singleShot(0, table.resizeRowsToContents)
 

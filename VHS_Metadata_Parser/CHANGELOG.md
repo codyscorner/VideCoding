@@ -16,6 +16,7 @@
 - Added `run.bat` (runs from source via the shared `..\.venv`, falls back to `python` on PATH) and an optional command-line file argument: `run.bat path\to\file.mp4` opens it on launch.
 - Width/height/duration are now read from the MP4 container header (`tkhd` / `mvhd`) and used whenever the workflow only has a link for them (MiniMax `GetImageSize` case). Video Settings shows e.g. `832 (from MP4 header; workflow: → Get Image Size [120])` plus a new **MP4 Header** row (`832×640, 15.08 s`) for cross-checking.
 - Layout fixes from screenshots: drop-zone label no longer clips its three lines (min height from font metrics); Video Settings group boxes keep their natural height and the tab scrolls instead of squashing the line edits when the window is short.
+- Prompts tab: Positive and Negative raw boxes are now separate splitter panes (drag either edge, or collapse a pane entirely). When a file has no negative prompt the Negative pane auto-shrinks to one line instead of wasting a third of the tab; it gets ~20% of the height when one exists.
 
 ## v1.2.0 — 2026-07-08
 - New **Batch / Search** tab: scan a folder (optionally recursive) for `.mp4`/`.json`/`.txt` metadata files on a background `QThread`, with a live progress status label.
