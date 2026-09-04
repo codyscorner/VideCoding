@@ -1,4 +1,4 @@
-# VHS Metadata Parser  V-1.3.0
+# VHS Metadata Parser  V-1.3.1
 
 A desktop app for parsing and displaying ComfyUI workflow metadata embedded in MP4 files, JSON, or TXT files.
 
@@ -59,6 +59,9 @@ pyinstaller VHS_Metadata_Parser.spec
 ---
 
 ## Version History
+
+### v1.3.1
+- Rebuild release: the v1.3.0 EXE was built before the follow-up fixes landed. This build includes the MP4-header width/height/duration fallback (new **MP4 Header** row), the drop-zone / Video Settings layout fixes, the resizable and auto-collapsing Negative prompt pane, `run.bat`, and the optional command-line file argument.
 
 ### v1.3.0
 - MiniMax H3 support: `MiniMaxH3ImageToVideo` prompt/width/height/length, `SamplerCustomAdvanced` (seed from `RandomNoise`, steps/scheduler/denoise from `BasicScheduler`, sampler from `KSamplerSelect` or the custom sampler node's title, CFG from a CFGGuider or "N/A (Basic Guider)"), `MiniMaxH3TurboLoRA` in the LoRA table, both VAEs, audio detection

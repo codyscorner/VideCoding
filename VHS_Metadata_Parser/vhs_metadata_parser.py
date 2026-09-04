@@ -3,7 +3,7 @@
 VHS Metadata Parser
 A PyQt6 application to parse and display ComfyUI workflow metadata files.
 Supports drag-and-drop and file browser import.
-Version: 1.3.0
+Version: 1.3.1
 """
 
 import csv
@@ -917,7 +917,7 @@ class MainWindow(QMainWindow):
         self.batch_rows: List[Dict[str, Any]] = []
         self.batch_visible_rows: List[Dict[str, Any]] = []
         self.batch_worker: Optional[BatchScanWorker] = None
-        self.setWindowTitle("VHS Metadata Parser v1.3.0")
+        self.setWindowTitle("VHS Metadata Parser v1.3.1")
         self.setMinimumSize(900, 700)
         self.setStyleSheet(STYLESHEET)
         self.setAcceptDrops(True)

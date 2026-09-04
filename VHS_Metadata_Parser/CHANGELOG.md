@@ -1,5 +1,8 @@
 # Changelog
 
+## v1.3.1 — 2026-09-04
+- Version bump + EXE rebuild. The deployed v1.3.0 EXE predated the fixes listed under v1.3.0 below (MP4-header dimensions, layout un-clipping, resizable Negative pane, run.bat + CLI file argument); this build ships all of them. No functional changes beyond the version string.
+
 ## v1.3.0 — 2026-09-04
 - **MiniMax H3 workflows now parse fully** (test file: `Test_files/MiniMax_H3_00008-audio.mp4`). Previously the Prompts tab was empty and Video/Sampler tabs showed `N/A` because the parser only knew `CLIPTextEncode`, `WanImageToVideo` and `KSamplerAdvanced`.
 - `MetadataParser` rewritten around `_take()` / `_resolve()`: every input is read through a helper that follows `[node_id, slot]` links back to a literal (same-named input on the source node, a `value` primitive, a `ComfyMathExpression` evaluated with a whitelisted namespace, or a prompt-text input) and records the (node, input) pair as *consumed*.
