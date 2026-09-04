@@ -8,6 +8,7 @@ PyQt6 file-explorer-style browser for RunPod's S3-compatible network-volume stor
 - Upload and download files or whole folders, with progress
 - Downloads never overwrite an existing local file — a collision is saved as `name (1).ext` and reported after the transfer
 - Transfers retry with exponential backoff (6 attempts, 1s→16s) — works around RunPod's transient `403 Forbidden` on the SDK's internal `HeadObject` call
+- App settings (`config.json`) live next to the EXE (portable — runs from a thumb drive); never in `%APPDATA%`
 - Credentials stored in the standard AWS credentials file (`~/.aws/credentials`) under their own profile — never in the app config or repo
 
 ## RunPod S3 API quirks (learned the hard way)

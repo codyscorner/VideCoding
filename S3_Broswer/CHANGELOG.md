@@ -1,5 +1,9 @@
 # S3 Browser — Changelog
 
+## v1.0.7 (2026-09-04)
+- `config.json` (profile/region/endpoint/bucket) now lives next to the EXE (`P:\Apps\VibeCoded\S3 Browser\config.json`; project root when run from source) instead of the hidden `%APPDATA%\S3Browser\` folder, so it is always easy to find. An existing AppData config is copied over automatically on first launch (the old file is left in place). Credentials stay in `~/.aws/credentials` as before.
+- Settings dialog now shows the full path of the settings file.
+
 ## v1.0.6 (2026-09-04)
 - Downloads no longer overwrite existing local files. If the destination already has a file with the same name, the download is saved as `name (1).ext`, `name (2).ext`, ... (first free number) instead. Applies to single-file and recursive folder downloads. Previously the download went straight through boto3's `download_file`, which silently replaced whatever was on disk.
 - After a transfer, a dialog lists every file that was renamed this way (original name -> saved name) so you know which ones to look at.
