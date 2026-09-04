@@ -1,5 +1,6 @@
 """Build script for ComfyUI Workflow Chain Automator — produces a standalone .exe"""
 
+import os
 import subprocess
 import sys
 import shutil
@@ -9,7 +10,24 @@ ROOT   = Path(__file__).parent
 DIST   = ROOT / "dist"
 OUTPUT = Path(r"P:\Apps\VibeCoded\ComfyUI Chain Automator")
 
-print("Building EXE...")
+# The app needs boto3 (LoRA pod check via RunPod's S3 API); the system
+# Python does not have it, the repo .venv does. If we were started with a
+# Python that lacks boto3, re-run this script under the .venv interpreter
+# so a hand-run `python build_exe.py` / build.bat can't produce an EXE
+# without it (v3.10.2 shipped that way once).
+VENV_PY = ROOT.parent / ".venv" / "Scripts" / "python.exe"
+try:
+    import boto3  # noqa: F401
+except ImportError:
+    if VENV_PY.exists() and Path(sys.executable).resolve() != VENV_PY.resolve():
+        print(f"boto3 missing in {sys.executable}; re-running with {VENV_PY}")
+        sys.exit(subprocess.call([str(VENV_PY), __file__, *sys.argv[1:]]))
+    print("ERROR: boto3 is not importable and no repo .venv was found at "
+          f"{VENV_PY}. Install boto3 (pip install boto3) or create the .venv "
+          "before building — the EXE must bundle it.")
+    sys.exit(1)
+
+print(f"Building EXE with {sys.executable} ...")
 result = subprocess.run(
     [sys.executable, "-m", "PyInstaller", "--noconfirm", "ComfyUI_Chain_Automator.spec"],
     cwd=str(ROOT)

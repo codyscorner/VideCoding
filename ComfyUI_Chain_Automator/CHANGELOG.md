@@ -1,5 +1,8 @@
 # Changelog — ComfyUI Workflow Chain Automator
 
+### v3.10.3
+- Build fix: `build_exe.py` / `build.bat` now switch to the repo `.venv` Python automatically (and refuse to build if boto3 still can't be imported). A hand-run build with the system Python had produced an EXE without boto3, so the deployed app showed "boto3 is not installed in the Python running this app" for the pod LoRA check even though it was the EXE
+
 ### v3.10.2
 - ⇅ LoRAs button no longer clips its text — it gets compact padding instead of the global 10px/11pt button padding that needs ~40px in the 30px chain row
 - Pod LoRA check reports "boto3 is not installed in the Python running this app" (instead of a raw ModuleNotFoundError) when the app is run from source with a Python that lacks boto3; `run.bat` now launches with the repo `.venv` (which has boto3) when it exists, falling back to `python`
