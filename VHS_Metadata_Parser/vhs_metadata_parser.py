@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QLabel, QLineEdit, QTextEdit, QScrollArea,
     QGroupBox, QFormLayout, QFileDialog, QMenu,
     QFrame, QSplitter, QTableWidget, QTableWidgetItem, QHeaderView,
-    QPushButton, QMessageBox, QCheckBox, QDialog, QAbstractItemView
+    QPushButton, QMessageBox, QCheckBox, QDialog, QAbstractItemView, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QFont, QIcon, QAction, QColor
@@ -78,7 +78,7 @@ QLabel#drop_zone {{
     border: 2px dashed {COLORS['accent']};
     border-radius: 8px;
     font-style: italic;
-    padding: 20px;
+    padding: 12px;
 }}
 QLabel#subtitle {{
     color: {COLORS['fg_secondary']};
@@ -322,15 +322,19 @@ class MetadataParser:
         self.prompt_data: Dict = {}
         self.workflow_data: Dict = {}
         self.consumed: Dict[str, set] = {}
+        self.container: Dict[str, Any] = {}   # width/height/duration read from the MP4 header itself
 
     # ------------------------------------------------------------------ loading
 
     def parse_file(self, file_path: str) -> bool:
         try:
-            self.raw_data, self.prompt_data, self.workflow_data, self.consumed = {}, {}, {}, {}
+            self.raw_data, self.prompt_data, self.workflow_data, self.consumed, self.container = {}, {}, {}, {}, {}
             file_lower = file_path.lower()
             if file_lower.endswith('.mp4'):
-                self.raw_data = self._extract_metadata_from_mp4(file_path)
+                with open(file_path, 'rb') as f:
+                    data = f.read()
+                self.container = self._read_mp4_header(data)
+                self.raw_data = self._extract_metadata_from_mp4(data)
             else:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     self.raw_data = json.load(f)
@@ -353,9 +357,48 @@ class MetadataParser:
             print(f"Error parsing file: {e}")
             return False
 
-    def _extract_metadata_from_mp4(self, file_path: str) -> Dict:
-        with open(file_path, 'rb') as f:
-            data = f.read()
+    @staticmethod
+    def _read_mp4_header(data: bytes) -> Dict[str, Any]:
+        """
+        Pull the real video size and duration out of the MP4 container (tkhd / mvhd boxes).
+        Used when the workflow only has links for width/height (e.g. MiniMax GetImageSize).
+        """
+        info: Dict[str, Any] = {}
+        # tkhd: last 8 bytes of the box are width/height as 16.16 fixed point; audio tracks are 0x0
+        pos = 0
+        while True:
+            idx = data.find(b'tkhd', pos)
+            if idx == -1:
+                break
+            pos = idx + 4
+            box_start = idx - 4
+            if box_start < 0:
+                continue
+            size = int.from_bytes(data[box_start:box_start + 4], 'big')
+            if size not in (92, 104) or box_start + size > len(data):
+                continue
+            w = int.from_bytes(data[box_start + size - 8:box_start + size - 4], 'big') / 65536
+            h = int.from_bytes(data[box_start + size - 4:box_start + size], 'big') / 65536
+            if 0 < w < 20000 and 0 < h < 20000:
+                info['width'] = int(w) if w.is_integer() else round(w, 2)
+                info['height'] = int(h) if h.is_integer() else round(h, 2)
+                break
+        # mvhd: version, flags, [creation, modification] (4 or 8 bytes each), timescale (4), duration (4 or 8)
+        idx = data.find(b'mvhd')
+        if idx != -1:
+            payload = idx + 4
+            version = data[payload]
+            if version == 1:
+                timescale = int.from_bytes(data[payload + 20:payload + 24], 'big')
+                duration = int.from_bytes(data[payload + 24:payload + 32], 'big')
+            else:
+                timescale = int.from_bytes(data[payload + 12:payload + 16], 'big')
+                duration = int.from_bytes(data[payload + 16:payload + 20], 'big')
+            if timescale:
+                info['duration_s'] = round(duration / timescale, 2)
+        return info
+
+    def _extract_metadata_from_mp4(self, data: bytes) -> Dict:
         idx = data.find(b'{"prompt"')
         if idx == -1:
             raise ValueError("No ComfyUI metadata found in MP4 file")
@@ -566,6 +609,22 @@ class MetadataParser:
         length, fps = settings.get('length'), settings.get('frame_rate')
         if isinstance(length, (int, float)) and isinstance(fps, (int, float)) and fps:
             settings['duration_s'] = round(length / fps, 2)
+
+        # Fall back to the MP4 container for anything the workflow only had links for
+        if self.container:
+            for key in ('width', 'height'):
+                if key in self.container and not isinstance(settings.get(key), (int, float)):
+                    workflow_val = settings.get(key)
+                    settings[key] = (f"{self.container[key]} (from MP4 header; workflow: {workflow_val})"
+                                     if workflow_val is not None else f"{self.container[key]} (from MP4 header)")
+            if 'duration_s' not in settings and 'duration_s' in self.container:
+                settings['duration_s'] = f"{self.container['duration_s']} (from MP4 header)"
+            parts = []
+            if 'width' in self.container and 'height' in self.container:
+                parts.append(f"{self.container['width']}×{self.container['height']}")
+            if 'duration_s' in self.container:
+                parts.append(f"{self.container['duration_s']} s")
+            settings['mp4_header'] = ', '.join(parts) if parts else 'N/A'
         return settings
 
     def get_models(self) -> Dict[str, List[Dict]]:
@@ -835,7 +894,9 @@ class DropZoneLabel(QLabel):
         self.setObjectName("drop_zone")
         self.setText("Drag and drop a metadata file here\n(supports .txt, .json, .mp4)\nor use File > Open")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumHeight(80)
+        # Fixed height: 3 text lines + 12px padding top/bottom (stylesheet) + 2px border top/bottom + slack.
+        # Fixed (not minimum) so the loaded-file single line does not leave a tall empty box.
+        self.setFixedHeight(self.fontMetrics().lineSpacing() * 3 + 24 + 4 + 14)
         self.setAcceptDrops(True)
         self.file_dropped_callback = None
 
@@ -945,6 +1006,7 @@ class MainWindow(QMainWindow):
         self.duration_edit = QLineEdit(); self.duration_edit.setReadOnly(True)
         dims_layout.addRow("Frames/Length:", self.length_edit)
         dims_layout.addRow("Duration (s):", self.duration_edit)
+        dims_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout.addWidget(dims_group)
 
         output_group = QGroupBox("Output Settings")
@@ -955,12 +1017,15 @@ class MainWindow(QMainWindow):
         self.crf_edit = QLineEdit(); self.crf_edit.setReadOnly(True)
         self.pix_fmt_edit = QLineEdit(); self.pix_fmt_edit.setReadOnly(True)
         self.audio_edit = QLineEdit(); self.audio_edit.setReadOnly(True)
+        self.mp4_header_edit = QLineEdit(); self.mp4_header_edit.setReadOnly(True)
         output_layout.addRow("Frame Rate:", self.frame_rate_edit)
         output_layout.addRow("Filename Prefix:", self.filename_prefix_edit)
         output_layout.addRow("Format:", self.format_edit)
         output_layout.addRow("CRF:", self.crf_edit)
         output_layout.addRow("Pixel Format:", self.pix_fmt_edit)
         output_layout.addRow("Audio:", self.audio_edit)
+        output_layout.addRow("MP4 Header:", self.mp4_header_edit)
+        output_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout.addWidget(output_group)
 
         input_group = QGroupBox("Input Images")
@@ -970,7 +1035,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(input_group)
 
         layout.addStretch()
-        self.tab_widget.addTab(tab, "Video Settings")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(tab)
+        self.tab_widget.addTab(scroll, "Video Settings")
 
     def _create_prompts_tab(self):
         tab = QWidget()
@@ -1400,6 +1469,7 @@ class MainWindow(QMainWindow):
         self.pix_fmt_edit.setText(str(s.get('pix_fmt', 'N/A')))
         self.duration_edit.setText(str(s.get('duration_s', 'N/A')))
         self.audio_edit.setText(str(s.get('has_audio', 'N/A')))
+        self.mp4_header_edit.setText(str(s.get('mp4_header', 'N/A (not an MP4)')))
         images = self.parser.get_input_images()
         self.input_images_edit.setPlainText('\n'.join(images) if images else 'No input images')
 
