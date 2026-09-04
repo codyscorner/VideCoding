@@ -1,5 +1,8 @@
 # Changelog — ComfyUI Workflow Chain Automator
 
+### v3.10.1
+- Settings dialog re-laid out in two equal columns (1400 px wide, ~660 px tall) so it fits a 1080p screen — the single-column form had grown past the bottom of the display and hid the OK/Cancel buttons. Left: ComfyUI Server, Folders, Batch Processing, FFmpeg. Right: RunPod Volume (S3), AI Prompt Writer, Completion Sound. 1080p is the minimum supported screen size
+
 ### v3.10.0
 - LoRA check on chain select / startup / ↻: every `lora_name` / `lora_NN` a chain's batch workflows reference is looked up in the local LoRA folder (Settings > Folders > LoRAs — points at the portable ComfyUI install you actually run). A LoRA missing locally blocks Start Batch and the message names the LoRA, the segment file, the folder searched, and the two fixes (drop the file in, or pick another LoRA in the segment editor). Capitalization mismatches are warned about because the Linux pod is case-sensitive
 - RunPod mode: the pod's `models/loras` folder is listed through RunPod's S3-compatible API in the background (new Settings group "RunPod Volume (S3)": AWS profile, endpoint, region, bucket, LoRA prefix, with "Import from S3 Browser config" and "Test connection"). LoRAs the pod lacks are shown under the Chain selector with their total size; Start Batch asks to upload them from the local folder first and starts the batch automatically once the pod confirms every file. New ⇅ LoRAs button uploads on demand. Uploads retry with backoff, survive RunPod's slow server-side multipart merge, and verify the landed size. Cancel stops the upload after the current file

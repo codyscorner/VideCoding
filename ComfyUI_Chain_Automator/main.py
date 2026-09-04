@@ -1,6 +1,6 @@
 """
 ComfyUI Workflow Chain Automator
-Version: 3.10.0
+Version: 3.10.1
 """
 
 import sys
@@ -13,7 +13,7 @@ from PyQt6.QtCore import QTimer
 from config import ConfigManager
 from ui.main_window import MainWindow
 
-VERSION = "3.10.0"
+VERSION = "3.10.1"
 
 # Windows taskbar icon fix — must be called before QApplication
 try:

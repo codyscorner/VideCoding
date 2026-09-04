@@ -3,7 +3,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox,
     QLabel, QLineEdit, QPushButton, QRadioButton, QButtonGroup,
-    QFileDialog, QDialogButtonBox, QCheckBox,
+    QFileDialog, QDialogButtonBox, QCheckBox, QWidget,
 )
 from PyQt6.QtCore import Qt
 
@@ -20,13 +20,34 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self._config = config
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(750)
+        self.setMinimumWidth(1400)
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint)
         self.setStyleSheet(parent.styleSheet() if parent else "")
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
         layout.setContentsMargins(20, 20, 20, 20)
+
+        # Two columns so the dialog stays short enough for a 1080p screen:
+        # left = server + folders + batch + ffmpeg, right = S3 / LoRA sync,
+        # AI prompt writer, completion sound. OK/Cancel span both.
+        columns = QHBoxLayout()
+        columns.setSpacing(16)
+        left_w = QWidget()
+        right_w = QWidget()
+        left = QVBoxLayout(left_w)
+        left.setSpacing(12)
+        left.setContentsMargins(0, 0, 0, 0)
+        right = QVBoxLayout(right_w)
+        right.setSpacing(12)
+        right.setContentsMargins(0, 0, 0, 0)
+        # Equal minimum widths so neither column's longest label can
+        # squeeze the other.
+        for w in (left_w, right_w):
+            w.setMinimumWidth(660)
+        columns.addWidget(left_w, stretch=1)
+        columns.addWidget(right_w, stretch=1)
+        layout.addLayout(columns)
 
         # ── ComfyUI Server ────────────────────────────────────────────────
         server_group = QGroupBox("ComfyUI Server")
@@ -57,7 +78,7 @@ class SettingsDialog(QDialog):
             config.get("runpod_url", ""),
             "https://xxxxxx-8188.proxy.runpod.net"
         )
-        layout.addWidget(server_group)
+        left.addWidget(server_group)
 
         # ── Folders ───────────────────────────────────────────────────────
         folders_group = QGroupBox("Folders")
@@ -84,7 +105,7 @@ class SettingsDialog(QDialog):
             config.get("zip_output_dir", ""),
             "Folder for completed zip archives..."
         )
-        layout.addWidget(folders_group)
+        left.addWidget(folders_group)
 
         # ── Batch Processing ─────────────────────────────────────────────
         batch_group = QGroupBox("Batch Processing")
@@ -105,14 +126,14 @@ class SettingsDialog(QDialog):
             config.get("runpod_input_dir", "/workspace/runpod-slim/ComfyUI/input"),
             "Absolute path to ComfyUI's input folder on RunPod..."
         )
-        layout.addWidget(batch_group)
+        left.addWidget(batch_group)
 
         # ── RunPod Volume (S3) — LoRA check / sync ───────────────────────
         s3_group = QGroupBox("RunPod Volume (S3) — LoRA check && sync")
         s3_layout = QVBoxLayout(s3_group)
         s3_layout.setSpacing(10)
         self._lora_check_chk = QCheckBox(
-            "Check that every LoRA a chain uses exists locally (and on the pod in RunPod mode) before a batch can start")
+            "Verify a chain's LoRAs exist locally (and on the pod in RunPod mode) before starting")
         self._lora_check_chk.setChecked(bool(config.get(CFG_LORA_CHECK, S3_DEFAULTS[CFG_LORA_CHECK])))
         s3_layout.addWidget(self._lora_check_chk)
         self._s3_profile_edit, _ = self._text_row(
@@ -154,7 +175,7 @@ class SettingsDialog(QDialog):
         self._s3_status.setWordWrap(True)
         self._s3_status.setStyleSheet(f"color:{COLORS['fg_secondary']}; font-size:9pt;")
         s3_layout.addWidget(self._s3_status)
-        layout.addWidget(s3_group)
+        right.addWidget(s3_group)
 
         # ── FFmpeg ────────────────────────────────────────────────────────
         ffmpeg_group = QGroupBox("FFmpeg")
@@ -164,7 +185,7 @@ class SettingsDialog(QDialog):
             config.get("ffmpeg_path", "ffmpeg"),
             "Path to ffmpeg.exe (or 'ffmpeg' if on PATH)..."
         )
-        layout.addWidget(ffmpeg_group)
+        left.addWidget(ffmpeg_group)
 
         # ── AI Prompt Writer ─────────────────────────────────────────────
         prompt_ai_group = QGroupBox("AI Prompt Writer")
@@ -175,7 +196,7 @@ class SettingsDialog(QDialog):
             "Anthropic API key (console.anthropic.com) — used by the Prompt Writer tab..."
         )
         self._anthropic_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addWidget(prompt_ai_group)
+        right.addWidget(prompt_ai_group)
 
         # ── Completion Sound ──────────────────────────────────────────────
         sound_group = QGroupBox("Completion Sound")
@@ -192,7 +213,10 @@ class SettingsDialog(QDialog):
             config.get("completion_sound_path", ""),
             "Path to a .wav or .mp3 audio file..."
         )
-        layout.addWidget(sound_group)
+        right.addWidget(sound_group)
+
+        left.addStretch()
+        right.addStretch()
 
         # OK / Cancel
         buttons = QDialogButtonBox(
