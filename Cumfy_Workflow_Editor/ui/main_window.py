@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QLabel, QPushButton, QCheckBox,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel, QPushButton, QCheckBox,
     QLineEdit, QScrollArea, QFrame, QFileDialog, QMessageBox, QSizePolicy,
 )
 from PyQt6.QtGui import QAction, QDragEnterEvent, QDragMoveEvent, QDropEvent
@@ -29,11 +29,25 @@ class MainWindow(QMainWindow):
         self.resize(860, 920)
         self.setStyleSheet(APP_STYLESHEET)
         self.setAcceptDrops(True)
+        self._center_on_screen()
 
         self._build_menu()
         self._build_toolbar()
         self._build_body()
         self._build_statusbar()
+
+    def _center_on_screen(self):
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        frame = self.frameGeometry()
+        frame.moveCenter(screen.availableGeometry().center())
+        self.move(frame.topLeft())
+
+    def bring_to_front(self):
+        """One-time raise on startup so the window isn't buried — not always-on-top."""
+        self.raise_()
+        self.activateWindow()
 
     # ── menu ──────────────────────────────────────────────────────────────
 

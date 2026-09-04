@@ -27,6 +27,9 @@
   fields are hidden by default to keep big graphs readable.
 - **View** menu: Expand all (Ctrl+Shift+E) / Collapse all (Ctrl+Shift+C).
 - Status bar reports format, node count and editable-field count.
+- On startup the window opens centred on the screen and is raised above other windows
+  once (raise + activate, repeated after the event loop starts) so it isn't buried —
+  it is *not* kept always-on-top.
 
 ### Changed
 - `workflow.py` now holds the format-aware document model (`parse_workflow`,

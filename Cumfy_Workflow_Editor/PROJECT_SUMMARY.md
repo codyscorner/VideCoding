@@ -56,6 +56,11 @@ Prompt node regardless of its class type.
   Non-JSON drags are refused; dropping multiple files opens the first `.json`.
 - Either route prompts to save first when the open workflow has unsaved edits.
 
+## Startup
+
+- Window opens centred on the current screen and is brought to the front once
+  (`bring_to_front()` right after `show()` and again 150 ms later) — never always-on-top.
+
 ## Navigating Big Graphs
 
 - **Find node** box in the toolbar (Ctrl+F) filters cards by title, class type, or `#id`.
