@@ -3,13 +3,16 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRectF
 from PyQt6.QtGui import QPixmap, QIcon, QPainter, QColor, QFont, QPen
 from typing import List, Optional
 
+MIN_DISPLAY_SIZE = 64
+MAX_DISPLAY_SIZE = 320  # keep in sync with THUMB_SOURCE_SIZE (source render resolution)
+
 
 class FilmStrip(QListWidget):
     image_selected = pyqtSignal(int)
 
     def __init__(self, thumbnail_size: int = 120, parent=None):
         super().__init__(parent)
-        self.thumbnail_size = thumbnail_size
+        self.thumbnail_size = max(MIN_DISPLAY_SIZE, min(MAX_DISPLAY_SIZE, thumbnail_size))
         self._base_pixmaps: List[Optional[QPixmap]] = []
         self._badges: List[dict] = []  # per-index: rating, flagged, is_video
         self._setup_view()
@@ -18,12 +21,27 @@ class FilmStrip(QListWidget):
     def _setup_view(self) -> None:
         self.setViewMode(QListWidget.ViewMode.ListMode)
         self.setIconSize(QSize(self.thumbnail_size, self.thumbnail_size))
-        self.setFixedWidth(self.thumbnail_size + 14)
+        self.setMinimumWidth(MIN_DISPLAY_SIZE + 14)
+        self.setMaximumWidth(MAX_DISPLAY_SIZE + 20)
         self.setSpacing(1)
         self.setResizeMode(QListWidget.ResizeMode.Fixed)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setUniformItemSizes(True)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        size = max(MIN_DISPLAY_SIZE, min(MAX_DISPLAY_SIZE, self.viewport().width() - 8))
+        self._apply_display_size(size)
+
+    def _apply_display_size(self, size: int) -> None:
+        if size == self.thumbnail_size:
+            return
+        self.thumbnail_size = size
+        self.setIconSize(QSize(size, size))
+        hint = QSize(size + 6, size + 4)
+        for i in range(self.count()):
+            self.item(i).setSizeHint(hint)
 
     def populate(self, image_paths: List[str]) -> None:
         self.clear()
@@ -66,12 +84,15 @@ class FilmStrip(QListWidget):
         composed = QPixmap(base)
         painter = QPainter(composed)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        font = QFont("Segoe UI Emoji", max(8, self.thumbnail_size // 12))
+        # Badges are painted on the source-resolution pixmap, so scale them to
+        # the pixmap rather than the on-screen display size.
+        base_dim = max(composed.width(), composed.height())
+        font = QFont("Segoe UI Emoji", max(8, base_dim // 12))
         painter.setFont(font)
 
         if badges["is_video"]:
             # ▶ badge, bottom-left
-            r = self.thumbnail_size // 6
+            r = base_dim // 6
             circle = QRectF(3, composed.height() - r * 2 - 3, r * 2, r * 2)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(0, 0, 0, 170))
@@ -110,6 +131,18 @@ class FilmStrip(QListWidget):
         if item:
             self.setCurrentItem(item)
             self.scrollToItem(item, QAbstractItemView.ScrollHint.EnsureVisible)
+
+    def keyPressEvent(self, event) -> None:
+        key = event.key()
+        if key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            # Prev/next image is the main window's job, even when the list has focus.
+            event.ignore()
+        elif key == Qt.Key.Key_Space:
+            if self.currentRow() >= 0:
+                self.image_selected.emit(self.currentRow())
+        else:
+            # Up/Down keep native behavior: move the highlight without loading.
+            super().keyPressEvent(event)
 
     def _on_item_clicked(self, item: QListWidgetItem) -> None:
         self.image_selected.emit(self.row(item))

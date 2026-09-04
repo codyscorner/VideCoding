@@ -12,6 +12,7 @@ from config import ConfigManager
 from image_gen_worker import ImageGenWorker
 from ui.styles import COLORS
 from ui.widgets import ThumbnailGrid, THUMB_SIZE
+from ui.prompt_history import append_history, PromptHistoryDialog
 
 REF_THUMB = 130  # px for reference image drop zones
 
@@ -111,6 +112,9 @@ class GenerateTab(QWidget):
     # UI construction
     # ------------------------------------------------------------------ #
 
+    def set_positive_prompt(self, text: str):
+        self._pos_edit.setPlainText(text)
+
     def _build_ui(self):
         split = QHBoxLayout(self)
         split.setContentsMargins(0, 4, 0, 0)
@@ -159,6 +163,19 @@ class GenerateTab(QWidget):
         prompt_layout.addWidget(self._pos_edit)
         prompt_layout.addWidget(neg_lbl)
         prompt_layout.addWidget(self._neg_edit)
+
+        hist_row = QHBoxLayout()
+        self._save_hist_btn = QPushButton("💾  Save to History")
+        self._save_hist_btn.clicked.connect(self._on_save_history)
+        self._view_hist_btn = QPushButton("📜  History")
+        self._view_hist_btn.clicked.connect(self._on_view_history)
+        self._hist_status_lbl = QLabel("")
+        self._hist_status_lbl.setStyleSheet(f"color:{COLORS['fg_dim']}; font-size:8pt;")
+        hist_row.addWidget(self._save_hist_btn)
+        hist_row.addWidget(self._view_hist_btn)
+        hist_row.addWidget(self._hist_status_lbl, stretch=1)
+        prompt_layout.addLayout(hist_row)
+
         left.addWidget(prompt_group)
 
         # ── Reference Images ──────────────────────────────────────────────
@@ -432,6 +449,33 @@ class GenerateTab(QWidget):
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
+
+    def _current_workflow_path(self) -> Path | None:
+        wf_path = Path(self._wf_combo.currentData() or "")
+        return wf_path if wf_path.name else None
+
+    def _on_save_history(self):
+        wf_path = self._current_workflow_path()
+        if wf_path is None:
+            self._hist_status_lbl.setText("Select a workflow first.")
+            return
+        positive = self._pos_edit.toPlainText()
+        negative = self._neg_edit.toPlainText()
+        append_history(wf_path, positive, negative)
+        self._hist_status_lbl.setText("Saved.")
+
+    def _on_view_history(self):
+        wf_path = self._current_workflow_path()
+        if wf_path is None:
+            self._hist_status_lbl.setText("Select a workflow first.")
+            return
+        dlg = PromptHistoryDialog(wf_path, parent=self)
+        if dlg.exec() == dlg.DialogCode.Accepted:
+            entry = dlg.selected_entry()
+            if entry:
+                self._pos_edit.setPlainText(entry.get("positive", ""))
+                self._neg_edit.setPlainText(entry.get("negative", ""))
+                self._hist_status_lbl.setText("Loaded from history.")
 
     def _on_workflow_changed(self, _idx: int):
         name = self._wf_combo.currentText()

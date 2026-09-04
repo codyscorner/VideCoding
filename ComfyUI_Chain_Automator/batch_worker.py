@@ -7,9 +7,12 @@ import time
 import uuid
 import zipfile
 from pathlib import Path
+from typing import Optional
 
 import requests
 from PyQt6.QtCore import QThread, pyqtSignal
+
+from metadata_parser import extract_segment_prompt, ffmetadata_escape, build_prompts_text
 
 logger = logging.getLogger("batch_chain")
 logger.setLevel(logging.DEBUG)
@@ -21,7 +24,8 @@ class BatchChainWorker(QThread):
     segment_time = pyqtSignal(int, str)
     segment_secs = pyqtSignal(int, float)     # segment, elapsed seconds (for ETA)
     step_progress = pyqtSignal(int, int, int)  # segment, step value, step max
-    segment_plan = pyqtSignal(int, int, int)   # segment, expected sampler passes, expected total steps
+    segment_plan = pyqtSignal(int, int, int, int)   # segment, expected sampler passes, expected total steps, post-sampler phase count
+    phase_progress = pyqtSignal(int)  # segment — a post-sampler phase (VAE decode, encode, save) started
     all_done = pyqtSignal(list)   # list[str] of final video paths
     error = pyqtSignal(str)
 
@@ -85,6 +89,21 @@ class BatchChainWorker(QThread):
         try:
             logger.info("=== New batch run started ===")
             batch_start = time.time()
+
+            # The thumbnails cache folder holds small downscaled previews —
+            # if the image folder is misconfigured to point at it directly,
+            # those tiny files would get sent to ComfyUI and come back
+            # blurry/warped once upscaled. Refuse to run rather than send
+            # the wrong file.
+            input_dir = Path(self._config["input_dir"])
+            if input_dir.name.lower() == "thumbnails":
+                self.error.emit(
+                    f"Image folder is set to a 'thumbnails' cache folder ({input_dir}), "
+                    "which only holds small downscaled previews. Point Image folder at "
+                    "the parent folder that contains the full-size originals."
+                )
+                return
+
             self._temp_dir.mkdir(exist_ok=True)
             self._clean_temp_dir()
             self._batch_dir_local.mkdir(parents=True, exist_ok=True)
@@ -169,20 +188,21 @@ class BatchChainWorker(QThread):
                 # Tell the UI how much sampler work this segment holds:
                 # every sampler runs once per image in the batch
                 steps_per_image = self._sampler_steps(workflow_json)
-                self.segment_plan.emit(seg, len(steps_per_image) * n, sum(steps_per_image) * n)
+                post_phases = self._count_post_phases(workflow_json)
+                self.segment_plan.emit(seg, len(steps_per_image) * n, sum(steps_per_image) * n, post_phases)
 
                 prompt_id = self._queue_prompt(workflow_json)
                 self._active_prompt_id = prompt_id
                 self._log(f"[Segment {seg}/{self._total_segs}] Queued ({prompt_id[:8]}...), polling...")
 
-                self._wait_until_done(prompt_id, seg)
+                self._wait_until_done(prompt_id, seg, workflow_json)
                 if self._cancelled:
                     self._log("Cancelled.")
                     return
 
                 if self._runpod:
                     time.sleep(5)
-                videos = self._download_batch_outputs(seg, prompt_id, n)
+                videos = self._download_batch_outputs(seg, prompt_id, n, workflow_json)
                 elapsed_secs = time.time() - seg_start
                 elapsed = self._fmt(elapsed_secs)
                 self._log(f"[Segment {seg}/{self._total_segs}] Done in {elapsed} — {n} videos")
@@ -198,12 +218,12 @@ class BatchChainWorker(QThread):
             final_paths = []
             for i, img_name in enumerate(self._images):
                 chain_videos = [segment_outputs[s][i] for s in range(len(workflows))]
-                final = self._stitch(chain_videos, img_name)
+                final, seg_meta = self._stitch(chain_videos, img_name)
                 final_paths.append(str(final))
                 size_kb = final.stat().st_size // 1024
                 self._log(f"  [{i+1}/{n}] {final.name}  ({size_kb} KB)")
                 src_image = Path(self._config["input_dir"]) / img_name
-                zip_path = self._zip_segments(chain_videos, final, src_image, transition_frames[i])
+                zip_path = self._zip_segments(chain_videos, final, src_image, transition_frames[i], seg_meta)
                 self._log(f"  [{i+1}/{n}] Archive: {zip_path.name}")
 
             self._log(f"Total time: {self._fmt(time.time() - batch_start)}")
@@ -233,9 +253,23 @@ class BatchChainWorker(QThread):
                 node["inputs"]["directory"] = directory
                 return
 
+    _VIDEO_OUTPUT_TYPES = {"VHS_VideoCombine", "SaveVideo"}
+
+    # Post-sampling nodes worth a log line — the websocket goes quiet for
+    # these (no "progress" events), which otherwise reads as a hang during
+    # MiniMax H3's VAE decode / video encode stretch between the last
+    # sampler step and the finished file.
+    _STATUS_NODE_LABELS = {
+        "VAEDecode": "Decoding video (VAE)...",
+        "VAEDecodeAudio": "Decoding audio (VAE)...",
+        "CreateVideo": "Encoding video...",
+        "SaveVideo": "Saving video...",
+        "VHS_VideoCombine": "Saving video...",
+    }
+
     def _patch_batch_output_prefix(self, workflow: dict, seg: int):
         for node in workflow.values():
-            if node.get("class_type") == "VHS_VideoCombine":
+            if node.get("class_type") in self._VIDEO_OUTPUT_TYPES:
                 node["inputs"]["filename_prefix"] = f"Merge/{self._run_id}/Batch_{seg}"
                 break
 
@@ -244,10 +278,16 @@ class BatchChainWorker(QThread):
         """Executed steps of every sampler node in the workflow. Each sampler
         runs once per image (list processing), emitting one progress cycle of
         this many steps. WAN 2.2's hi/lo KSamplerAdvanced pair with steps=4
-        split at 0-2 / 2-4 yields [2, 2]."""
+        split at 0-2 / 2-4 yields [2, 2].
+
+        MiniMax H3's SamplerCustomAdvanced/KSamplerSelect nodes don't carry
+        a `steps` input themselves — the step count instead lives on the
+        upstream BasicScheduler node that builds their sigma schedule — so
+        that node type is treated as a step source too."""
         out = []
         for node in workflow.values():
-            if "sampler" not in node.get("class_type", "").lower():
+            class_type = node.get("class_type", "")
+            if "sampler" not in class_type.lower() and class_type != "BasicScheduler":
                 continue
             inp = node.get("inputs", {})
             steps = inp.get("steps")
@@ -259,6 +299,18 @@ class BatchChainWorker(QThread):
             if steps:
                 out.append(steps)
         return out
+
+    def _count_post_phases(self, workflow: dict) -> int:
+        """Number of distinct post-sampler nodes (VAE decode, encode, save)
+        this workflow will run through. The sampler's progress events end at
+        100% well before the file is actually written — these phases have no
+        step-level progress of their own, so each counts as one unit tacked
+        onto the segment's step total, keeping the bar honest until the last
+        one finishes."""
+        return sum(
+            1 for node in workflow.values()
+            if node.get("class_type", "") in self._STATUS_NODE_LABELS
+        )
 
     def _bust_cache(self, workflow: dict):
         new_seed = int(uuid.uuid4().int % (2**32))
@@ -273,18 +325,35 @@ class BatchChainWorker(QThread):
     # Output collection
     # ------------------------------------------------------------------ #
 
-    def _download_batch_outputs(self, seg: int, prompt_id: str, n: int) -> list[Path]:
+    def _download_batch_outputs(self, seg: int, prompt_id: str, n: int, workflow: dict | None = None) -> list[Path]:
         history_url = f"{self._url}/history/{prompt_id}"
         resp = requests.get(history_url, timeout=15)
         resp.raise_for_status()
         history = resp.json().get(prompt_id, {})
+        outputs = history.get("outputs", {})
 
         all_files = []
-        for node_output in history.get("outputs", {}).values():
-            files = node_output.get("videos") or node_output.get("gifs") or []
+        # ComfyUI's native SaveVideo node (MiniMax H3 workflows) reports its
+        # result under the "images" key, same as any image-preview node —
+        # so scan the known video-output node ids first to avoid grabbing
+        # an unrelated node's "images" list.
+        video_node_ids = {
+            nid for nid, node in (workflow or {}).items()
+            if node.get("class_type") in self._VIDEO_OUTPUT_TYPES
+        }
+        for nid in video_node_ids:
+            files = outputs.get(nid, {})
+            files = files.get("videos") or files.get("gifs") or files.get("images") or []
             if files:
                 all_files = sorted(files, key=lambda f: f["filename"])
                 break
+
+        if not all_files:
+            for node_output in outputs.values():
+                files = node_output.get("videos") or node_output.get("gifs") or []
+                if files:
+                    all_files = sorted(files, key=lambda f: f["filename"])
+                    break
 
         if not all_files:
             if getattr(self, '_already_exists_seg', None) == seg:
@@ -363,39 +432,170 @@ class BatchChainWorker(QThread):
     # Stitch
     # ------------------------------------------------------------------ #
 
-    def _zip_segments(self, videos: list[Path], final_path: Path, src_image: Path, frames: list[Path] | None = None) -> Path:
+    def _zip_segments(self, videos: list[Path], final_path: Path, src_image: Path,
+                       frames: list[Path] | None = None, seg_meta: dict | None = None) -> Path:
         zip_dir = Path(self._config.get("zip_output_dir", self._config.get("final_video_dir", str(final_path.parent))))
         zip_dir.mkdir(parents=True, exist_ok=True)
         zip_path = zip_dir / f"{final_path.stem}.zip"
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zf:
             if src_image.exists():
-                zf.write(src_image, src_image.name)
+                self._zip_write_safe(zf, src_image, src_image.name)
             for seg_idx, frame in enumerate(frames or [], start=2):
                 if frame.exists():
-                    zf.write(frame, f"frame_start_seg{seg_idx}.png")
+                    self._zip_write_safe(zf, frame, f"frame_start_seg{seg_idx}.png")
             for v in videos:
-                zf.write(v, v.name)
-            zf.write(final_path, final_path.name)
+                self._zip_write_safe(zf, v, v.name)
+            self._zip_write_safe(zf, final_path, final_path.name)
+            if seg_meta:
+                zf.writestr("prompts.txt", build_prompts_text(seg_meta))
         return zip_path
 
-    def _stitch(self, videos: list[Path], img_name: str) -> Path:
+    @staticmethod
+    def _zip_write_safe(zf: zipfile.ZipFile, path: Path, arcname: str):
+        try:
+            zf.write(path, arcname)
+        except (OSError, ValueError):
+            # A corrupted/out-of-range file mtime (seen on some exported
+            # source images) makes ZipInfo.from_file crash in time.localtime
+            # with [Errno 22] on Windows — fall back to a manual ZipInfo
+            # stamped with the current time instead of failing the batch.
+            info = zipfile.ZipInfo(arcname, date_time=time.localtime()[:6])
+            info.compress_type = zipfile.ZIP_STORED
+            info.external_attr = 0o644 << 16
+            zf.writestr(info, path.read_bytes())
+
+    def _extract_all_segment_prompts(self, videos: list[Path]) -> dict:
+        """Pull each segment's embedded ComfyUI prompt graph before the
+        source clips are discarded (ffmpeg concat below re-encodes and
+        drops it)."""
+        segments = {}
+        for idx, v in enumerate(videos, start=1):
+            prompt = extract_segment_prompt(v)
+            if prompt:
+                segments[str(idx)] = prompt
+        return segments
+
+    def _write_ffmetadata_file(self, segments: dict, stem: str) -> Optional[Path]:
+        """Write the per-segment prompt graphs to an ffmpeg ffmetadata file
+        so the stitch below can re-embed them into the final video via
+        -map_metadata (a file avoids the Windows command-line length limit
+        a multi-segment JSON blob could hit as a raw -metadata argument)."""
+        if not segments:
+            return None
+        payload = json.dumps({"chain_automator_segments": segments}, ensure_ascii=False, separators=(',', ':'))
+        meta_path = self._temp_dir / f"meta_{stem}.txt"
+        content = ";FFMETADATA1\ncomment=" + ffmetadata_escape(payload) + "\n"
+        meta_path.write_text(content, encoding='utf-8')
+        return meta_path
+
+    def _video_has_audio(self, path: Path, ffmpeg: str) -> bool:
+        result = subprocess.run(
+            [ffmpeg, "-i", str(path)],
+            capture_output=True, text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        return "Audio:" in result.stderr
+
+    def _ffprobe_path(self, ffmpeg: str) -> str:
+        p = Path(ffmpeg)
+        for cand in (p.parent / "ffprobe.exe", p.parent / "ffprobe"):
+            if cand.exists():
+                return str(cand)
+        return "ffprobe"
+
+    def _probe_video_props(self, path: Path, ffmpeg: str) -> tuple[int, int, str]:
+        """Return (width, height, r_frame_rate) of a video's first stream,
+        or (0, 0, "") if ffprobe fails or the values look unusable."""
+        result = subprocess.run(
+            [self._ffprobe_path(ffmpeg), "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height,r_frame_rate",
+             "-of", "json", str(path)],
+            capture_output=True, text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        try:
+            info = json.loads(result.stdout)["streams"][0]
+            width, height, fps = int(info["width"]), int(info["height"]), info["r_frame_rate"]
+            if width and height and fps and fps != "0/0":
+                return width, height, fps
+        except (KeyError, IndexError, ValueError, TypeError):
+            pass
+        return 0, 0, ""
+
+    def _probe_video_props_safe(self, path: Path, ffmpeg: str) -> tuple[int, int, str]:
+        """_probe_video_props, but tolerant of a missing/unresolvable ffprobe
+        binary (e.g. only ffmpeg.exe is configured, no ffprobe alongside it)
+        — falls back to no normalization instead of crashing the stitch."""
+        try:
+            return self._probe_video_props(path, ffmpeg)
+        except OSError:
+            return 0, 0, ""
+
+    def _stitch(self, videos: list[Path], img_name: str) -> tuple[Path, dict]:
         final_dir = Path(self._config.get("final_video_dir", self._config["output_base_dir"]))
         final_dir.mkdir(parents=True, exist_ok=True)
         stem = Path(img_name).stem
         final_path = final_dir / f"{stem}_{self._run_stamp}.mp4"
         n = len(videos)
+
+        seg_meta = self._extract_all_segment_prompts(videos)
+
+        # A single-segment chain has nothing to concatenate — copy the raw
+        # download straight to the final name instead of round-tripping it
+        # through ffmpeg, which only re-encodes it and risks introducing
+        # its own artifacts for zero benefit.
+        if n == 1:
+            shutil.copy2(videos[0], final_path)
+            return final_path, seg_meta
+
         ffmpeg = self._config.get("ffmpeg_path", "ffmpeg")
         inputs = []
         for v in videos:
             inputs += ["-i", str(v)]
-        filter_inputs = "".join(f"[{i}:v]" for i in range(n))
-        filter_complex = f"{filter_inputs}concat=n={n}:v=1[out]"
+
+        # Segments can differ in resolution/fps/SAR when a chain mixes
+        # workflow templates with different output settings (e.g. one
+        # segment saved at 18fps while the rest are 16fps) — concatenating
+        # those streams unnormalized produces a rippling "underwater" warp
+        # in the stitched result even though each segment plays back fine
+        # on its own. Normalize every input to the first segment's
+        # width/height/fps before concat.
+        width, height, fps = self._probe_video_props_safe(videos[0], ffmpeg)
+        if width and height and fps:
+            norm = f"scale={width}:{height}:flags=lanczos,setsar=1,fps={fps},format=yuv420p"
+            filter_v = "".join(f"[{i}:v]{norm}[v{i}];" for i in range(n))
+            concat_v_inputs = "".join(f"[v{i}]" for i in range(n))
+        else:
+            filter_v = ""
+            concat_v_inputs = "".join(f"[{i}:v]" for i in range(n))
+
+        # MiniMax H3 segments generate their own synced audio track (unlike
+        # WAN's video-only output) — concat it alongside video when every
+        # segment has one, otherwise fall back to the video-only path so
+        # silent WAN chains keep working unchanged.
+        has_audio = n > 0 and all(self._video_has_audio(v, ffmpeg) for v in videos)
+        if has_audio:
+            filter_a = "".join(f"[{i}:a]" for i in range(n))
+            filter_complex = f"{filter_v}{concat_v_inputs}{filter_a}concat=n={n}:v=1:a=1[out][outa]"
+            map_args = ["-map", "[out]", "-map", "[outa]"]
+            audio_args = ["-c:a", "aac", "-b:a", "192k"]
+        else:
+            filter_complex = f"{filter_v}{concat_v_inputs}concat=n={n}:v=1[out]"
+            map_args = ["-map", "[out]"]
+            audio_args = ["-an"]
+
+        meta_path = self._write_ffmetadata_file(seg_meta, stem)
+        extra_args = []
+        if meta_path is not None:
+            inputs += ["-i", str(meta_path)]
+            extra_args = ["-map_metadata", str(n)]
+
         result = subprocess.run(
             [ffmpeg, "-y"] + inputs + [
                 "-filter_complex", filter_complex,
-                "-map", "[out]",
+            ] + map_args + extra_args + [
                 "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-                "-an",
+            ] + audio_args + [
                 str(final_path),
             ],
             capture_output=True, text=True,
@@ -403,7 +603,7 @@ class BatchChainWorker(QThread):
         )
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg stitch failed:\n{result.stderr[-3000:]}")
-        return final_path
+        return final_path, seg_meta
 
     # ------------------------------------------------------------------ #
     # API helpers
@@ -451,7 +651,7 @@ class BatchChainWorker(QThread):
             return True  # already-exists recovery
         return False
 
-    def _wait_until_done(self, prompt_id: str, seg: int):
+    def _wait_until_done(self, prompt_id: str, seg: int, workflow: dict | None = None):
         """Wait for the prompt via websocket for live step progress; fall back
         to HTTP polling if the websocket can't connect or drops."""
         try:
@@ -470,6 +670,8 @@ class BatchChainWorker(QThread):
 
         start = time.time()
         last_minute_logged = 0
+        logged_node = None
+        pending_phase = None  # label of the post-sampler phase currently running, if any
         try:
             while not self._cancelled:
                 try:
@@ -506,8 +708,23 @@ class BatchChainWorker(QThread):
                     if minute > last_minute_logged:
                         last_minute_logged = minute
                         self._log(f"[Segment {seg}/{self._total_segs}] Running... ({minute}m)")
-                elif mtype == "executing" and data.get("prompt_id") == prompt_id and data.get("node") is None:
-                    return  # prompt finished
+                elif mtype == "executing" and data.get("prompt_id") == prompt_id:
+                    node_id = data.get("node")
+                    if node_id is None:
+                        if pending_phase:
+                            self.phase_progress.emit(seg)  # last phase (e.g. save) just finished
+                        return  # prompt finished
+                    if workflow and node_id != logged_node:
+                        logged_node = node_id
+                        class_type = workflow.get(node_id, {}).get("class_type", "")
+                        label = self._STATUS_NODE_LABELS.get(class_type)
+                        if label:
+                            self._log(f"[Segment {seg}/{self._total_segs}] {label}")
+                            if pending_phase:
+                                # entering a new phase means the previous one
+                                # (e.g. decode) actually finished, not just started
+                                self.phase_progress.emit(seg)
+                            pending_phase = label
                 elif mtype == "execution_error" and data.get("prompt_id") == prompt_id:
                     self._handle_execution_error(data.get("exception_message", ""), seg)
                     return  # already-exists recovery

@@ -27,7 +27,7 @@ if errorlevel 1 (
 )
 
 echo Building EXE...
-pyinstaller --onefile --windowed --name StopWatch --icon="app_icon.ico" --add-data "TimerChime.mp3;." --add-data "app_icon.ico;." --distpath "dist" --workpath "build" --specpath "." "stopwatch.py"
+pyinstaller --onefile --windowed --name StopWatch --icon="app_icon.ico" --add-data "TimerChime.mp3;." --add-data "app_icon.ico;." --exclude-module pkg_resources --exclude-module setuptools --distpath "dist" --workpath "build" --specpath "." "stopwatch.py"
 
 if errorlevel 1 (
     echo.

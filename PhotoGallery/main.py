@@ -5,12 +5,20 @@ from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
 
-VERSION = "1.2.0"
+VERSION = "1.4.0"
 
 
 def get_script_dir() -> Path:
+    """Folder for user data (config/ratings): next to the EXE when frozen."""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
+    return Path(__file__).parent
+
+
+def get_resource_dir() -> Path:
+    """Folder for bundled resources: PyInstaller unpacks datas into _internal."""
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
     return Path(__file__).parent
 
 
@@ -20,7 +28,7 @@ def main() -> None:
     app.setApplicationVersion(VERSION)
 
     script_dir = get_script_dir()
-    icon_path = script_dir / "app_icon.ico"
+    icon_path = get_resource_dir() / "app_icon.ico"
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 

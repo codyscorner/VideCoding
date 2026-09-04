@@ -49,6 +49,8 @@ batch_run_log.txt
 # API keys — never commit
 api_keys.json
 **/api_keys.json
+**/*credentials*.txt
+**/*credentials*.json
 
 # Temp folders
 **/temp/

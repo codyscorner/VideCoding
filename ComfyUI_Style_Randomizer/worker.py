@@ -64,6 +64,16 @@ def log_prompt_used(output_dir: Path, image_name: str, prompt_index: int | str,
         ])
 
 
+def append_daily_log(base_dir: Path, text: str):
+    """Appends a line to logs/<today>.txt next to the EXE (base_dir must already
+    be the frozen-EXE-aware directory — see main.py's BASE_DIR)."""
+    logs_dir = base_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_path = logs_dir / f"{datetime.now().strftime('%Y-%m-%d')}.txt"
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(text.rstrip("\n") + "\n")
+
+
 PROMPT_MODES = ("random", "sequential", "evens_odds")
 
 
@@ -75,7 +85,7 @@ class BatchStyleWorker(QThread):
 
     def __init__(self, config: dict, prompts: list[PromptEntry], image_paths: list[Path],
                  fixed_prompt: str | None = None, prompt_mode: str = "random",
-                 pinned: dict[str, str] | None = None):
+                 pinned: dict[str, str] | None = None, base_dir: Path | None = None):
         super().__init__()
         self._config        = config
         self._prompts       = prompts
@@ -83,6 +93,7 @@ class BatchStyleWorker(QThread):
         self._fixed_prompt  = fixed_prompt
         self._prompt_mode   = prompt_mode
         self._pinned        = pinned or {}
+        self._base_dir      = base_dir
         self._cancelled     = False
         self._client_id   = str(uuid.uuid4())
         runpod = config.get("mode", "local") == "runpod"
@@ -99,6 +110,17 @@ class BatchStyleWorker(QThread):
 
     def _log(self, msg: str):
         self.log.emit(msg)
+
+    @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        total = int(seconds)
+        h, rem = divmod(total, 3600)
+        m, s = divmod(rem, 60)
+        if h:
+            return f"{h}h {m}m {s}s"
+        if m:
+            return f"{m}m {s}s"
+        return f"{s}s"
 
     # ------------------------------------------------------------------ #
     # Main thread entry
@@ -117,7 +139,14 @@ class BatchStyleWorker(QThread):
             self._output_dir.mkdir(parents=True, exist_ok=True)
             base_workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
             total = len(self._image_paths)
+            start_time = time.time()
             self._log(f"Starting — {total} images, {len(self._prompts)} prompts")
+            if self._base_dir:
+                append_daily_log(
+                    self._base_dir,
+                    f"\n=== Run started {datetime.now().strftime('%H:%M:%S')} — "
+                    f"{total} images, {len(self._prompts)} prompts ===",
+                )
 
             texts   = [e.text for e in self._prompts]
             weights = [e.weight for e in self._prompts]
@@ -136,7 +165,10 @@ class BatchStyleWorker(QThread):
 
             for i, img_path in enumerate(self._image_paths):
                 if self._cancelled:
-                    self._log("Cancelled.")
+                    elapsed = self._format_elapsed(time.time() - start_time)
+                    self._log(f"Cancelled. ({elapsed})")
+                    if self._base_dir:
+                        append_daily_log(self._base_dir, f"=== Cancelled ({elapsed}) ===")
                     self.all_done.emit()
                     return
 
@@ -153,18 +185,18 @@ class BatchStyleWorker(QThread):
                     prompt     = self._pinned[img_path.stem]
                     note       = "pinned"
                     prompt_idx = texts.index(prompt) + 1 if prompt in texts else "custom"
-                    preview    = prompt.replace("\n", " ")[:60]
+                    preview    = prompt.replace("\n", " ")[:255]
                     self._log(f"[{i+1}/{total}] {img_path.name}  →  📌 {preview}…")
                 elif self._fixed_prompt is not None:
                     prompt  = self._fixed_prompt
-                    preview = prompt.replace("\n", " ")[:60]
+                    preview = prompt.replace("\n", " ")[:255]
                     prompt_idx = texts.index(prompt) + 1 if prompt in texts else "custom"
                     self._log(f"[{i+1}/{total}] {img_path.name}  →  {preview}…")
                 elif _seq is not None:
                     idx        = seq_pos % len(_seq)
                     prompt     = _seq[idx]
                     prompt_idx = texts.index(prompt) + 1 if prompt in texts else "custom"
-                    preview    = prompt.replace("\n", " ")[:60]
+                    preview    = prompt.replace("\n", " ")[:255]
                     self._log(f"[{i+1}/{total}] {img_path.name}  →  style #{prompt_idx}: {preview}…")
                     seq_pos += 1
                 else:
@@ -172,8 +204,15 @@ class BatchStyleWorker(QThread):
                     prompt      = texts[idx]
                     prompt_idx  = idx + 1
                     weight_used = weights[idx]
-                    preview     = prompt.replace("\n", " ")[:60]
+                    preview     = prompt.replace("\n", " ")[:255]
                     self._log(f"[{i+1}/{total}] {img_path.name}  →  style #{prompt_idx}: {preview}…")
+
+                if self._base_dir:
+                    append_daily_log(
+                        self._base_dir,
+                        f"{datetime.now().strftime('%H:%M:%S')}  {img_path.name}  ->  "
+                        f"{prompt.replace(chr(10), ' ')}",
+                    )
 
                 try:
                     workflow = json.loads(json.dumps(base_workflow))
@@ -188,7 +227,10 @@ class BatchStyleWorker(QThread):
                     self._poll_until_done(prompt_id)
 
                     if self._cancelled:
-                        self._log("Cancelled.")
+                        elapsed = self._format_elapsed(time.time() - start_time)
+                        self._log(f"Cancelled. ({elapsed})")
+                        if self._base_dir:
+                            append_daily_log(self._base_dir, f"=== Cancelled ({elapsed}) ===")
                         self.all_done.emit()
                         return
 
@@ -200,7 +242,10 @@ class BatchStyleWorker(QThread):
 
                 self.progress.emit(i + 1, total)
 
-            self._log(f"Done! {total} images processed.")
+            elapsed = self._format_elapsed(time.time() - start_time)
+            self._log(f"Done! {total} images processed in {elapsed}.")
+            if self._base_dir:
+                append_daily_log(self._base_dir, f"=== Done: {total} images processed in {elapsed} ===")
             self.all_done.emit()
 
         except Exception as exc:

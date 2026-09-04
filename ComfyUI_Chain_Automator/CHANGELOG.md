@@ -1,5 +1,69 @@
 # Changelog — ComfyUI Workflow Chain Automator
 
+### v3.9.4
+- Fix: Library showed an empty grid for a folder full of videos when the configured ffmpeg no longer existed (it lived inside the since-deleted ComfyUI venv) — thumbnail generation failed silently and the loader skipped every video without a thumbnail. Videos with no thumbnail now show a flat placeholder tile instead of being hidden
+- ffmpeg path is now resolved with fallbacks everywhere (Library thumbnails, stitching, frame extraction, conversion): configured path if it exists → `ffmpeg.exe` next to the app → system PATH. An `ffmpeg.exe` is now deployed alongside the EXE so the app no longer depends on ComfyUI's venv copy
+
+### v3.9.3
+- Library: browsing for the Video Folder and picking the active chain's own folder (instead of its parent root) made the library look in an empty doubled `<chain>/<chain>` path — the picker now detects this and steps up to the parent automatically, with a dialog explaining the adjustment
+
+### v3.9.2
+- Fix: batch crashed with `[Errno 22] Invalid argument` while building a zip archive when a source image (or other archived file) carried a corrupted/out-of-range file timestamp — Python's zipfile chokes converting such an mtime on Windows. Archive writes now fall back to a manually built zip entry stamped with the current time instead of failing the whole batch
+
+### v3.9.1
+- Library: deleting a video now un-marks its source image as processed in that chain's registry, so it reappears in the Chain tab's image list to redo — a deleted video is treated as a bad generation, not a finished one
+- Stitch: segments are now normalized (scale/setsar/fps/pixel format, matched to the first segment) before ffmpeg's concat filter — a chain mixing segments with different resolution/fps/SAR previously produced a rippling "underwater" warp in the stitched output even though each segment played back fine on its own
+- Stitch: single-segment chains no longer go through ffmpeg at all — the raw downloaded video is copied straight to the final filename, skipping a pointless re-encode (and the artifacts/crashes it could introduce)
+- Safety: Image folder can no longer be pointed at the app's own `thumbnails` cache subfolder (checked both in the folder browser and at batch start) — those are small downscaled previews, and sending them to ComfyUI for generation produced blurry/distorted output once upscaled
+
+### v3.9.0
+- Segment Editor: prompt/negative-prompt text boxes were fixed at a small 9pt font with no way to enlarge them. Added a "Text Size" spinbox (7-24pt) next to the dialog title that live-resizes both prompt editors and persists the chosen size to config (`segment_editor_font_size`) so it's remembered next time Quick Edit is opened
+
+### v3.8.9
+- **Prompt history**: every workflow JSON now gets a sibling `<name>.prompt_history.json` file recording saved positive/negative prompts with a timestamp
+- Generate tab: new "💾 Save to History" and "📜 History" buttons next to the prompt fields — Save appends the current prompt for the selected workflow, History opens a searchable list of past prompts with a live preview and an "Use" button that loads the picked entry straight back into the prompt fields
+- Segment Editor: new "📜 History" button alongside Save — clicking Save now also appends the segment's current prompt to its history file; History opens the same searchable dialog to reload / delete past entries for that segment's workflow
+- New `ui/prompt_history.py` — shared `append_history()`/`load_history()` helpers and the `PromptHistoryDialog` widget used by both tabs
+
+### v3.8.8
+- Fixed the app sometimes launching behind other windows instead of on top — `main()` now calls `raise_()`/`activateWindow()` right after `show()`, plus a second pass 200ms later once the event loop and the window's first paint have settled, since Windows' foreground lock can still leave a just-shown window behind others painted after it
+
+### v3.8.7
+- Fixed the v3.8.6 phase-tick fix still hitting a false 100% ("Step 44/44") once every post-sampler phase had merely *started* — the "Saving video..." stage alone can take one to three minutes (more with a larger image batch), so counting it done the instant it began still froze the bar at 100% for that whole stretch. Phase ticks now fire on the *next* transition instead — entering phase N+1 (or the prompt finishing) is what marks phase N complete — so the bar holds at e.g. 43/44 through the entire save and only reaches 44/44 when the file is actually finished
+
+### v3.8.6
+- Fixed the step bar reading a false "100% / Step 30/30" while MiniMax H3 was still decoding audio/video and saving — sampler progress hits 100% well before the file is actually written, and nothing updated the bar during that stretch. The segment's expected step total (`segment_plan`) now folds in one unit per post-sampler stage (VAE decode video, VAE decode audio, encode, save) detected in the workflow, and each stage ticks the bar forward as it starts (new `phase_progress` signal) — so e.g. "Step 30/30" becomes "Step 30/34" the moment sampling finishes, climbing to 34/34 only once the file is actually done
+
+### v3.8.5
+- Added log feedback for the post-sampling stretch on MiniMax H3 (VAE video decode, VAE audio decode, video encode, save) — the websocket goes quiet between the last sampler step and the finished file with nothing but a generic "Running... (Xm)" line, which reads as a hang; each of those stages now logs its own status line as ComfyUI enters it
+- Fixed the segment/step progress bars being wrong on MiniMax H3 batches — `_sampler_steps()` (used to compute each segment's expected total step count) only recognized nodes with "sampler" in their class_type and a `steps` input, but H3's `SamplerCustomAdvanced`/`KSamplerSelect` pair carries no `steps` field of its own; the count lives on the upstream `BasicScheduler` node instead. With no plan, the segment bar fell back to mirroring the raw single-pass step fraction (so a 3-image batch showed the *current image's* pass progress as if it were the whole segment's, e.g. stuck bouncing between the wrong percentages instead of advancing across all 3). `BasicScheduler` is now treated as a step source too, so H3 segments get the same accurate whole-segment plan WAN already had
+
+### v3.8.4
+- Fixed the final stitched video having no audio on MiniMax H3 chains — `_stitch()` hardcoded `-an` (strip audio) into every ffmpeg concat, which was harmless for WAN's video-only segments but was silently dropping H3's native synced audio track too. It now probes each segment for an audio stream first and, when every segment has one, concats `[v]`+`[a]` pairs and encodes with AAC instead of discarding it; silent (WAN) chains are unaffected
+
+### v3.8.3
+- Segment Editor now exposes MiniMax H3's clip length as a **Duration (seconds)** control (1-15s) — H3 doesn't take a raw frame count like WAN; it drives length off a `PrimitiveFloat` node titled "Float (duration)" that feeds a math expression, so that node's `value` is now editable directly instead of only being reachable by hand-editing the JSON
+
+### v3.8.2
+- Fixed the Segment Editor showing no prompt box at all for MiniMax H3 chain segments — it only recognized `CLIPTextEncode` nodes, but H3 nodes (`MiniMaxH3ImageToVideo` and other mode variants) pack the whole structured prompt into a single `prompt` field instead; it's now matched by class_type prefix and rendered as one "Prompt" box (H3 has no separate negative) instead of the WAN-style Positive/Negative pair
+- `metadata_parser.py`'s prompt extraction (Library "Settings" viewer, `prompts.txt` in batch zips) picks up the same H3 `prompt` field so those views aren't blank for H3-generated videos either
+- Fixed batch runs failing with "No output videos in history" on MiniMax H3 chains — output-node discovery only recognized `VHS_VideoCombine`, but H3 workflows use ComfyUI's native `SaveVideo` node, whose result is reported under ComfyUI's `images` history key (not `videos`/`gifs`). Batch output collection and the per-segment `filename_prefix` patch now also recognize `SaveVideo`
+
+### v3.8.0
+- **New "Prompt Writer" tab**: type a rough idea and get back a properly structured video-generation prompt via the Anthropic Claude API
+- Pick a target model — **WAN 2.2** (plain descriptive prompt) or **MiniMax H3** (structured `integrated_multimodal_description` / `overall_soundscape` / `non_diegetic_music` format, with a mode selector for T2VA/I2VA/FL2VA/L2VA/Ref2VA)
+- H3 system prompts are built from bundled reference guides (`resources/h3_base_guide.txt`, `resources/h3_ref_guide.txt`) so the structure matches MiniMax's own documented prompt spec
+- New `prompt_llm_worker.py` calls the Anthropic Messages API on a background thread (no new dependency — reuses `requests`)
+- "Send to Generate Tab" pushes the generated prompt straight into the Generate tab's Positive prompt field and switches views
+- New Settings → "AI Prompt Writer" field for your own Anthropic API key (`anthropic_api_key` in config, masked input); the tab disables itself with an inline hint until a key is set
+
+### v3.7.4
+- **Library "Settings" button**: select a single video and view the prompt, sampler, video, and model settings used to generate it, one tab per chain segment
+- **`prompts.txt` in every batch zip**: each per-image zip archive now includes a plain-text summary of every segment's prompts/sampler/video settings, so they can be checked in Notepad without opening any file individually
+- Fixed a gap where the final stitched video carried no generation metadata at all — ffmpeg's concat re-encode strips the ComfyUI metadata VHS_VideoCombine embeds in each segment clip; `_stitch()` now extracts every segment's prompt graph before the source clips are discarded, re-embeds them into the final video via an ffmpeg ffmetadata file (avoids the command-line length limit a multi-segment JSON blob could hit as a raw `-metadata` argument), and hands them off to `_zip_segments()` for the text summary
+- New `metadata_parser.py` — shared byte-scan extraction (same technique as the standalone VHS_Metadata_Parser tool), a read-only `SegmentMetadata` view for pulling prompts/sampler/video/model settings out of a segment's prompt graph (used by the Settings dialog), and `build_prompts_text()` for the zip's plain-text summary
+- Only applies to videos stitched from now on — videos created before this update have no embedded metadata to show
+
 ### v3.7.3
 - **Exact per-segment step totals read from the workflow JSON**: before queueing each segment the worker counts the sampler nodes and their *executed* steps (KSamplerAdvanced honors `start_at_step`/`end_at_step`, so WAN 2.2's hi/lo pair with steps=4 counts as 2+2) and multiplies by the images in the batch — new `segment_plan` signal carries (passes, total steps)
 - Step bar now fills once across the whole segment showing cumulative progress (`Step 5/16` for 4 images × 4 steps) instead of refilling per sampler pass; segment bar and ETA use the same exact fraction, accurate from segment 1 (no more learning from the first segment)

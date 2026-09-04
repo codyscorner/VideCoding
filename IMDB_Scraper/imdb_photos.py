@@ -15,6 +15,7 @@ Requirements:
 """
 
 import os
+import random
 import re
 import sys
 import time
@@ -56,10 +57,20 @@ def scrape_media_gallery(title_id: str) -> tuple[str, list[str]]:
     title_name = title_id
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
         context = browser.new_context(
             user_agent=DOWNLOAD_HEADERS["User-Agent"],
             locale="en-US",
+            viewport={"width": 1280, "height": 900},
+        )
+        # IMDB's AWS WAF bot-check inspects navigator.webdriver; headless
+        # Chromium sets it true by default, which triggers a CAPTCHA wall
+        # instead of the gallery. Masking it lets the real page load.
+        context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
         )
         page = context.new_page()
 
@@ -69,7 +80,7 @@ def scrape_media_gallery(title_id: str) -> tuple[str, list[str]]:
         base = "name" if title_id.startswith("nm") else "title"
         print("Opening IMDB media gallery...")
         page.goto(f"https://www.imdb.com/{base}/{title_id}/mediaindex/", wait_until="domcontentloaded")
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(random.randint(1600, 2800))
 
         # Get title from og:title meta tag
         try:
@@ -101,7 +112,7 @@ def scrape_media_gallery(title_id: str) -> tuple[str, list[str]]:
 
         def collect_images_from_page():
             # Wait for images to load
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(random.randint(1200, 2000))
             html = page.content()
             soup = BeautifulSoup(html, "html.parser")
 
@@ -130,7 +141,7 @@ def scrape_media_gallery(title_id: str) -> tuple[str, list[str]]:
             urls = collect_images_from_page()
             image_urls.extend(urls)
             print(f"Page {pg}/{total_pages} — {len(urls)} images")
-            time.sleep(0.5)
+            time.sleep(random.uniform(0.8, 2.2))
 
         browser.close()
 
@@ -155,7 +166,7 @@ def main():
         sys.exit(1)
 
     url = sys.argv[1]
-    title_id = extract_title_id(url)
+    title_id, _id_type = extract_title_id(url)
 
     title_name, image_urls = scrape_media_gallery(title_id)
 
@@ -197,7 +208,10 @@ def main():
             failed += 1
             print(f"[{i}/{len(image_urls)}] FAIL: {img_url[:80]}")
 
-        time.sleep(0.2)
+        # Pace like someone actually looking at a photo before saving it: never
+        # under 2s, usually 2-6s, occasionally lingering up to 10s. A fixed
+        # sub-second gap is an obvious tell that cadence-monitoring can key on.
+        time.sleep(random.triangular(2.0, 10.0, 4.0))
 
     print(f"\nDone. Downloaded: {downloaded}  Skipped: {skipped}  Failed: {failed}")
     print(f"Photos saved to: {out_dir}")

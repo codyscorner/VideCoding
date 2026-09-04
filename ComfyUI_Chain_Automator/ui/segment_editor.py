@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from ui.styles import COLORS
+from ui.prompt_history import append_history, PromptHistoryDialog
 
 
 class SegmentEditorDialog(QDialog):
@@ -31,7 +32,10 @@ class SegmentEditorDialog(QDialog):
         self._json_path = json_path
         self._segment = segment
         self._workflow: dict = {}
-        self._lora_names: list[str] = self._scan_loras(config or {})
+        self._config = config or {}
+        self._lora_names: list[str] = self._scan_loras(self._config)
+        self._prompt_font_size: int = int(self._config.get("segment_editor_font_size", 9))
+        self._prompt_edits: list[QTextEdit] = []
 
         self.setWindowTitle(f"Segment {segment} — Quick Edit")
         self.setMinimumSize(700, 560)
@@ -89,21 +93,35 @@ class SegmentEditorDialog(QDialog):
         ]
 
     def _identify_prompts(self) -> tuple[tuple | None, tuple | None]:
-        """Return (positive_node, negative_node) as (nid, node) tuples.
-        Positive = longer text; negative = shorter (usually the quality negative)."""
-        clips = self._nodes_of_type(self._CLIP_TYPES)
-        if not clips:
+        """Return (positive_node, negative_node) as (nid, node, field) tuples.
+        Positive = longer text; negative = shorter (usually the quality negative).
+
+        CLIPTextEncode holds its text in `inputs.text`. MiniMax H3 nodes
+        (MiniMaxH3ImageToVideo etc.) pack the whole structured prompt —
+        description + soundscape + music — into a single `inputs.prompt`
+        field with no separate negative, so they're matched by class_type
+        prefix rather than a fixed node-type set (H3 has several
+        mode-specific node classes: image/text/first-last-frame/reference
+        to video)."""
+        clips = [(nid, node, "text") for nid, node in self._nodes_of_type(self._CLIP_TYPES)]
+        h3_nodes = [
+            (nid, node, "prompt") for nid, node in self._workflow.items()
+            if node.get("class_type", "").startswith("MiniMaxH3") and "prompt" in node.get("inputs", {})
+        ]
+        candidates = clips + h3_nodes
+        if not candidates:
             return None, None
-        if len(clips) == 1:
-            return clips[0], None
+        if len(candidates) == 1:
+            return candidates[0], None
         # Negative prompt contains quality keywords — detect by common negative terms
         neg_keywords = {"blurry", "distorted", "deformed", "ugly", "watermark", "artifact"}
-        def is_negative(node_tuple):
-            text = node_tuple[1].get("inputs", {}).get("text", "").lower()
+        def is_negative(candidate):
+            text = candidate[1].get("inputs", {}).get(candidate[2], "")
+            text = text.lower() if isinstance(text, str) else ""
             return sum(1 for kw in neg_keywords if kw in text)
 
-        clips_sorted = sorted(clips, key=is_negative, reverse=True)
-        return clips_sorted[1], clips_sorted[0]  # positive, negative
+        candidates_sorted = sorted(candidates, key=is_negative, reverse=True)
+        return candidates_sorted[1], candidates_sorted[0]  # positive, negative
 
     # ------------------------------------------------------------------ #
     # UI
@@ -123,9 +141,22 @@ class SegmentEditorDialog(QDialog):
             root.addWidget(buttons)
             return
 
+        title_row = QHBoxLayout()
         title = QLabel(f"Segment {self._segment}  —  {self._json_path.name}")
         title.setStyleSheet(f"font-size: 11pt; font-weight: bold; color: {COLORS['accent']};")
-        root.addWidget(title)
+        title_row.addWidget(title)
+        title_row.addStretch()
+        font_lbl = QLabel("Text Size:")
+        font_lbl.setStyleSheet(f"color: {COLORS['fg_dim']}; font-size: 9pt;")
+        title_row.addWidget(font_lbl)
+        font_spin = QSpinBox()
+        font_spin.setRange(7, 24)
+        font_spin.setValue(self._prompt_font_size)
+        font_spin.setFixedWidth(60)
+        font_spin.setStyleSheet(self._input_style())
+        font_spin.valueChanged.connect(self._on_font_size_changed)
+        title_row.addWidget(font_spin)
+        root.addLayout(title_row)
 
         # Scrollable content area
         scroll = QScrollArea()
@@ -139,28 +170,34 @@ class SegmentEditorDialog(QDialog):
         root.addWidget(scroll, stretch=1)
 
         self._editors: list[tuple[str, str, object]] = []  # (nid, field, widget)
+        self._pos_prompt_edit: QTextEdit | None = None
+        self._neg_prompt_edit: QTextEdit | None = None
 
         # ── Prompts ───────────────────────────────────────────────────────
         pos_node, neg_node = self._identify_prompts()
 
         if pos_node:
-            nid, node = pos_node
+            nid, node, field = pos_node
+            is_h3 = node.get("class_type", "").startswith("MiniMaxH3")
             group, widget = self._text_editor(
-                "Positive Prompt",
-                node["inputs"].get("text", "")
+                "Prompt" if is_h3 else "Positive Prompt",
+                node["inputs"].get(field, ""),
+                height=220 if is_h3 else 120,
             )
             content_layout.addWidget(group)
-            self._editors.append((nid, "text", widget))
+            self._editors.append((nid, field, widget))
+            self._pos_prompt_edit = widget
 
         if neg_node:
-            nid, node = neg_node
+            nid, node, field = neg_node
             group, widget = self._text_editor(
                 "Negative Prompt",
-                node["inputs"].get("text", ""),
+                node["inputs"].get(field, ""),
                 height=80
             )
             content_layout.addWidget(group)
-            self._editors.append((nid, "text", widget))
+            self._editors.append((nid, field, widget))
+            self._neg_prompt_edit = widget
 
         # ── Frame count ───────────────────────────────────────────────────
         wan_nodes = self._nodes_of_type(self._WAN_TYPES)
@@ -170,6 +207,24 @@ class SegmentEditorDialog(QDialog):
                 group, widget = self._spinbox_editor("Frame Count", int(length), 1, 1000)
                 content_layout.addWidget(group)
                 self._editors.append((nid, "length", widget))
+
+        # ── Duration (seconds) — MiniMax H3 drives its frame length from a
+        # PrimitiveFloat node (titled "Float (duration)") feeding a math
+        # expression, rather than a raw frame count like WAN
+        for nid, node in self._workflow.items():
+            if node.get("class_type") != "PrimitiveFloat":
+                continue
+            if "duration" not in node.get("_meta", {}).get("title", "").lower():
+                continue
+            value = node["inputs"].get("value")
+            if value is None:
+                continue
+            group, widget = self._double_spinbox_editor(
+                "Duration (seconds)", float(value), 1.0, 15.0,
+                hint="MiniMax H3 supports up to 15s"
+            )
+            content_layout.addWidget(group)
+            self._editors.append((nid, "value", widget))
 
         # ── LoRAs (individual loader nodes) ───────────────────────────────
         lora_nodes = self._nodes_of_type(self._LORA_TYPES)
@@ -267,11 +322,17 @@ class SegmentEditorDialog(QDialog):
         save_btn = QPushButton("💾  Save")
         save_btn.setFixedHeight(40)
         save_btn.clicked.connect(self._on_save)
+        history_btn = QPushButton("📜  History")
+        history_btn.setFixedHeight(40)
+        history_btn.setEnabled(self._pos_prompt_edit is not None or self._neg_prompt_edit is not None)
+        history_btn.clicked.connect(self._on_view_history)
         cancel_btn = QPushButton("✕  Cancel")
         cancel_btn.setObjectName("cancel_btn")
         cancel_btn.setFixedHeight(40)
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(save_btn)
+        btn_row.addSpacing(8)
+        btn_row.addWidget(history_btn)
         btn_row.addSpacing(8)
         btn_row.addWidget(cancel_btn)
         btn_row.addStretch()
@@ -292,10 +353,24 @@ class SegmentEditorDialog(QDialog):
                 node["inputs"][field] = widget.value()
         try:
             self._save_workflow()
+            if self._pos_prompt_edit is not None or self._neg_prompt_edit is not None:
+                positive = self._pos_prompt_edit.toPlainText() if self._pos_prompt_edit else ""
+                negative = self._neg_prompt_edit.toPlainText() if self._neg_prompt_edit else ""
+                append_history(self._json_path, positive, negative)
             self.accept()
         except Exception as e:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.critical(self, "Save Error", str(e))
+
+    def _on_view_history(self):
+        dlg = PromptHistoryDialog(self._json_path, parent=self)
+        if dlg.exec() == dlg.DialogCode.Accepted:
+            entry = dlg.selected_entry()
+            if entry:
+                if self._pos_prompt_edit is not None:
+                    self._pos_prompt_edit.setPlainText(entry.get("positive", ""))
+                if self._neg_prompt_edit is not None:
+                    self._neg_prompt_edit.setPlainText(entry.get("negative", ""))
 
     # ------------------------------------------------------------------ #
     # Widget helpers
@@ -315,12 +390,24 @@ class SegmentEditorDialog(QDialog):
                 color: {COLORS['fg_primary']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
-                font-size: 9pt;
+                font-size: {self._prompt_font_size}pt;
                 padding: 4px;
             }}
         """)
         layout.addWidget(edit)
+        self._prompt_edits.append(edit)
         return group, edit
+
+    def _on_font_size_changed(self, size: int):
+        self._prompt_font_size = size
+        for edit in self._prompt_edits:
+            font = edit.font()
+            font.setPointSize(size)
+            edit.setFont(font)
+        if hasattr(self._config, "set"):
+            self._config.set("segment_editor_font_size", size)
+            if hasattr(self._config, "save"):
+                self._config.save()
 
     def _spinbox_editor(self, label: str, value: int, min_: int, max_: int) -> tuple[QGroupBox, QSpinBox]:
         group = QGroupBox(label)
@@ -337,6 +424,28 @@ class SegmentEditorDialog(QDialog):
         row.addWidget(spinbox)
         row.addSpacing(12)
         row.addWidget(hint)
+        row.addStretch()
+        return group, spinbox
+
+    def _double_spinbox_editor(self, label: str, value: float, min_: float, max_: float,
+                                step: float = 0.5, hint: str = "") -> tuple[QGroupBox, QDoubleSpinBox]:
+        group = QGroupBox(label)
+        group.setStyleSheet(self._group_style())
+        row = QHBoxLayout(group)
+        row.setContentsMargins(12, 8, 12, 8)
+        spinbox = QDoubleSpinBox()
+        spinbox.setRange(min_, max_)
+        spinbox.setSingleStep(step)
+        spinbox.setDecimals(1)
+        spinbox.setValue(value)
+        spinbox.setFixedWidth(100)
+        spinbox.setStyleSheet(self._input_style())
+        row.addWidget(spinbox)
+        if hint:
+            hint_lbl = QLabel(hint)
+            hint_lbl.setStyleSheet(f"color: {COLORS['fg_dim']}; font-size: 8pt;")
+            row.addSpacing(12)
+            row.addWidget(hint_lbl)
         row.addStretch()
         return group, spinbox
 

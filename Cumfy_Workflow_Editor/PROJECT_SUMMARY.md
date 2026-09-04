@@ -22,6 +22,15 @@ Everything else in the JSON is passed through untouched on save.
 
 ---
 
+## Opening Files
+
+- **File → Open…** (Ctrl+O) or the toolbar **Open** button
+- **Drag and drop** — drop a `.json` file anywhere on the window (v1.1.0+).
+  Non-JSON drags are refused; dropping multiple files opens the first `.json`.
+- Either route prompts to save first when the open workflow has unsaved edits.
+
+---
+
 ## Tech Stack
 
 - Python + PyQt6
@@ -65,11 +74,11 @@ Everything else in the JSON is passed through untouched on save.
 
 ```
 Cumfy_Workflow_Editor/
-  main.py                  ← entry point (v1.0.0)
+  main.py                  ← entry point (v1.1.0)
   ui/
     __init__.py
     styles.py              ← dark theme (shared with Chain Automator)
-    main_window.py         ← all form logic here
+    main_window.py         ← all form logic + file open/save + drag-and-drop
     node_cards.py          ← (unused, kept for future canvas mode)
     canvas.py              ← (unused, kept for future canvas mode)
 ```
@@ -78,7 +87,7 @@ Cumfy_Workflow_Editor/
 
 ## Out of Scope (for now)
 
-- Node canvas / drag-drop layout
+- Node canvas / drag-drop node layout
 - Adding, removing, or rewiring nodes
 - Connecting to the ComfyUI server
 - Custom node types beyond the list above

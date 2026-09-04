@@ -1,10 +1,11 @@
-"""IMDB Photo Downloader — GUI v1.1.1"""
+"""IMDB Photo Downloader — GUI v1.2.7"""
 
-VERSION = "1.1.1"
+VERSION = "1.2.7"
 
 import csv
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -26,13 +27,29 @@ from playwright.sync_api import sync_playwright
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPlainTextEdit, QPushButton, QListWidget, QFileDialog,
-    QProgressBar, QCheckBox,
+    QLabel, QLineEdit, QPlainTextEdit, QPushButton, QListWidget, QListWidgetItem,
+    QFileDialog, QProgressBar, QCheckBox,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 1.0  # seconds, doubles each retry
+
+
+def human_delay(lo: float, hi: float) -> None:
+    """Sleep a randomized interval instead of a fixed one. Uniform, identical
+    gaps between every request/scroll/download is itself a bot fingerprint on
+    top of the headless-Chromium signals; jittering pacing looks (and is)
+    less mechanical, and it's gentler on IMDB's servers too."""
+    time.sleep(random.uniform(lo, hi))
+
+
+def human_view_delay() -> None:
+    """Sleep like someone actually looking at a photo before deciding to save
+    it: never under 2s, usually 2-6s, occasionally lingering up to 10s. Used
+    between image downloads, where a fixed sub-second gap is an obvious tell
+    that cadence-monitoring can key on."""
+    time.sleep(random.triangular(2.0, 10.0, 4.0))
 
 # ------------------------------------------------------------------ #
 # Colors / style
@@ -122,20 +139,34 @@ DOWNLOAD_HEADERS = {
     ),
 }
 
-SETTINGS_FILE = Path(__file__).parent / "imdb_downloader_settings.json"
+# Path(__file__).parent resolves inside PyInstaller's ephemeral _MEI extraction
+# folder when frozen, not next to the persistent EXE, so settings never survive
+# a restart. Anchor to sys.executable's directory instead when frozen.
+SETTINGS_FILE = (
+    Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+) / "imdb_downloader_settings.json"
 
 
 # ------------------------------------------------------------------ #
 # Settings
 # ------------------------------------------------------------------ #
 
+DEFAULT_SETTINGS = {
+    "root_dir": "",
+    "full_res_default": False,
+    "window_w": 820,
+    "window_h": 600,
+}
+
+
 def load_settings() -> dict:
+    settings = dict(DEFAULT_SETTINGS)
     if SETTINGS_FILE.exists():
         try:
-            return json.loads(SETTINGS_FILE.read_text())
+            settings.update(json.loads(SETTINGS_FILE.read_text()))
         except Exception:
             pass
-    return {"root_dir": ""}
+    return settings
 
 
 def save_settings(settings: dict):
@@ -165,6 +196,47 @@ def parse_url_queue(text: str) -> list[str]:
         if line and line not in seen:
             seen.append(line)
     return seen
+
+
+def search_imdb(query: str) -> list[dict]:
+    """Look up movie/show/person titles by name via IMDB's public autocomplete
+    endpoint — the same JSON the site's own search box uses. Each result
+    reports whether IMDB has poster art for it ("has_image"), which is a
+    quick signal (not a guarantee) that its media gallery has photos too."""
+    query = query.strip()
+    if not query:
+        return []
+    key = re.sub(r"[^a-z0-9]", "", query.lower())
+    first = key[:1] or "a"
+    safe_q = re.sub(r"[^a-z0-9]+", "_", query.lower()).strip("_")
+    if not safe_q:
+        return []
+    url = f"https://v2.sg.media-imdb.com/suggestion/{first}/{safe_q}.json"
+    try:
+        resp = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return []
+
+    results = []
+    for item in data.get("d", []):
+        imdb_id = item.get("id", "")
+        if not re.match(r"^(tt|nm)\d+$", imdb_id):
+            continue
+        results.append({
+            "id": imdb_id,
+            "title": item.get("l", imdb_id),
+            "year": item.get("y"),
+            "type": item.get("q", ""),
+            "has_image": "i" in item,
+        })
+    return results
+
+
+def imdb_url_for_id(imdb_id: str) -> str:
+    base = "name" if imdb_id.startswith("nm") else "title"
+    return f"https://www.imdb.com/{base}/{imdb_id}/"
 
 
 def parse_gallery_images(html: str) -> list[dict]:
@@ -305,6 +377,8 @@ class DownloadWorker(QThread):
                         failed += 1
                         status = "failed"
                         self.log.emit(f"[{i}/{total}] FAIL")
+                    # Only pace after an actual request — skipped files never hit the network.
+                    human_view_delay()
 
                 manifest_rows.append({
                     "index": i,
@@ -315,7 +389,6 @@ class DownloadWorker(QThread):
                 })
 
                 self.progress.emit(i, total)
-                time.sleep(0.15)
 
             write_manifest(out, manifest_rows)
             self.log.emit(f"Manifest written: {out / 'manifest.csv'}")
@@ -334,17 +407,28 @@ class DownloadWorker(QThread):
         base = "name" if id_type == "name" else "title"
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_context(
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            context = browser.new_context(
                 user_agent=DOWNLOAD_HEADERS["User-Agent"],
                 locale="en-US",
-            ).new_page()
+                viewport={"width": 1280, "height": 900},
+            )
+            # IMDB's AWS WAF bot-check inspects navigator.webdriver; headless
+            # Chromium sets it true by default, which triggers a CAPTCHA wall
+            # instead of the gallery. Masking it lets the real page load.
+            context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
+            page = context.new_page()
             page.route("**/*.{woff,woff2,ttf,otf}", lambda r: r.abort())
 
             self.log.emit("Opening IMDB media gallery...")
             page.goto(f"https://www.imdb.com/{base}/{imdb_id}/mediaindex/",
                       wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(random.randint(1600, 2800))
 
             # Title
             try:
@@ -376,7 +460,7 @@ class DownloadWorker(QThread):
                 prev_html = ""
                 for _ in range(20):
                     pg.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    pg.wait_for_timeout(800)
+                    pg.wait_for_timeout(random.randint(650, 1400))
                     html = pg.content()
                     if html == prev_html:
                         break  # no new images loaded
@@ -397,7 +481,7 @@ class DownloadWorker(QThread):
                 entries = collect(page)
                 images.extend(entries)
                 self.log.emit(f"Page {pg_num}/{total_pages} — {len(entries)} images")
-                time.sleep(0.5)
+                human_delay(0.8, 2.2)
 
             if self._full_res:
                 self.log.emit("Fetching full-resolution images (visiting each photo page)...")
@@ -411,7 +495,7 @@ class DownloadWorker(QThread):
                         if mv_url.startswith("/"):
                             mv_url = f"https://www.imdb.com{mv_url}"
                         page.goto(mv_url, wait_until="domcontentloaded")
-                        page.wait_for_timeout(500)
+                        page.wait_for_timeout(random.randint(350, 900))
                         entry["url"] = extract_full_res_from_mediaviewer(page.content(), entry["url"])
                     except Exception:
                         pass  # keep gallery-resolution fallback already in entry["url"]
@@ -442,7 +526,10 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(f"IMDB Photo Downloader  v{VERSION}")
         self.setMinimumSize(700, 540)
-        self.resize(820, 600)
+        self.resize(
+            self._settings.get("window_w", 820),
+            self._settings.get("window_h", 600),
+        )
         self.setStyleSheet(STYLESHEET)
         self._build_ui()
 
@@ -464,6 +551,34 @@ class MainWindow(QMainWindow):
         sub.setStyleSheet(f"color: {FG_DIM}; font-size: 9pt;")
         root.addWidget(sub)
 
+        # Title/name search (find an IMDB URL by name instead of pasting one)
+        search_row = QHBoxLayout()
+        search_lbl = QLabel("Find:")
+        search_lbl.setFixedWidth(90)
+        search_lbl.setStyleSheet(f"color: {FG_DIM};")
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("Movie, show, or actor/actress name...")
+        self._search_edit.returnPressed.connect(self._run_search)
+        search_btn = QPushButton("🔍 Search")
+        search_btn.setObjectName("browse_btn")
+        search_btn.clicked.connect(self._run_search)
+        search_row.addWidget(search_lbl)
+        search_row.addWidget(self._search_edit)
+        search_row.addWidget(search_btn)
+        root.addLayout(search_row)
+
+        self._search_results = QListWidget()
+        self._search_results.setFixedHeight(110)
+        self._search_results.setVisible(False)
+        self._search_results.itemDoubleClicked.connect(self._add_search_result)
+        root.addWidget(self._search_results)
+
+        search_hint = QLabel("📷 = IMDB has poster art for this result (not a guarantee its gallery has photos) · double-click to add its URL below")
+        search_hint.setStyleSheet(f"color: {FG_DIM}; font-size: 8pt; font-style: italic;")
+        search_hint.setVisible(False)
+        self._search_hint = search_hint
+        root.addWidget(search_hint)
+
         # URL queue input
         self._url_edit = QPlainTextEdit()
         self._url_edit.setPlaceholderText(
@@ -472,10 +587,20 @@ class MainWindow(QMainWindow):
         self._url_edit.setFixedHeight(80)
         root.addWidget(self._url_edit)
 
-        # Full-resolution option
+        # Full-resolution option + clear search results
+        full_res_row = QHBoxLayout()
         self._full_res_chk = QCheckBox("Grab full-resolution images (slower — visits each photo page)")
         self._full_res_chk.setStyleSheet(f"color: {FG_DIM};")
-        root.addWidget(self._full_res_chk)
+        self._full_res_chk.setChecked(bool(self._settings.get("full_res_default", False)))
+        self._full_res_chk.toggled.connect(self._on_full_res_toggled)
+        clear_results_btn = QPushButton("Clear List")
+        clear_results_btn.setObjectName("browse_btn")
+        clear_results_btn.setFixedWidth(110)
+        clear_results_btn.clicked.connect(self._clear_search_results)
+        full_res_row.addWidget(self._full_res_chk)
+        full_res_row.addStretch()
+        full_res_row.addWidget(clear_results_btn)
+        root.addLayout(full_res_row)
 
         # Root folder row
         root_row = QHBoxLayout()
@@ -545,6 +670,56 @@ class MainWindow(QMainWindow):
         self._folder_link.mousePressEvent = self._open_folder
         self._folder_link.setWordWrap(True)
         root.addWidget(self._folder_link)
+
+    def _run_search(self):
+        query = self._search_edit.text().strip()
+        self._search_results.clear()
+        if not query:
+            self._search_results.setVisible(False)
+            self._search_hint.setVisible(False)
+            return
+
+        self._status.setText(f"Searching IMDB for \"{query}\"...")
+        QApplication.processEvents()
+        results = search_imdb(query)
+
+        if not results:
+            self._search_results.setVisible(False)
+            self._search_hint.setVisible(False)
+            self._status.setText(f"No matches found for \"{query}\".")
+            return
+
+        for r in results[:20]:
+            year = f" ({r['year']})" if r.get("year") else ""
+            cam = "📷" if r["has_image"] else "  "
+            label = f"{cam} {r['title']}{year} — {r['type']}"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, r["id"])
+            self._search_results.addItem(item)
+
+        self._search_results.setVisible(True)
+        self._search_hint.setVisible(True)
+        self._status.setText(f"Found {len(results)} match(es).")
+
+    def _clear_search_results(self):
+        self._search_results.clear()
+        self._search_results.setVisible(False)
+        self._search_hint.setVisible(False)
+
+    def _add_search_result(self, item: QListWidgetItem):
+        imdb_id = item.data(Qt.ItemDataRole.UserRole)
+        url = imdb_url_for_id(imdb_id)
+        existing = self._url_edit.toPlainText()
+        if url in existing.splitlines():
+            self._status.setText("That URL is already in the queue.")
+            return
+        sep = "\n" if existing.strip() else ""
+        self._url_edit.setPlainText(existing + sep + url)
+        self._status.setText(f"Added: {url}")
+
+    def _on_full_res_toggled(self, checked: bool):
+        self._settings["full_res_default"] = checked
+        save_settings(self._settings)
 
     def _browse_root(self):
         current = self._root_edit.text().strip() or str(Path.home())
@@ -629,6 +804,9 @@ class MainWindow(QMainWindow):
         if self._worker and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(3000)
+        self._settings["window_w"] = self.width()
+        self._settings["window_h"] = self.height()
+        save_settings(self._settings)
         event.accept()
 
 

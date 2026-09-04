@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.4.0 — 2026-07-19
+
+### Added
+- **Keyboard browse mode**: Up/Down move the filmstrip highlight without changing the main viewer (and now work even when the filmstrip doesn't have focus); Space loads the highlighted thumbnail into the viewer; Left/Right go to previous/next image and now also work while the filmstrip has focus.
+
+### Fixed
+- Window/taskbar icon missing in the built EXE: bundled `app_icon.ico` is unpacked to `_internal` by PyInstaller 6, but the app looked next to the EXE. Resources now load from the correct folder (config/ratings still live next to the EXE).
+- `build.bat` now uses the shared venv and deploys the build to `P:\Apps\VibeCoded\PhotoGallery\` (robocopy mirror, preserving config/ratings) like the other apps.
+
+## v1.3.0 — 2026-07-19
+
+### Added
+- **Resizable filmstrip**: the thumbnail panel is no longer fixed-width — drag the splitter to widen it and thumbnails scale up to fill (64–320 px). The chosen width is saved to config (`filmstrip_width`) and restored on next launch.
+
+### Changed
+- Thumbnails are now generated at 320 px source resolution (was 120) so they stay sharp at larger display sizes; filmstrip badges scale with the thumbnail.
+
 ## v1.2.0 — 2026-07-08
 
 Roadmap sweep release — implements all five Future Enhancements items.

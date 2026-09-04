@@ -17,7 +17,7 @@ from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 COMFY_URL     = "http://127.0.0.1:8000"
-COMFY_OUTPUT  = Path("C:/AI/CumfyUI/output")
+COMFY_OUTPUT  = Path("P:/AI/ComfyLocal/ComfyUI_windows_portable/ComfyUI/output")
 OUTPUT_DIR    = Path(__file__).parent / "output"
 WORKFLOW_FILE = Path(__file__).parent / "qwen_T2Image_2512_API.json"
 PROJECTS_ROOT = Path(__file__).parent.parent
@@ -282,7 +282,7 @@ APPS = [
     },
     {
         "name": "ComfyUIChainAutomator",
-        "project_folder": "CumfyUI_API",
+        "project_folder": "ComfyUI_Chain_Automator",
         "prompt": (
             "Minimalist flat app icon, dark navy background #0a0f1f, "
             "a glowing chain of connected film frames with a play button "
@@ -378,6 +378,17 @@ APPS = [
             "corner representing random style selection, "
             "clean vector style, no text, square icon, sharp edges, "
             "modern Windows app icon design, 512x512"
+        ),
+    },
+    {
+        "name": "PromptEnhancer",
+        "project_folder": "PromptEnhancer",
+        "prompt": (
+            "Minimalist flat app icon, dark violet background #14103a, "
+            "a glowing magic wand with a sparkle trail transforming a plain "
+            "line of text into a glowing structured paragraph, representing "
+            "AI prompt writing and enhancement, clean vector style, no text, "
+            "square icon, sharp edges, modern Windows app icon design, 512x512"
         ),
     },
 ]
@@ -500,7 +511,7 @@ def find_projects_missing_icon(projects_root: Path = PROJECTS_ROOT) -> list[str]
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 NEW_APPS = {
-    "ComfyUIStyleRandomizer",
+    "PromptEnhancer",
 }
 
 

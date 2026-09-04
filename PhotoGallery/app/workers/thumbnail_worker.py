@@ -3,6 +3,10 @@ from PyQt6.QtGui import QPixmap, QImage
 from PIL import Image
 from typing import List, Optional
 
+# Thumbnails are rendered at this resolution so they stay sharp when the
+# filmstrip is dragged wider; the list view scales them down for display.
+THUMB_SOURCE_SIZE = 320
+
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".tif", ".webp"}
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov", ".wmv", ".m4v", ".webm"}
 SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
