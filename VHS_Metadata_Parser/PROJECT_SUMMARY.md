@@ -1,4 +1,4 @@
-# VHS Metadata Parser  V-1.2.0
+# VHS Metadata Parser  V-1.3.0
 
 A desktop app for parsing and displaying ComfyUI workflow metadata embedded in MP4 files, JSON, or TXT files.
 
@@ -7,14 +7,17 @@ A desktop app for parsing and displaying ComfyUI workflow metadata embedded in M
 ## Features
 
 - **Drag & drop** MP4, JSON, or TXT files onto the window
-- **7 tabbed views**: Video Settings, Prompts, Models, Sampler, Workflow, Raw JSON, Batch / Search
+- **8 tabbed views**: Video Settings, Prompts, Models, Sampler, Other Settings, Workflow, Raw JSON, Batch / Search
+- **Workflow-agnostic parsing**: WAN 2.x (`WanImageToVideo` + `KSamplerAdvanced`) and MiniMax H3 (`MiniMaxH3ImageToVideo` + `SamplerCustomAdvanced` / turbo sampler / turbo LoRA) both fully populate the tabs; links between nodes are followed back to their literal values (primitives, `ComfyMathExpression` frame-count formulas, resize nodes)
+- **Prompt Sections** table: every prompt is split into readable parts — `[Shot N] At 00:00.000` shots, `Shot N · Dialogue` (`<d>…</d>` lines), `Camera:`, `overall_soundscape:`, `non_diegetic_music:`, any `Label:` block, or JSON keys — with the source node shown for each
+- **Other Settings** tab: every literal node input that the dedicated tabs did *not* consume (resolution selectors, megapixel scalers, save/pingpong flags, `low_vram`, unused `KSamplerSelect`, …) so important settings from unfamiliar node types are never hidden; filter box + "show link-only nodes" toggle
 - **Batch mode**: scan a folder (optionally recursive) and see a summary table (dimensions, sampler, LoRA, UNET, etc.) for every file
 - **Search across a folder**: live filter over the batch table by filename, LoRA/model name, sampler, or prompt text (e.g. "which videos used LoRA X?")
 - **Diff view**: select two rows in the batch table and compare their key metadata fields side by side, differing fields highlighted
 - **Export summary CSV**: dump the (filtered) batch table to CSV
 - **Copy workflow JSON** to clipboard for direct import into ComfyUI
 - **Save workflow** to a `.json` file
-- **Export Models & Sampler CSV** for the currently loaded single file
+- **Export Models, Sampler & Other Settings CSV** for the currently loaded single file
 - **Dark blue-green theme** — easy on the eyes
 
 ---
@@ -57,6 +60,16 @@ pyinstaller VHS_Metadata_Parser.spec
 
 ## Version History
 
+### v1.3.0
+- MiniMax H3 support: `MiniMaxH3ImageToVideo` prompt/width/height/length, `SamplerCustomAdvanced` (seed from `RandomNoise`, steps/scheduler/denoise from `BasicScheduler`, sampler from `KSamplerSelect` or the custom sampler node's title, CFG from a CFGGuider or "N/A (Basic Guider)"), `MiniMaxH3TurboLoRA` in the LoRA table, both VAEs, audio detection
+- Link resolution: node inputs that point at other nodes are followed to primitives / same-named literals / `ComfyMathExpression` results (safe whitelisted evaluation), so e.g. MiniMax length resolves to `362` frames instead of `['105:107', 1]`
+- Prompt detection is generic across node types (`prompt`, `text`, `positive`, `negative`, `custom_prompts`, …) with de-duplication; linked prompts (CLIPTextEncode ← PromptCycler) now resolve to text instead of showing a link list
+- New **Prompt Sections** table on the Prompts tab (shots, dialogue, camera, soundscape, music, JSON keys)
+- New **Other Settings** tab listing every un-consumed literal node input, with filter and link-only toggle; also appended to the single-file CSV export
+- Video Settings gains Duration (s) and Audio rows; Sampler table gains a Denoise column; LoRA table gains a Loader column; batch diff/CSV gain Duration + Audio
+- Models: generic detection via `clip_name*`, `vae_name`, `unet_name`, `ckpt_name`, `lora_name` (any loader node); Model Sampling covers every `ModelSampling*` node
+- Bare API-format prompt JSON (no `{"prompt": …}` wrapper) now loads
+
 ### v1.2.0
 - New **Batch / Search** tab: scan a folder for `.mp4`/`.json`/`.txt` metadata files (background thread, progress status), summary table of key settings per file
 - Live search box filters the batch table by filename, LoRA/model name, sampler, or prompt text
@@ -81,3 +94,6 @@ pyinstaller VHS_Metadata_Parser.spec
 - [x] Diff view: compare workflow metadata of two files
 - [x] Search across a folder ("which videos used LoRA X?")
 - [x] Export summary CSV
+- [x] MiniMax H3 / SamplerCustomAdvanced workflows
+- [x] Prompt section breakdown (shots, dialogue, camera, soundscape)
+- [x] "Other Settings" catch-all for un-parsed node inputs
