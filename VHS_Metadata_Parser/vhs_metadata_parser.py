@@ -3,22 +3,24 @@
 VHS Metadata Parser
 A PyQt6 application to parse and display ComfyUI workflow metadata files.
 Supports drag-and-drop and file browser import.
-Version: 1.2.0
+Version: 1.3.0
 """
 
 import csv
 import io
+import math
+import re
 import sys
 import json
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QLineEdit, QTextEdit, QScrollArea,
     QGroupBox, QFormLayout, QFileDialog, QMenu,
     QFrame, QSplitter, QTableWidget, QTableWidgetItem, QHeaderView,
-    QPushButton, QMessageBox, QCheckBox, QDialog, QAbstractItemView
+    QPushButton, QMessageBox, QCheckBox, QDialog, QAbstractItemView, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QFont, QIcon, QAction, QColor
@@ -76,7 +78,7 @@ QLabel#drop_zone {{
     border: 2px dashed {COLORS['accent']};
     border-radius: 8px;
     font-style: italic;
-    padding: 20px;
+    padding: 12px;
 }}
 QLabel#subtitle {{
     color: {COLORS['fg_secondary']};
@@ -197,19 +199,142 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
 """
 
 
+# Input keys that carry prompt text on any node type (CLIPTextEncode, MiniMaxH3ImageToVideo, PromptCycler, ...)
+PROMPT_INPUT_KEYS = (
+    'prompt', 'text', 'positive', 'negative', 'positive_prompt', 'negative_prompt',
+    'custom_prompts', 'string', 'text_positive', 'text_negative',
+)
+
+# Safe namespace for evaluating ComfyMathExpression nodes (used to resolve e.g. MiniMax frame counts)
+_SAFE_MATH_FUNCS = {
+    'max': max, 'min': min, 'round': round, 'abs': abs, 'int': int, 'float': float,
+    'floor': math.floor, 'ceil': math.ceil, 'sqrt': math.sqrt, 'pow': pow,
+}
+_MATH_EXPR_ALLOWED_RE = re.compile(r'^[\w\s+\-*/%().,<>=!]+$')
+
+# Prompt-section parsing (MiniMax H3 shot-list style prompts + generic "Label: text" prompts)
+SHOT_MARKER_RE = re.compile(r'\[\s*(shot\s*\d+)[^\]]*\]', re.IGNORECASE)
+SHOT_TIME_RE = re.compile(r'^\s*(?:at\s+)?(\d{1,2}:\d{2}(?:\.\d+)?)', re.IGNORECASE)
+DIALOGUE_RE = re.compile(r'<d>(.*?)</d>', re.IGNORECASE | re.DOTALL)
+SECTION_LABEL_RE = re.compile(
+    r'(?<![\w<\[])'                                              # not glued to a word, tag or bracket
+    r'((?:[a-z]+(?:_[a-z]+)+)'                                   # snake_case_key  (overall_soundscape)
+    r'|(?:[A-Z][a-zA-Z]{1,20}(?:\s[A-Z]?[a-zA-Z]{1,20}){0,2}))'  # Capitalised label, 1-3 words (Camera, Sound Design)
+    r':(?=\s|$)'                                                 # colon followed by whitespace/end
+)
+
+
+def _flatten_json_sections(obj: Any, prefix: str = '') -> List[Tuple[str, str]]:
+    """Flatten a JSON-style prompt object into (label, text) pairs."""
+    out: List[Tuple[str, str]] = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            label = f"{prefix}{k}"
+            if isinstance(v, (dict, list)):
+                out.extend(_flatten_json_sections(v, label + '.'))
+            else:
+                out.append((label, str(v)))
+    elif isinstance(obj, list):
+        if all(not isinstance(i, (dict, list)) for i in obj):
+            out.append((prefix.rstrip('.') or 'list', '\n'.join(str(i) for i in obj)))
+        else:
+            for i, item in enumerate(obj):
+                out.extend(_flatten_json_sections(item, f"{prefix.rstrip('.')}[{i}]."))
+    else:
+        out.append((prefix.rstrip('.') or 'value', str(obj)))
+    return out
+
+
+def _split_labeled_chunks(body: str) -> List[Tuple[Optional[str], str]]:
+    """Split text on 'Label:' markers. Returns [(None, leading_text), (label, text), ...]."""
+    matches = list(SECTION_LABEL_RE.finditer(body))
+    if not matches:
+        return [(None, body)]
+    chunks: List[Tuple[Optional[str], str]] = [(None, body[:matches[0].start()])]
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+        chunks.append((m.group(1), body[m.end():end]))
+    return chunks
+
+
+def parse_prompt_sections(text: str) -> List[Tuple[str, str]]:
+    """
+    Break a prompt into labelled sections so the important parts are easy to read:
+      - JSON prompts  -> one section per key (nested keys joined with '.')
+      - [Shot N] At 00:04.000 ...  -> one section per shot, plus a 'Shot N · Dialogue' section for <d>...</d> lines
+      - Camera: / overall_soundscape: / non_diegetic_music: / Any Label:  -> one section each
+    Plain prompts with no markers come back as a single ('Prompt', text) section.
+    """
+    text = (text or '').strip()
+    if not text:
+        return []
+
+    if text[0] in '{[':
+        try:
+            return _flatten_json_sections(json.loads(text))
+        except Exception:
+            pass
+
+    segments: List[Tuple[str, str]] = []
+    shots = list(SHOT_MARKER_RE.finditer(text))
+    if shots:
+        intro = text[:shots[0].start()].strip()
+        if intro:
+            segments.append(('Intro', intro))
+        for i, m in enumerate(shots):
+            end = shots[i + 1].start() if i + 1 < len(shots) else len(text)
+            body = text[m.end():end].strip()
+            label = re.sub(r'\s+', ' ', m.group(1)).title()
+            tm = SHOT_TIME_RE.match(body)
+            if tm:
+                label += f" @ {tm.group(1)}"
+                body = body[tm.end():].strip()
+            segments.append((label, body))
+    else:
+        segments.append(('Prompt', text))
+
+    sections: List[Tuple[str, str]] = []
+    for seg_label, body in segments:
+        for sub_label, chunk in _split_labeled_chunks(body):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            label = sub_label if sub_label else seg_label
+            sections.append((label, chunk))
+            dialogue = [d.strip() for d in DIALOGUE_RE.findall(chunk) if d.strip()]
+            if dialogue:
+                sections.append((f"{label} · Dialogue", '\n'.join(dialogue)))
+    return sections
+
+
 class MetadataParser:
-    """Parses ComfyUI workflow metadata and extracts relevant fields."""
+    """
+    Parses ComfyUI workflow metadata and extracts relevant fields.
+
+    Node inputs are read through `_take()`, which (a) resolves links to the node that
+    feeds the value where possible and (b) records the (node, input) pair as "consumed".
+    `get_other_settings()` then lists every literal input the dedicated extractors did
+    not consume, so settings from unfamiliar node types are never silently dropped.
+    """
 
     def __init__(self):
         self.raw_data: Dict = {}
         self.prompt_data: Dict = {}
         self.workflow_data: Dict = {}
+        self.consumed: Dict[str, set] = {}
+        self.container: Dict[str, Any] = {}   # width/height/duration read from the MP4 header itself
+
+    # ------------------------------------------------------------------ loading
 
     def parse_file(self, file_path: str) -> bool:
         try:
+            self.raw_data, self.prompt_data, self.workflow_data, self.consumed, self.container = {}, {}, {}, {}, {}
             file_lower = file_path.lower()
             if file_lower.endswith('.mp4'):
-                self.raw_data = self._extract_metadata_from_mp4(file_path)
+                with open(file_path, 'rb') as f:
+                    data = f.read()
+                self.container = self._read_mp4_header(data)
+                self.raw_data = self._extract_metadata_from_mp4(data)
             else:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     self.raw_data = json.load(f)
@@ -220,6 +345,9 @@ class MetadataParser:
                     self.prompt_data = json.loads(prompt_str)
                 else:
                     self.prompt_data = prompt_str
+            elif self.raw_data and all(isinstance(v, dict) and 'class_type' in v for v in self.raw_data.values()):
+                # Bare API-format prompt JSON (no {"prompt": ...} wrapper)
+                self.prompt_data = self.raw_data
 
             if 'workflow' in self.raw_data:
                 self.workflow_data = self.raw_data['workflow']
@@ -229,9 +357,48 @@ class MetadataParser:
             print(f"Error parsing file: {e}")
             return False
 
-    def _extract_metadata_from_mp4(self, file_path: str) -> Dict:
-        with open(file_path, 'rb') as f:
-            data = f.read()
+    @staticmethod
+    def _read_mp4_header(data: bytes) -> Dict[str, Any]:
+        """
+        Pull the real video size and duration out of the MP4 container (tkhd / mvhd boxes).
+        Used when the workflow only has links for width/height (e.g. MiniMax GetImageSize).
+        """
+        info: Dict[str, Any] = {}
+        # tkhd: last 8 bytes of the box are width/height as 16.16 fixed point; audio tracks are 0x0
+        pos = 0
+        while True:
+            idx = data.find(b'tkhd', pos)
+            if idx == -1:
+                break
+            pos = idx + 4
+            box_start = idx - 4
+            if box_start < 0:
+                continue
+            size = int.from_bytes(data[box_start:box_start + 4], 'big')
+            if size not in (92, 104) or box_start + size > len(data):
+                continue
+            w = int.from_bytes(data[box_start + size - 8:box_start + size - 4], 'big') / 65536
+            h = int.from_bytes(data[box_start + size - 4:box_start + size], 'big') / 65536
+            if 0 < w < 20000 and 0 < h < 20000:
+                info['width'] = int(w) if w.is_integer() else round(w, 2)
+                info['height'] = int(h) if h.is_integer() else round(h, 2)
+                break
+        # mvhd: version, flags, [creation, modification] (4 or 8 bytes each), timescale (4), duration (4 or 8)
+        idx = data.find(b'mvhd')
+        if idx != -1:
+            payload = idx + 4
+            version = data[payload]
+            if version == 1:
+                timescale = int.from_bytes(data[payload + 20:payload + 24], 'big')
+                duration = int.from_bytes(data[payload + 24:payload + 32], 'big')
+            else:
+                timescale = int.from_bytes(data[payload + 12:payload + 16], 'big')
+                duration = int.from_bytes(data[payload + 16:payload + 20], 'big')
+            if timescale:
+                info['duration_s'] = round(duration / timescale, 2)
+        return info
+
+    def _extract_metadata_from_mp4(self, data: bytes) -> Dict:
         idx = data.find(b'{"prompt"')
         if idx == -1:
             raise ValueError("No ComfyUI metadata found in MP4 file")
@@ -253,119 +420,349 @@ class MetadataParser:
                     break
         return json.loads(json_bytes.decode('utf-8'))
 
+    # ------------------------------------------------------------------ node helpers
+
+    @staticmethod
+    def _is_link(value: Any) -> bool:
+        return isinstance(value, list) and len(value) == 2 and isinstance(value[0], (str, int)) and isinstance(value[1], int)
+
+    def _nodes(self):
+        return list(self.prompt_data.items())
+
+    @staticmethod
+    def _title(node: Dict, node_id: str = '') -> str:
+        return node.get('_meta', {}).get('title') or node.get('class_type') or f"node {node_id}"
+
+    def _mark(self, node_id: str, key: str):
+        self.consumed.setdefault(str(node_id), set()).add(key)
+
+    def _eval_math_expression(self, node_id: str, node: Dict, depth: int) -> Optional[Any]:
+        """Evaluate a ComfyMathExpression node with a whitelisted namespace. Returns None if unsafe/unknown."""
+        ins = node.get('inputs', {})
+        expr = ins.get('expression')
+        if not isinstance(expr, str) or not _MATH_EXPR_ALLOWED_RE.match(expr):
+            return None
+        names: Dict[str, Any] = {}
+        for k, v in ins.items():
+            name = k[7:] if k.startswith('values.') else (k if k in ('a', 'b', 'c') else None)
+            if name is None:
+                continue
+            val = self._resolve(v, name, depth + 1)
+            if not isinstance(val, (int, float)) or isinstance(val, bool):
+                return None
+            names[name] = val
+        for ident in re.findall(r'[A-Za-z_]\w*', expr):
+            if ident not in names and ident not in _SAFE_MATH_FUNCS:
+                return None
+        try:
+            result = eval(expr, {'__builtins__': {}}, {**_SAFE_MATH_FUNCS, **names})  # noqa: S307 - whitelisted
+        except Exception:
+            return None
+        for k in ins:
+            self._mark(node_id, k)
+        if isinstance(result, float) and result.is_integer():
+            result = int(result)
+        return result
+
+    def _resolve(self, value: Any, key: str = '', depth: int = 0) -> Any:
+        """Follow a [node_id, slot] link back to a literal value when that is possible."""
+        if not self._is_link(value) or depth > 8:
+            return value
+        src_id = str(value[0])
+        src = self.prompt_data.get(src_id)
+        if not isinstance(src, dict):
+            return f"→ node {src_id}"
+        ins = src.get('inputs', {})
+        ctype = src.get('class_type', '')
+
+        if ctype == 'ComfyMathExpression':
+            result = self._eval_math_expression(src_id, src, depth)
+            if result is not None:
+                return result
+
+        for k in (key, 'value'):
+            if k and k in ins and not self._is_link(ins[k]):
+                self._mark(src_id, k)
+                return ins[k]
+
+        if key in PROMPT_INPUT_KEYS:
+            for k in PROMPT_INPUT_KEYS:
+                if isinstance(ins.get(k), str) and ins[k].strip():
+                    self._mark(src_id, k)
+                    return ins[k]
+
+        if key and key in ins and self._is_link(ins[key]):
+            return self._resolve(ins[key], key, depth + 1)
+
+        return f"→ {self._title(src, src_id)} [{src_id}]"
+
+    def _take(self, node_id: str, key: str, default: Any = 'N/A') -> Any:
+        """Read one input of a node, resolving links and marking it consumed."""
+        node = self.prompt_data.get(str(node_id), {})
+        ins = node.get('inputs', {})
+        if key not in ins:
+            return default
+        self._mark(node_id, key)
+        return self._resolve(ins[key], key)
+
+    def _link_source(self, node_id: str, key: str):
+        """Return (src_id, src_node) for a link input, or (None, None)."""
+        ins = self.prompt_data.get(str(node_id), {}).get('inputs', {})
+        value = ins.get(key)
+        if not self._is_link(value):
+            return None, None
+        src_id = str(value[0])
+        src = self.prompt_data.get(src_id)
+        return (src_id, src) if isinstance(src, dict) else (None, None)
+
     def get_nodes_by_type(self, class_type: str) -> List[Dict]:
         nodes = []
-        for node_id, node_data in self.prompt_data.items():
+        for node_id, node_data in self._nodes():
             if node_data.get('class_type') == class_type:
                 node_data['_node_id'] = node_id
                 nodes.append(node_data)
         return nodes
 
+    # ------------------------------------------------------------------ prompts
+
+    def get_prompt_entries(self) -> List[Dict[str, Any]]:
+        """
+        Every prompt-like text input in the workflow (CLIPTextEncode.text, MiniMaxH3ImageToVideo.prompt,
+        PromptCycler.custom_prompts, ...). Literal strings are collected first, then links are resolved,
+        and duplicate texts are dropped so a prompt fed through several nodes only appears once.
+        """
+        entries: List[Dict[str, Any]] = []
+        seen_texts: set = set()
+
+        def add(node_id, node, key, text):
+            norm = text.strip()
+            if not norm or norm in seen_texts:
+                return
+            seen_texts.add(norm)
+            title = self._title(node, node_id)
+            polarity = 'negative' if ('negative' in key.lower() or 'negative' in title.lower()) else 'positive'
+            entries.append({
+                'node_id': node_id, 'class_type': node.get('class_type', ''), 'title': title,
+                'key': key, 'text': text, 'polarity': polarity,
+            })
+
+        for want_links in (False, True):
+            for node_id, node in self._nodes():
+                ins = node.get('inputs', {})
+                for key in PROMPT_INPUT_KEYS:
+                    if key not in ins:
+                        continue
+                    raw = ins[key]
+                    if not want_links and isinstance(raw, str):
+                        self._mark(node_id, key)
+                        add(node_id, node, key, raw)
+                    elif want_links and self._is_link(raw):
+                        text = self._resolve(raw, key)
+                        if isinstance(text, str) and not text.startswith('→ '):
+                            add(node_id, node, key, text)
+        return entries
+
     def get_positive_prompts(self) -> List[str]:
-        prompts = []
-        for node in self.get_nodes_by_type('CLIPTextEncode'):
-            meta = node.get('_meta', {})
-            title = meta.get('title', '')
-            if 'Positive' in title or 'positive' in title.lower():
-                text = node.get('inputs', {}).get('text', '')
-                if text:
-                    prompts.append(text)
-        if not prompts:
-            for node in self.get_nodes_by_type('CLIPTextEncode'):
-                meta = node.get('_meta', {})
-                title = meta.get('title', '')
-                if 'Negative' not in title and 'negative' not in title.lower():
-                    text = node.get('inputs', {}).get('text', '')
-                    if text:
-                        prompts.append(text)
-        return prompts
+        return [e['text'] for e in self.get_prompt_entries() if e['polarity'] == 'positive']
 
     def get_negative_prompts(self) -> List[str]:
-        prompts = []
-        for node in self.get_nodes_by_type('CLIPTextEncode'):
-            meta = node.get('_meta', {})
-            title = meta.get('title', '')
-            if 'Negative' in title or 'negative' in title.lower():
-                text = node.get('inputs', {}).get('text', '')
-                if text:
-                    prompts.append(text)
-        return prompts
+        return [e['text'] for e in self.get_prompt_entries() if e['polarity'] == 'negative']
+
+    def get_prompt_sections(self) -> List[Dict[str, Any]]:
+        """Prompt entries broken into labelled sections (see parse_prompt_sections)."""
+        rows = []
+        for e in self.get_prompt_entries():
+            source = f"{e['title']} [{e['node_id']}] · {e['key']} ({e['polarity']})"
+            for label, content in parse_prompt_sections(e['text']):
+                rows.append({'source': source, 'section': label, 'content': content, 'polarity': e['polarity']})
+        return rows
+
+    # ------------------------------------------------------------------ video / models / sampler
 
     def get_video_settings(self) -> Dict:
-        settings = {}
-        for node in self.get_nodes_by_type('WanImageToVideo'):
-            inputs = node.get('inputs', {})
-            settings['width'] = inputs.get('width', 'N/A')
-            settings['height'] = inputs.get('height', 'N/A')
-            settings['length'] = inputs.get('length', 'N/A')
-            settings['batch_size'] = inputs.get('batch_size', 'N/A')
-        for node in self.get_nodes_by_type('VHS_VideoCombine'):
-            inputs = node.get('inputs', {})
-            settings['frame_rate'] = inputs.get('frame_rate', 'N/A')
-            settings['filename_prefix'] = inputs.get('filename_prefix', 'N/A')
-            settings['format'] = inputs.get('format', 'N/A')
-            settings['crf'] = inputs.get('crf', 'N/A')
-            settings['pix_fmt'] = inputs.get('pix_fmt', 'N/A')
-            settings['loop_count'] = inputs.get('loop_count', 'N/A')
-        for node in self.get_nodes_by_type('ImageResizeKJv2'):
-            inputs = node.get('inputs', {})
-            if 'width' not in settings or settings['width'] == 'N/A':
-                settings['width'] = inputs.get('width', 'N/A')
-            if 'height' not in settings or settings['height'] == 'N/A':
-                settings['height'] = inputs.get('height', 'N/A')
-            settings['upscale_method'] = inputs.get('upscale_method', 'N/A')
-            settings['keep_proportion'] = inputs.get('keep_proportion', 'N/A')
+        settings: Dict[str, Any] = {}
+        for node_id, node in self._nodes():
+            ctype = node.get('class_type', '')
+            ins = node.get('inputs', {})
+            # WanImageToVideo, MiniMaxH3ImageToVideo, *TextToVideo, EmptyHunyuanLatentVideo, ...
+            if ctype.endswith('ToVideo') or ctype.endswith('LatentVideo'):
+                for key in ('width', 'height', 'length', 'batch_size'):
+                    if key in ins:
+                        settings[key] = self._take(node_id, key)
+        for node_id, node in self._nodes():
+            if node.get('class_type') == 'VHS_VideoCombine':
+                for key in ('frame_rate', 'filename_prefix', 'format', 'crf', 'pix_fmt', 'loop_count'):
+                    settings[key] = self._take(node_id, key)
+                src_id, src = self._link_source(node_id, 'audio')
+                settings['has_audio'] = f"Yes — {self._title(src, src_id)} [{src_id}]" if src else 'No'
+        for node_id, node in self._nodes():
+            if node.get('class_type') in ('ImageResizeKJv2', 'ImageScale', 'ImageResize+'):
+                ins = node.get('inputs', {})
+                for key in ('width', 'height'):
+                    if not isinstance(settings.get(key), int) and key in ins:
+                        settings[key] = self._take(node_id, key)
+                if 'upscale_method' in ins:
+                    settings['upscale_method'] = self._take(node_id, 'upscale_method')
+                if 'keep_proportion' in ins:
+                    settings['keep_proportion'] = self._take(node_id, 'keep_proportion')
+
+        length, fps = settings.get('length'), settings.get('frame_rate')
+        if isinstance(length, (int, float)) and isinstance(fps, (int, float)) and fps:
+            settings['duration_s'] = round(length / fps, 2)
+
+        # Fall back to the MP4 container for anything the workflow only had links for
+        if self.container:
+            for key in ('width', 'height'):
+                if key in self.container and not isinstance(settings.get(key), (int, float)):
+                    workflow_val = settings.get(key)
+                    settings[key] = (f"{self.container[key]} (from MP4 header; workflow: {workflow_val})"
+                                     if workflow_val is not None else f"{self.container[key]} (from MP4 header)")
+            if 'duration_s' not in settings and 'duration_s' in self.container:
+                settings['duration_s'] = f"{self.container['duration_s']} (from MP4 header)"
+            parts = []
+            if 'width' in self.container and 'height' in self.container:
+                parts.append(f"{self.container['width']}×{self.container['height']}")
+            if 'duration_s' in self.container:
+                parts.append(f"{self.container['duration_s']} s")
+            settings['mp4_header'] = ', '.join(parts) if parts else 'N/A'
         return settings
 
     def get_models(self) -> Dict[str, List[Dict]]:
-        models = {'clip': [], 'vae': [], 'unet': [], 'lora': []}
-        for node in self.get_nodes_by_type('CLIPLoader'):
-            inputs = node.get('inputs', {})
-            models['clip'].append({'name': inputs.get('clip_name', 'N/A'), 'type': inputs.get('type', 'N/A'), 'device': inputs.get('device', 'N/A')})
-        for node in self.get_nodes_by_type('VAELoader'):
-            inputs = node.get('inputs', {})
-            models['vae'].append({'name': inputs.get('vae_name', 'N/A')})
-        for node in self.get_nodes_by_type('UNETLoader'):
-            inputs = node.get('inputs', {})
-            models['unet'].append({'name': inputs.get('unet_name', 'N/A'), 'weight_dtype': inputs.get('weight_dtype', 'N/A')})
-        for node in self.get_nodes_by_type('LoraLoaderModelOnly'):
-            inputs = node.get('inputs', {})
-            models['lora'].append({'name': inputs.get('lora_name', 'N/A'), 'strength': inputs.get('strength_model', 'N/A')})
+        models: Dict[str, List[Dict]] = {'clip': [], 'vae': [], 'unet': [], 'lora': []}
+        for node_id, node in self._nodes():
+            ins = node.get('inputs', {})
+            if 'clip_name' in ins:
+                models['clip'].append({'name': self._take(node_id, 'clip_name'),
+                                       'type': self._take(node_id, 'type'),
+                                       'device': self._take(node_id, 'device')})
+            for key in ('clip_name1', 'clip_name2', 'clip_name3'):
+                if key in ins:
+                    models['clip'].append({'name': self._take(node_id, key),
+                                           'type': self._take(node_id, 'type'),
+                                           'device': self._take(node_id, 'device')})
+            if 'vae_name' in ins:
+                models['vae'].append({'name': self._take(node_id, 'vae_name')})
+            if 'unet_name' in ins:
+                models['unet'].append({'name': self._take(node_id, 'unet_name'),
+                                       'weight_dtype': self._take(node_id, 'weight_dtype')})
+            if 'ckpt_name' in ins:
+                models['unet'].append({'name': self._take(node_id, 'ckpt_name'), 'weight_dtype': 'checkpoint'})
+            if 'lora_name' in ins:
+                strength = self._take(node_id, 'strength_model', None)
+                if strength is None:
+                    strength = self._take(node_id, 'strength', 'N/A')
+                models['lora'].append({'name': self._take(node_id, 'lora_name'), 'strength': strength,
+                                       'title': self._title(node, node_id)})
         return models
 
     def get_sampler_settings(self) -> List[Dict]:
         samplers = []
-        for node in self.get_nodes_by_type('KSamplerAdvanced'):
-            inputs = node.get('inputs', {})
-            meta = node.get('_meta', {})
-            samplers.append({
-                'title': meta.get('title', 'KSampler'),
-                'steps': inputs.get('steps', 'N/A'),
-                'cfg': inputs.get('cfg', 'N/A'),
-                'sampler_name': inputs.get('sampler_name', 'N/A'),
-                'scheduler': inputs.get('scheduler', 'N/A'),
-                'noise_seed': inputs.get('noise_seed', 'N/A'),
-                'add_noise': inputs.get('add_noise', 'N/A'),
-                'start_at_step': inputs.get('start_at_step', 'N/A'),
-                'end_at_step': inputs.get('end_at_step', 'N/A'),
-            })
+        for node_id, node in self._nodes():
+            ctype = node.get('class_type', '')
+            ins = node.get('inputs', {})
+            title = self._title(node, node_id)
+            if ctype.startswith('KSampler') and 'steps' in ins:
+                samplers.append({
+                    'title': title,
+                    'steps': self._take(node_id, 'steps'),
+                    'cfg': self._take(node_id, 'cfg'),
+                    'sampler_name': self._take(node_id, 'sampler_name'),
+                    'scheduler': self._take(node_id, 'scheduler'),
+                    'noise_seed': self._take(node_id, 'noise_seed') if 'noise_seed' in ins else self._take(node_id, 'seed'),
+                    'add_noise': self._take(node_id, 'add_noise'),
+                    'start_at_step': self._take(node_id, 'start_at_step'),
+                    'end_at_step': self._take(node_id, 'end_at_step'),
+                    'denoise': self._take(node_id, 'denoise'),
+                })
+            elif ctype in ('SamplerCustomAdvanced', 'SamplerCustom'):
+                row = {'title': title, 'steps': 'N/A', 'cfg': 'N/A', 'sampler_name': 'N/A', 'scheduler': 'N/A',
+                       'noise_seed': 'N/A', 'add_noise': self._take(node_id, 'add_noise'),
+                       'start_at_step': 'N/A', 'end_at_step': 'N/A', 'denoise': 'N/A'}
+                # seed: literal on SamplerCustom, or from the RandomNoise node feeding SamplerCustomAdvanced
+                if 'noise_seed' in ins:
+                    row['noise_seed'] = self._take(node_id, 'noise_seed')
+                else:
+                    src_id, src = self._link_source(node_id, 'noise')
+                    if src:
+                        row['noise_seed'] = self._take(src_id, 'noise_seed')
+                # cfg: literal, or from a CFGGuider; BasicGuider has no CFG
+                if 'cfg' in ins:
+                    row['cfg'] = self._take(node_id, 'cfg')
+                else:
+                    src_id, src = self._link_source(node_id, 'guider')
+                    if src:
+                        row['cfg'] = self._take(src_id, 'cfg', f"N/A ({self._title(src, src_id)})")
+                # sampler: KSamplerSelect name, or the custom sampler node's title (e.g. MiniMax-H3 Turbo Sampler)
+                src_id, src = self._link_source(node_id, 'sampler')
+                if src:
+                    row['sampler_name'] = self._take(src_id, 'sampler_name', self._title(src, src_id))
+                # sigmas: BasicScheduler & friends carry scheduler / steps / denoise
+                src_id, src = self._link_source(node_id, 'sigmas')
+                if src:
+                    row['scheduler'] = self._take(src_id, 'scheduler', self._title(src, src_id))
+                    row['steps'] = self._take(src_id, 'steps')
+                    row['denoise'] = self._take(src_id, 'denoise')
+                samplers.append(row)
         return samplers
 
     def get_input_images(self) -> List[str]:
         images = []
-        for node in self.get_nodes_by_type('LoadImage'):
-            image = node.get('inputs', {}).get('image', '')
-            if image:
-                images.append(image)
+        for node_id, node in self._nodes():
+            ctype = node.get('class_type', '')
+            ins = node.get('inputs', {})
+            if ctype == 'LoadImage' and isinstance(ins.get('image'), str):
+                images.append(self._take(node_id, 'image'))
+            elif ctype in ('LoadVideo', 'VHS_LoadVideo') and isinstance(ins.get('video'), str):
+                images.append(f"[video] {self._take(node_id, 'video')}")
+            elif ctype == 'LoadAudio' and isinstance(ins.get('audio'), str):
+                images.append(f"[audio] {self._take(node_id, 'audio')}")
         return images
 
     def get_model_sampling_settings(self) -> List[Dict]:
         settings = []
-        for node in self.get_nodes_by_type('ModelSamplingSD3'):
-            inputs = node.get('inputs', {})
-            meta = node.get('_meta', {})
-            settings.append({'title': meta.get('title', 'ModelSamplingSD3'), 'shift': inputs.get('shift', 'N/A')})
+        for node_id, node in self._nodes():
+            ctype = node.get('class_type', '')
+            if not ctype.startswith('ModelSampling'):
+                continue
+            ins = node.get('inputs', {})
+            if 'shift' in ins:
+                shift = self._take(node_id, 'shift')
+            else:
+                parts = [f"{k}={self._take(node_id, k)}" for k, v in ins.items() if not self._is_link(v)]
+                shift = ', '.join(parts) if parts else 'N/A'
+            settings.append({'title': self._title(node, node_id), 'shift': shift})
         return settings
+
+    # ------------------------------------------------------------------ everything else
+
+    def get_other_settings(self) -> List[Dict[str, Any]]:
+        """
+        Literal inputs that none of the dedicated extractors consumed, grouped per node.
+        Each item: {'node_id', 'class_type', 'title', 'settings': [(key, value), ...], 'covered': bool}
+        `covered` is True when the node contributed something to another tab (so an empty
+        settings list there just means "fully shown elsewhere").
+        """
+        # Run every extractor so `consumed` is complete
+        self.get_video_settings()
+        self.get_prompt_entries()
+        self.get_models()
+        self.get_sampler_settings()
+        self.get_input_images()
+        self.get_model_sampling_settings()
+
+        rows = []
+        for node_id, node in self._nodes():
+            ins = node.get('inputs', {})
+            used = self.consumed.get(str(node_id), set())
+            leftovers = [(k, v) for k, v in ins.items() if not self._is_link(v) and k not in used]
+            rows.append({
+                'node_id': node_id,
+                'class_type': node.get('class_type', ''),
+                'title': self._title(node, node_id),
+                'settings': leftovers,
+                'covered': bool(used),
+            })
+        return rows
 
 
 def summarize_file(file_path: str) -> Dict[str, Any]:
@@ -392,6 +789,8 @@ def summarize_file(file_path: str) -> Dict[str, Any]:
         'length': settings.get('length', 'N/A'),
         'frame_rate': settings.get('frame_rate', 'N/A'),
         'format': settings.get('format', 'N/A'),
+        'duration_s': settings.get('duration_s', 'N/A'),
+        'has_audio': settings.get('has_audio', 'N/A'),
         'steps': samplers[0]['steps'] if samplers else 'N/A',
         'cfg': samplers[0]['cfg'] if samplers else 'N/A',
         'sampler_name': samplers[0]['sampler_name'] if samplers else 'N/A',
@@ -444,7 +843,8 @@ class DiffDialog(QDialog):
 
     FIELDS = [
         ('name', 'File'), ('width', 'Width'), ('height', 'Height'), ('length', 'Frames/Length'),
-        ('frame_rate', 'Frame Rate'), ('format', 'Format'), ('steps', 'Steps'), ('cfg', 'CFG'),
+        ('frame_rate', 'Frame Rate'), ('duration_s', 'Duration (s)'), ('has_audio', 'Audio'),
+        ('format', 'Format'), ('steps', 'Steps'), ('cfg', 'CFG'),
         ('sampler_name', 'Sampler'), ('scheduler', 'Scheduler'), ('unet', 'UNET'),
         ('clip', 'CLIP'), ('vae', 'VAE'), ('lora', 'LoRA'),
         ('positive_prompt', 'Positive Prompt'), ('negative_prompt', 'Negative Prompt'),
@@ -494,7 +894,9 @@ class DropZoneLabel(QLabel):
         self.setObjectName("drop_zone")
         self.setText("Drag and drop a metadata file here\n(supports .txt, .json, .mp4)\nor use File > Open")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumHeight(80)
+        # Fixed height: 3 text lines + 12px padding top/bottom (stylesheet) + 2px border top/bottom + slack.
+        # Fixed (not minimum) so the loaded-file single line does not leave a tall empty box.
+        self.setFixedHeight(self.fontMetrics().lineSpacing() * 3 + 24 + 4 + 14)
         self.setAcceptDrops(True)
         self.file_dropped_callback = None
 
@@ -515,7 +917,7 @@ class MainWindow(QMainWindow):
         self.batch_rows: List[Dict[str, Any]] = []
         self.batch_visible_rows: List[Dict[str, Any]] = []
         self.batch_worker: Optional[BatchScanWorker] = None
-        self.setWindowTitle("VHS Metadata Parser v1.2.0")
+        self.setWindowTitle("VHS Metadata Parser v1.3.0")
         self.setMinimumSize(900, 700)
         self.setStyleSheet(STYLESHEET)
         self.setAcceptDrops(True)
@@ -548,12 +950,14 @@ class MainWindow(QMainWindow):
         layout.addLayout(file_row)
 
         self.tab_widget = QTabWidget()
+        self.tab_widget.currentChanged.connect(lambda _idx: self._refit_prompt_sections())
         layout.addWidget(self.tab_widget, 1)
 
         self._create_video_settings_tab()
         self._create_prompts_tab()
         self._create_models_tab()
         self._create_sampler_tab()
+        self._create_other_settings_tab()
         self._create_workflow_tab()
         self._create_raw_json_tab()
         self._create_batch_tab()
@@ -567,7 +971,7 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self._open_file_dialog)
         file_menu.addAction(open_action)
 
-        export_csv_action = QAction("Export Models & Sampler (CSV)…", self)
+        export_csv_action = QAction("Export Models, Sampler && Other Settings (CSV)…", self)
         export_csv_action.setShortcut("Ctrl+E")
         export_csv_action.triggered.connect(self._export_models_sampler_csv)
         file_menu.addAction(export_csv_action)
@@ -599,7 +1003,10 @@ class MainWindow(QMainWindow):
         self.length_edit = QLineEdit(); self.length_edit.setReadOnly(True)
         dims_layout.addRow("Width:", self.width_edit)
         dims_layout.addRow("Height:", self.height_edit)
+        self.duration_edit = QLineEdit(); self.duration_edit.setReadOnly(True)
         dims_layout.addRow("Frames/Length:", self.length_edit)
+        dims_layout.addRow("Duration (s):", self.duration_edit)
+        dims_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout.addWidget(dims_group)
 
         output_group = QGroupBox("Output Settings")
@@ -609,11 +1016,16 @@ class MainWindow(QMainWindow):
         self.format_edit = QLineEdit(); self.format_edit.setReadOnly(True)
         self.crf_edit = QLineEdit(); self.crf_edit.setReadOnly(True)
         self.pix_fmt_edit = QLineEdit(); self.pix_fmt_edit.setReadOnly(True)
+        self.audio_edit = QLineEdit(); self.audio_edit.setReadOnly(True)
+        self.mp4_header_edit = QLineEdit(); self.mp4_header_edit.setReadOnly(True)
         output_layout.addRow("Frame Rate:", self.frame_rate_edit)
         output_layout.addRow("Filename Prefix:", self.filename_prefix_edit)
         output_layout.addRow("Format:", self.format_edit)
         output_layout.addRow("CRF:", self.crf_edit)
         output_layout.addRow("Pixel Format:", self.pix_fmt_edit)
+        output_layout.addRow("Audio:", self.audio_edit)
+        output_layout.addRow("MP4 Header:", self.mp4_header_edit)
+        output_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout.addWidget(output_group)
 
         input_group = QGroupBox("Input Images")
@@ -623,23 +1035,65 @@ class MainWindow(QMainWindow):
         layout.addWidget(input_group)
 
         layout.addStretch()
-        self.tab_widget.addTab(tab, "Video Settings")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(tab)
+        self.tab_widget.addTab(scroll, "Video Settings")
 
     def _create_prompts_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        pos_group = QGroupBox("Positive Prompts")
+        splitter = QSplitter(Qt.Orientation.Vertical)
+
+        sections_group = QGroupBox("Prompt Sections")
+        sections_layout = QVBoxLayout(sections_group)
+        hint = QLabel("Prompts broken into shots / labelled parts ([Shot N] At 00:00.000, Camera:, overall_soundscape:, "
+                      "non_diegetic_music:, <d>dialogue</d>, JSON keys). Source shows which node the text came from.")
+        hint.setObjectName("subtitle")
+        hint.setWordWrap(True)
+        sections_layout.addWidget(hint)
+        self.prompt_sections_table = QTableWidget()
+        self.prompt_sections_table.setColumnCount(3)
+        self.prompt_sections_table.setHorizontalHeaderLabels(['Source', 'Section', 'Content'])
+        header = self.prompt_sections_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.prompt_sections_table.setColumnWidth(0, 260)
+        self.prompt_sections_table.setColumnWidth(1, 170)
+        self.prompt_sections_table.setAlternatingRowColors(True)
+        self.prompt_sections_table.setWordWrap(True)
+        self.prompt_sections_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.prompt_sections_table.verticalHeader().setVisible(False)
+        header.sectionResized.connect(lambda *_: self.prompt_sections_table.resizeRowsToContents())
+        sections_layout.addWidget(self.prompt_sections_table)
+        splitter.addWidget(sections_group)
+
+        # Positive and Negative are separate splitter panes so each can be dragged (or collapsed)
+        pos_group = QGroupBox("Positive Prompts (raw)")
         pos_layout = QVBoxLayout(pos_group)
         self.positive_prompts_edit = QTextEdit(); self.positive_prompts_edit.setReadOnly(True)
+        self.positive_prompts_edit.setMinimumHeight(24)
         pos_layout.addWidget(self.positive_prompts_edit)
-        layout.addWidget(pos_group)
+        pos_group.setMinimumHeight(48)
+        splitter.addWidget(pos_group)
 
-        neg_group = QGroupBox("Negative Prompts")
+        neg_group = QGroupBox("Negative Prompts (raw)")
         neg_layout = QVBoxLayout(neg_group)
         self.negative_prompts_edit = QTextEdit(); self.negative_prompts_edit.setReadOnly(True)
+        self.negative_prompts_edit.setMinimumHeight(24)
         neg_layout.addWidget(self.negative_prompts_edit)
-        layout.addWidget(neg_group)
+        neg_group.setMinimumHeight(48)
+        splitter.addWidget(neg_group)
+
+        splitter.setChildrenCollapsible(True)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(2, 1)
+        self.prompts_splitter = splitter
+        layout.addWidget(splitter)
 
         self.tab_widget.addTab(tab, "Prompts")
 
@@ -667,7 +1121,7 @@ class MainWindow(QMainWindow):
 
         lora_group = QGroupBox("LoRA Models")
         lora_layout = QVBoxLayout(lora_group)
-        self.lora_table = self._make_table(['Name', 'Strength'])
+        self.lora_table = self._make_table(['Name', 'Strength', 'Loader'])
         lora_layout.addWidget(self.lora_table)
         layout.addWidget(lora_group)
 
@@ -690,11 +1144,11 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        sampler_group = QGroupBox("KSampler Settings")
+        sampler_group = QGroupBox("Sampler Settings (KSampler / SamplerCustomAdvanced)")
         sampler_layout = QVBoxLayout(sampler_group)
         self.sampler_table = QTableWidget()
-        self.sampler_table.setColumnCount(9)
-        self.sampler_table.setHorizontalHeaderLabels(['Title', 'Steps', 'CFG', 'Sampler', 'Scheduler', 'Seed', 'Add Noise', 'Start Step', 'End Step'])
+        self.sampler_table.setColumnCount(10)
+        self.sampler_table.setHorizontalHeaderLabels(['Title', 'Steps', 'CFG', 'Sampler', 'Scheduler', 'Seed', 'Add Noise', 'Start Step', 'End Step', 'Denoise'])
         self.sampler_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.sampler_table.setAlternatingRowColors(True)
         self.sampler_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -717,6 +1171,86 @@ class MainWindow(QMainWindow):
         layout.addWidget(export_btn)
 
         self.tab_widget.addTab(tab, "Sampler")
+
+    def _create_other_settings_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        info = QLabel("Every literal node setting that is NOT already shown on the Video / Prompts / Models / Sampler tabs. "
+                      "Use this to spot important settings from node types the parser has no dedicated view for "
+                      "(resolution selectors, schedulers, turbo samplers, save flags, custom nodes…).")
+        info.setObjectName("subtitle")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        controls = QHBoxLayout()
+        self.other_show_empty_check = QCheckBox("Show nodes that have no literal settings (links only)")
+        self.other_show_empty_check.setChecked(False)
+        self.other_show_empty_check.stateChanged.connect(lambda _state: self._populate_other_settings())
+        controls.addWidget(self.other_show_empty_check)
+        controls.addWidget(QLabel("Filter:"))
+        self.other_filter_edit = QLineEdit()
+        self.other_filter_edit.setPlaceholderText("node id, node type, title, setting or value…")
+        self.other_filter_edit.textChanged.connect(lambda _text: self._populate_other_settings())
+        controls.addWidget(self.other_filter_edit, 1)
+        layout.addLayout(controls)
+
+        self.other_status_label = QLabel("No file loaded.")
+        self.other_status_label.setObjectName("subtitle")
+        layout.addWidget(self.other_status_label)
+
+        self.other_table = QTableWidget()
+        self.other_table.setColumnCount(5)
+        self.other_table.setHorizontalHeaderLabels(['Node ID', 'Node Type', 'Title', 'Setting', 'Value'])
+        header = self.other_table.horizontalHeader()
+        for col in range(4):
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.other_table.setAlternatingRowColors(True)
+        self.other_table.setWordWrap(True)
+        self.other_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.other_table.verticalHeader().setVisible(False)
+        layout.addWidget(self.other_table, 1)
+
+        export_btn = QPushButton("Export Models, Sampler && Other Settings CSV…")
+        export_btn.clicked.connect(self._export_models_sampler_csv)
+        layout.addWidget(export_btn)
+
+        self.tab_widget.addTab(tab, "Other Settings")
+
+    def _populate_other_settings(self):
+        if not self.parser.prompt_data:
+            self.other_table.setRowCount(0)
+            self.other_status_label.setText("No file loaded.")
+            return
+        show_empty = self.other_show_empty_check.isChecked()
+        term = self.other_filter_edit.text().strip().lower()
+        flat: List[List[str]] = []
+        nodes_with_settings = 0
+        for node in self.parser.get_other_settings():
+            if node['settings']:
+                nodes_with_settings += 1
+                for key, value in node['settings']:
+                    if isinstance(value, (dict, list)):
+                        value = json.dumps(value, ensure_ascii=False)
+                    flat.append([str(node['node_id']), node['class_type'], node['title'], key, str(value)])
+            elif show_empty and not node['covered']:
+                flat.append([str(node['node_id']), node['class_type'], node['title'], '(no literal settings)', ''])
+        if term:
+            flat = [row for row in flat if any(term in cell.lower() for cell in row)]
+
+        self.other_table.setRowCount(len(flat))
+        for i, row in enumerate(flat):
+            for j, cell in enumerate(row):
+                item = QTableWidgetItem(cell)
+                if j == 3 and cell == '(no literal settings)':
+                    item.setForeground(QColor(COLORS['fg_dim']))
+                self.other_table.setItem(i, j, item)
+        self.other_table.setCurrentItem(None)
+        self.other_table.resizeRowsToContents()
+        self.other_status_label.setText(
+            f"{len(flat)} setting(s) from {nodes_with_settings} node(s) not covered by the other tabs."
+        )
 
     def _create_workflow_tab(self):
         tab = QWidget()
@@ -884,10 +1418,10 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        headers = ['File', 'Path', 'Width', 'Height', 'Length', 'Frame Rate', 'Format',
+        headers = ['File', 'Path', 'Width', 'Height', 'Length', 'Frame Rate', 'Duration (s)', 'Audio', 'Format',
                    'Steps', 'CFG', 'Sampler', 'Scheduler', 'CLIP', 'VAE', 'UNET', 'LoRA',
                    'Positive Prompt', 'Negative Prompt']
-        keys = ['name', 'file', 'width', 'height', 'length', 'frame_rate', 'format',
+        keys = ['name', 'file', 'width', 'height', 'length', 'frame_rate', 'duration_s', 'has_audio', 'format',
                 'steps', 'cfg', 'sampler_name', 'scheduler', 'clip', 'vae', 'unet', 'lora',
                 'positive_prompt', 'negative_prompt']
         try:
@@ -922,6 +1456,7 @@ class MainWindow(QMainWindow):
         self._populate_prompts()
         self._populate_models()
         self._populate_sampler()
+        self._populate_other_settings()
         self._populate_workflow()
         self._populate_raw_json()
 
@@ -935,6 +1470,9 @@ class MainWindow(QMainWindow):
         self.format_edit.setText(str(s.get('format', 'N/A')))
         self.crf_edit.setText(str(s.get('crf', 'N/A')))
         self.pix_fmt_edit.setText(str(s.get('pix_fmt', 'N/A')))
+        self.duration_edit.setText(str(s.get('duration_s', 'N/A')))
+        self.audio_edit.setText(str(s.get('has_audio', 'N/A')))
+        self.mp4_header_edit.setText(str(s.get('mp4_header', 'N/A (not an MP4)')))
         images = self.parser.get_input_images()
         self.input_images_edit.setPlainText('\n'.join(images) if images else 'No input images')
 
@@ -943,6 +1481,54 @@ class MainWindow(QMainWindow):
         negative = self.parser.get_negative_prompts()
         self.positive_prompts_edit.setPlainText('\n\n---\n\n'.join(positive) if positive else 'No positive prompts found')
         self.negative_prompts_edit.setPlainText('\n\n---\n\n'.join(negative) if negative else 'No negative prompts found')
+        self._layout_prompt_panes(bool(negative))
+
+        rows = self.parser.get_prompt_sections()
+        self.prompt_sections_table.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            source_item = QTableWidgetItem(r['source'])
+            section_item = QTableWidgetItem(r['section'])
+            content_item = QTableWidgetItem(r['content'])
+            if r['polarity'] == 'negative':
+                for item in (source_item, section_item, content_item):
+                    item.setForeground(QColor(COLORS['error']))
+            if 'Dialogue' in r['section']:
+                section_item.setForeground(QColor(COLORS['accent_hover']))
+            self.prompt_sections_table.setItem(i, 0, source_item)
+            self.prompt_sections_table.setItem(i, 1, section_item)
+            self.prompt_sections_table.setItem(i, 2, content_item)
+        self.prompt_sections_table.setCurrentItem(None)
+        self._refit_prompt_sections()
+
+    def _layout_prompt_panes(self, has_negative: bool):
+        """Give the Negative pane real space only when there is a negative prompt; otherwise shrink it to one line."""
+        self._prompt_panes_pending = has_negative
+        self._apply_prompt_panes()
+
+    def _apply_prompt_panes(self):
+        # The splitter has no usable geometry while the Prompts tab is hidden, so this is retried
+        # from _refit_prompt_sections() (tab change) until it can actually be applied.
+        pending = getattr(self, '_prompt_panes_pending', None)
+        splitter = getattr(self, 'prompts_splitter', None)
+        if pending is None or splitter is None or not splitter.isVisible():
+            return
+        total = sum(splitter.sizes())
+        if total < 200:
+            return
+        neg = int(total * 0.2) if pending else 64
+        rest = total - neg
+        splitter.setSizes([int(rest * 0.6), rest - int(rest * 0.6), neg])
+        self._prompt_panes_pending = None
+
+    def _refit_prompt_sections(self):
+        # Row heights depend on the Content column width, which is only final once the tab is laid out.
+        # (Also fires from tab_widget.currentChanged while tabs are still being built, hence the guard.)
+        table = getattr(self, 'prompt_sections_table', None)
+        if table is None:
+            return
+        self._apply_prompt_panes()
+        table.resizeRowsToContents()
+        QTimer.singleShot(0, table.resizeRowsToContents)
 
     def _populate_models(self):
         models = self.parser.get_models()
@@ -962,12 +1548,13 @@ class MainWindow(QMainWindow):
         for i, m in enumerate(models['lora']):
             self.lora_table.setItem(i, 0, QTableWidgetItem(str(m['name'])))
             self.lora_table.setItem(i, 1, QTableWidgetItem(str(m['strength'])))
+            self.lora_table.setItem(i, 2, QTableWidgetItem(str(m.get('title', ''))))
 
     def _populate_sampler(self):
         samplers = self.parser.get_sampler_settings()
         self.sampler_table.setRowCount(len(samplers))
         for i, s in enumerate(samplers):
-            for j, key in enumerate(['title', 'steps', 'cfg', 'sampler_name', 'scheduler', 'noise_seed', 'add_noise', 'start_at_step', 'end_at_step']):
+            for j, key in enumerate(['title', 'steps', 'cfg', 'sampler_name', 'scheduler', 'noise_seed', 'add_noise', 'start_at_step', 'end_at_step', 'denoise']):
                 self.sampler_table.setItem(i, j, QTableWidgetItem(str(s[key])))
         ms = self.parser.get_model_sampling_settings()
         self.model_sampling_table.setRowCount(len(ms))
@@ -1027,24 +1614,33 @@ class MainWindow(QMainWindow):
         writer.writerow([])
 
         writer.writerow(["=== LoRA Models ==="])
-        writer.writerow(["Name", "Strength"])
+        writer.writerow(["Name", "Strength", "Loader"])
         for m in models['lora']:
-            writer.writerow([m['name'], m['strength']])
+            writer.writerow([m['name'], m['strength'], m.get('title', '')])
         writer.writerow([])
 
         # Sampler
-        writer.writerow(["=== KSampler Settings ==="])
-        writer.writerow(["Title", "Steps", "CFG", "Sampler", "Scheduler", "Seed", "Add Noise", "Start Step", "End Step"])
+        writer.writerow(["=== Sampler Settings ==="])
+        writer.writerow(["Title", "Steps", "CFG", "Sampler", "Scheduler", "Seed", "Add Noise", "Start Step", "End Step", "Denoise"])
         for s in self.parser.get_sampler_settings():
             writer.writerow([s['title'], s['steps'], s['cfg'], s['sampler_name'],
                              s['scheduler'], s['noise_seed'], s['add_noise'],
-                             s['start_at_step'], s['end_at_step']])
+                             s['start_at_step'], s['end_at_step'], s['denoise']])
         writer.writerow([])
 
         writer.writerow(["=== Model Sampling (Shift) ==="])
         writer.writerow(["Title", "Shift"])
         for s in self.parser.get_model_sampling_settings():
             writer.writerow([s['title'], s['shift']])
+        writer.writerow([])
+
+        writer.writerow(["=== Other Settings (not shown on other tabs) ==="])
+        writer.writerow(["Node ID", "Node Type", "Title", "Setting", "Value"])
+        for node in self.parser.get_other_settings():
+            for key, value in node['settings']:
+                if isinstance(value, (dict, list)):
+                    value = json.dumps(value, ensure_ascii=False)
+                writer.writerow([node['node_id'], node['class_type'], node['title'], key, value])
 
         try:
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
@@ -1085,6 +1681,9 @@ def main():
         app.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow()
     window.show()
+    # Optional: open a metadata file passed on the command line (run.bat file.mp4)
+    if len(sys.argv) > 1 and Path(sys.argv[1]).is_file():
+        window.load_file(sys.argv[1])
     sys.exit(app.exec())
 
 
