@@ -1,5 +1,9 @@
 # Changelog — ComfyUI Workflow Chain Automator
 
+### v3.10.2
+- ⇅ LoRAs button no longer clips its text — it gets compact padding instead of the global 10px/11pt button padding that needs ~40px in the 30px chain row
+- Pod LoRA check reports "boto3 is not installed in the Python running this app" (instead of a raw ModuleNotFoundError) when the app is run from source with a Python that lacks boto3; `run.bat` now launches with the repo `.venv` (which has boto3) when it exists, falling back to `python`
+
 ### v3.10.1
 - Settings dialog re-laid out in two equal columns (1400 px wide, ~660 px tall) so it fits a 1080p screen — the single-column form had grown past the bottom of the display and hid the OK/Cancel buttons. Left: ComfyUI Server, Folders, Batch Processing, FFmpeg. Right: RunPod Volume (S3), AI Prompt Writer, Completion Sound. 1080p is the minimum supported screen size
 

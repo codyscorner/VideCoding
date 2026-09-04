@@ -708,7 +708,11 @@ class MainWindow(QMainWindow):
         chain_sel_row.addWidget(self._chain_folder_combo, stretch=1)
         chain_sel_row.addWidget(refresh_chain_btn)
         self._sync_loras_btn = QPushButton("⇅ LoRAs")
-        self._sync_loras_btn.setFixedHeight(30)
+        # The global QPushButton padding (10px 28px @ 11pt) needs ~40px of
+        # height; this button sits in the 30px chain row, so give it its
+        # own compact padding instead of clipping the text.
+        self._sync_loras_btn.setMinimumHeight(30)
+        self._sync_loras_btn.setStyleSheet("QPushButton { padding: 4px 12px; font-size: 10pt; }")
         self._sync_loras_btn.setToolTip(
             "Upload the LoRAs this chain uses that are missing on the pod (RunPod mode)")
         self._sync_loras_btn.clicked.connect(self._sync_loras_clicked)

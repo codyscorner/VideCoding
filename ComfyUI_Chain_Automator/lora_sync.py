@@ -225,6 +225,10 @@ def check_remote_loras(config: dict, names: list[str] | set[str],
     try:
         store = S3LoraStore(config)
         remote = store.list_remote()
+    except ImportError:
+        return RemoteLoraStatus({}, [], {}, error=(
+            "boto3 is not installed in the Python running this app. The built EXE "
+            "bundles it; when running from source use the repo .venv (run.bat does)"))
     except Exception as e:  # noqa: BLE001
         return RemoteLoraStatus({}, [], {}, error=f"{type(e).__name__}: {e}")
     present: dict[str, int] = {}
@@ -284,6 +288,9 @@ class LoraUploadWorker(QThread):
         errors: list[tuple[str, str]] = []
         try:
             store = S3LoraStore(self._config)
+        except ImportError:
+            self.finished_ok.emit([("(connection)", "boto3 is not installed in the Python running this app — use the built EXE or the repo .venv")])
+            return
         except Exception as e:  # noqa: BLE001
             self.finished_ok.emit([("(connection)", f"{type(e).__name__}: {e}")])
             return
