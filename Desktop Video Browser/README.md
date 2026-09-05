@@ -8,6 +8,7 @@ Split-pane interface: a file list panel on the left shows video files from a sel
 
 ## Features
 
+- Explorer-style folder tree for navigating drives and folders, alongside the file list
 - Browse video files in any folder
 - Click to play — video loads immediately in the right panel
 - Play / Pause / Stop controls
@@ -37,13 +38,13 @@ pip install PySide6
 ## Usage
 
 ```bash
-python video_browser/app.py
+python app.py
 ```
 
 ## Build EXE
 
 ```bash
-pyinstaller --noconsole --onefile --icon=assets/icons/app.ico video_browser/app.py
+pyinstaller --noconsole --onefile --icon=assets/icons/app.ico app.py
 ```
 
 ## Roadmap

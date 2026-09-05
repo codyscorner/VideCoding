@@ -32,6 +32,28 @@ QListWidget::item:selected {
     color: #ffffff;
 }
 
+/* Folder tree */
+QTreeView {
+    background-color: #333333;
+    border: 1px solid #444444;
+    border-radius: 3px;
+    outline: none;
+    show-decoration-selected: 1;
+}
+
+QTreeView::item {
+    padding: 3px 2px;
+}
+
+QTreeView::item:hover {
+    background-color: #3a3a3a;
+}
+
+QTreeView::item:selected {
+    background-color: #3d6aff;
+    color: #ffffff;
+}
+
 /* Buttons */
 QPushButton {
     background-color: #3a3a3a;
