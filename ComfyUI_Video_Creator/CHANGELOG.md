@@ -1,5 +1,8 @@
 # Changelog — ComfyUI Video Creator
 
+### v1.3.1
+- New app icon: crimson rounded tile with a white play triangle and film-strip perforations, generated with Z-Image Turbo on the RunPod ComfyUI (source kept as `app_icon_source.png`; `make_icon.py` rebuilds the multi-size `.ico` from it with rounded transparent corners). Embedded in the EXE and used by the window, taskbar, Start Menu and desktop shortcut
+
 ### v1.3.0
 - **Steps control** in Options (next to Seed): shows the sampler step count found in the workflow (`KSampler`, `KSamplerAdvanced`, `BasicScheduler`…) and applies the value you set to every sampler node on each run — bump it for quality, drop it for quick tests, without opening the workflow. WAN 2.2 hi/lo `KSamplerAdvanced` pairs keep their split point proportional (8 steps split at 4 → 12 steps split at 6); a boundary at or past the old count still means "to the end". Hidden for workflows with no step input (e.g. fixed 4-step Turbo samplers)
 - **Megapixels control** (same row as Length/Duration): shows the `megapixels` value of the workflow's `ImageScaleToTotalPixels` / `ResolutionSelector` nodes and applies what you set to all of them per run — small for quick tests, large for production. Hidden when the workflow has no numeric `megapixels` input (fixed width/height WAN graphs)

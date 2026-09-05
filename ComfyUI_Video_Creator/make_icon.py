@@ -1,48 +1,54 @@
-"""Generate app_icon.ico (dark red film-strip + play triangle) with Pillow."""
+"""Rebuild app_icon.ico from app_icon_source.png.
 
+The source tile was generated with Z-Image Turbo on ComfyUI (prompt: flat
+vector app icon, crimson rounded square, white play triangle, film-strip
+perforations, black background). This script crops away the black margin,
+rounds the corners to transparency and writes every standard icon size.
+
+    python make_icon.py            # uses app_icon_source.png
+    python make_icon.py other.png  # any square-ish PNG on a dark background
+"""
+
+import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 SIZES = [16, 24, 32, 48, 64, 128, 256]
+ROOT = Path(__file__).parent
 
 
-def render(size: int = 256) -> Image.Image:
-    s = 4  # supersample for smooth edges
-    W = size * s
-    img = Image.new("RGBA", (W, W), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
+def autocrop(img: Image.Image, thresh: int = 24) -> Image.Image:
+    """Crop away the near-black background around the tile, keeping it square."""
+    gray = img.convert("L").point(lambda v: 255 if v > thresh else 0)
+    bbox = gray.getbbox()
+    if not bbox:
+        return img
+    left, top, right, bottom = bbox
+    w, h = right - left, bottom - top
+    side = max(w, h)
+    cx, cy = left + w // 2, top + h // 2
+    box = (max(0, cx - side // 2), max(0, cy - side // 2),
+           min(img.width, cx + side // 2), min(img.height, cy + side // 2))
+    return img.crop(box)
 
-    r = W * 0.18
-    d.rounded_rectangle([0, 0, W - 1, W - 1], radius=r, fill=(38, 8, 12, 255))
-    d.rounded_rectangle([W * 0.03, W * 0.03, W * 0.97, W * 0.97], radius=r * 0.85,
-                        fill=(122, 12, 30, 255))
-    d.rounded_rectangle([W * 0.06, W * 0.06, W * 0.94, W * 0.94], radius=r * 0.75,
-                        fill=(60, 8, 16, 255))
 
-    # film sprocket holes down both edges
-    hole_w, hole_h = W * 0.075, W * 0.085
-    n = 5
-    for i in range(n):
-        y = W * 0.12 + i * (W * 0.76 - hole_h) / (n - 1)
-        for x in (W * 0.105, W * 0.895 - hole_w):
-            d.rounded_rectangle([x, y, x + hole_w, y + hole_h], radius=hole_w * 0.25, fill=(179, 18, 43, 255))
-
-    # play triangle
-    cx, cy = W * 0.52, W * 0.5
-    h = W * 0.42
-    w = h * 0.9
-    pts = [(cx - w * 0.42, cy - h / 2), (cx - w * 0.42, cy + h / 2), (cx + w * 0.58, cy)]
-    d.polygon(pts, fill=(244, 230, 230, 255))
-
-    return img.resize((size, size), Image.LANCZOS)
+def rounded(img: Image.Image, radius_frac: float = 0.2) -> Image.Image:
+    img = img.convert("RGBA")
+    mask = Image.new("L", img.size, 0)
+    r = int(min(img.size) * radius_frac)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, img.width - 1, img.height - 1], radius=r, fill=255)
+    out = img.copy()
+    out.putalpha(ImageChops.multiply(out.getchannel("A"), mask))
+    return out
 
 
 def main():
-    base = render(256)
-    out = Path(__file__).parent / "app_icon.ico"
-    base.save(out, format="ICO", sizes=[(sz, sz) for sz in SIZES])
-    print(f"wrote {out} ({out.stat().st_size} bytes)")
+    src = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "app_icon_source.png"
+    dst = ROOT / "app_icon.ico"
+    img = rounded(autocrop(Image.open(src).convert("RGB")).resize((512, 512), Image.LANCZOS))
+    img.resize((256, 256), Image.LANCZOS).save(dst, format="ICO", sizes=[(s, s) for s in SIZES])
+    print(f"wrote {dst} ({dst.stat().st_size} bytes) from {src.name}")
 
 
 if __name__ == "__main__":

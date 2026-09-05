@@ -1,6 +1,6 @@
 """
 ComfyUI Video Creator
-Version: 1.3.0
+Version: 1.3.1
 
 Single-shot ComfyUI API workflow runner: pick an image (tab 1) or a video
 to extend (tab 2), pick a workflow JSON, run it on local ComfyUI or RunPod,
@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import QApplication
 from config import CONFIG_NAME, ConfigManager, app_dir
 from ui.main_window import MainWindow
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 # Windows taskbar icon fix — must run before QApplication is created
 try:
