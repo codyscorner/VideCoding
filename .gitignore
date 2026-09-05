@@ -95,3 +95,6 @@ package-lock.json
 *.sqlite
 *.db
 S3_Broswer/config.json
+
+# Local-only test fixtures
+Cumfy_Workflow_Editor/Test files/
