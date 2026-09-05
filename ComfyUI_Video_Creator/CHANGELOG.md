@@ -1,5 +1,10 @@
 # Changelog — ComfyUI Video Creator
 
+### v1.3.7
+- **Negative prompt is now a pop-out, not a box on the main window.** WAN 2.2 and other video workflows need a negative prompt, but it is boilerplate that hardly ever changes — so it collapses to a single row: the label, a one-line preview of the current text, and a **⤢ Edit** button that opens the same large editing window the positive prompt uses. The full text is still sent to ComfyUI, saved by "Save to workflow", and recorded in history exactly as before
+- The whole Prompts pane therefore goes to the positive prompt, which is what gets rewritten every run. On a workflow with both prompts the positive editor went from roughly 60px to ~315px on a tall window (~170px on a 1080p screen) — a single-prompt MiniMax graph already had the pane to itself and gains a little too
+- Options + LoRAs take at most 40% of the splitter (was 50%); that pane scrolls, and the splitter stays draggable and remembered per tab
+
 ### v1.3.6
 - Progress bar no longer runs backwards near the end of a job. ComfyUI's post-sampling nodes (VAE decode, video save) emit step counts of their own; those were being folded back into the sampler count, so the bar dropped from e.g. 77% to 66% and the label flipped back to "Step 6/6". They now fill their own slice of the bar — the label reads "Saving video... 40/81" — and the bar only ever moves forward, reaching 100% when the finished file has been downloaded
 
