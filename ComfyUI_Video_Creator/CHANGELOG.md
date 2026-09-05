@@ -1,5 +1,8 @@
 # Changelog — ComfyUI Video Creator
 
+### v1.3.2
+- Library playback closes the player automatically when the last selected video finishes (single video or playlist) — no more dismissing a window sitting on the final frame. Playback from a tab's Results list still stays open
+
 ### v1.3.1
 - New app icon: crimson rounded tile with a white play triangle and film-strip perforations, generated with Z-Image Turbo on the RunPod ComfyUI (source kept as `app_icon_source.png`; `make_icon.py` rebuilds the multi-size `.ico` from it with rounded transparent corners). Embedded in the EXE and used by the window, taskbar, Start Menu and desktop shortcut
 

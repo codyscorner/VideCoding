@@ -217,12 +217,14 @@ class MainWindow(QMainWindow):
         self._player.show()
 
     def _play_list(self, paths: list):
+        """Library playback: plays the selection back-to-back and closes
+        itself when the last one ends."""
         paths = [p for p in paths if p and Path(p).exists()]
         if not paths:
             return
         if self._player is not None:
             self._player.close()
-        self._player = VideoPlayerDialog(paths[0], self, playlist=paths)
+        self._player = VideoPlayerDialog(paths[0], self, playlist=paths, auto_close=True)
         self._player.show()
 
     def _send_to_extend(self, path: Path):
