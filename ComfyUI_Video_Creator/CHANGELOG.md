@@ -1,5 +1,11 @@
 # Changelog — ComfyUI Video Creator
 
+### v1.3.8
+- **⧉ Clone button next to the workflow dropdown.** Copy the selected workflow under a new name and start editing the copy — the workflow you like is left exactly as it was. The dialog takes the new name (pre-filled with `<name> copy`; a name already in use is refused rather than silently overwritten), the destination subfolder of the Workflows folder (the original's folder by default), and two options:
+  - *Start from the prompts, LoRAs and settings shown in the panel* (on by default) — whatever is on screen, saved or not, is written into the clone. Off makes a byte-for-byte copy of the file on disk
+  - *Copy the prompt history too* — off by default; the original's history stays readable from 📜 History either way
+- The clone becomes the tab's selected workflow the moment the dialog closes, is remembered across restarts, and appears in the other tab's dropdown too — without disturbing that tab's own selection or unsaved edits
+
 ### v1.3.7
 - **Negative prompt is now a pop-out, not a box on the main window.** WAN 2.2 and other video workflows need a negative prompt, but it is boilerplate that hardly ever changes — so it collapses to a single row: the label, a one-line preview of the current text, and a **⤢ Edit** button that opens the same large editing window the positive prompt uses. The full text is still sent to ComfyUI, saved by "Save to workflow", and recorded in history exactly as before
 - The whole Prompts pane therefore goes to the positive prompt, which is what gets rewritten every run. On a workflow with both prompts the positive editor went from roughly 60px to ~315px on a tall window (~170px on a 1080p screen) — a single-prompt MiniMax graph already had the pane to itself and gains a little too

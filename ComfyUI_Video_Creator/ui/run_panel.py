@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import random
+import shutil
 import time
 from pathlib import Path
 
@@ -19,8 +20,10 @@ from PyQt6.QtWidgets import (
 
 from config import ConfigManager
 from run_worker import RunRequest
+from ui.clone_dialog import CloneWorkflowDialog
 from ui.prompt_history import (
-    PromptExpandDialog, PromptHistoryDialog, add_results, append_entry, make_entry,
+    PromptExpandDialog, PromptHistoryDialog, add_results, append_entry, history_path,
+    make_entry,
 )
 from ui.styles import COLORS
 from ui.widgets import ElidedLabel
@@ -69,6 +72,7 @@ class RunPanel(QWidget):
     run_requested = pyqtSignal(object)      # RunRequest
     cancel_requested = pyqtSignal()
     play_requested = pyqtSignal(str)
+    workflows_changed = pyqtSignal()        # a workflow file was added — other tabs rescan
 
     def __init__(self, kind: str, config: ConfigManager, parent=None):
         super().__init__(parent)
@@ -113,6 +117,12 @@ class RunPanel(QWidget):
         refresh.setToolTip("Rescan the workflow folder")
         refresh.clicked.connect(self.reload_workflows)
         row.addWidget(refresh)
+        self._clone_btn = QPushButton("⧉ Clone")
+        self._clone_btn.setObjectName("secondary_btn")
+        self._clone_btn.setToolTip("Save this workflow under a new name and switch to it, so the "
+                                   "original stays exactly as it is")
+        self._clone_btn.clicked.connect(self._clone_workflow)
+        row.addWidget(self._clone_btn)
         wf_layout.addLayout(row)
         self._wf_status = QLabel("")
         self._wf_status.setObjectName("status_dim")
@@ -423,6 +433,21 @@ class RunPanel(QWidget):
         self._wf_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self._on_workflow_changed(self._wf_combo.currentIndex())
 
+    def refresh_workflow_list(self):
+        """Repopulate the dropdown after a workflow file was added elsewhere,
+        keeping this panel's selection and its unsaved edits."""
+        wf_dir = Path((self._cfg.get("workflow_dir", "") or "").strip())
+        rels = list_workflows(wf_dir) if str(wf_dir) else []
+        if not (self._workflow_rel in rels and self._analysis is not None):
+            self.reload_workflows()
+            return
+        self._wf_combo.blockSignals(True)
+        self._wf_combo.clear()
+        for rel in rels:
+            self._wf_combo.addItem(rel, rel)
+        self._wf_combo.setCurrentIndex(self._wf_combo.findData(self._workflow_rel))
+        self._wf_combo.blockSignals(False)
+
     def _on_workflow_changed(self, _idx: int):
         rel = self._wf_combo.currentData()
         if not rel:
@@ -617,26 +642,74 @@ class RunPanel(QWidget):
     def _prompt_tuples(self) -> list[tuple[str, str, str, bool, str]]:
         return [(pf.node_id, pf.key, pf.label, pf.negative, edit.toPlainText()) for pf, edit in self._prompt_edits]
 
+    def _write_panel_edits(self, path: Path):
+        """Write the prompts, LoRAs, steps, megapixels and length shown here into `path`."""
+        wf = load_workflow(path)
+        apply_inputs(wf, self._prompt_overrides())
+        apply_inputs(wf, self._lora_edits())
+        if self._analysis.length_field is not None:
+            apply_value(wf, self._analysis.length_field, self._length_spin.value())
+        fresh = analyze(wf)
+        if fresh.steps_fields:
+            apply_steps(wf, fresh.steps_fields, int(self._steps_spin.value()))
+        if fresh.mp_fields:
+            apply_megapixels(wf, fresh.mp_fields, float(self._mp_spin.value()))
+        save_workflow(path, wf)
+
     def _save_to_workflow(self):
         if self._workflow_path is None or self._analysis is None:
             return
         try:
-            wf = load_workflow(self._workflow_path)
-            apply_inputs(wf, self._prompt_overrides())
-            apply_inputs(wf, self._lora_edits())
-            if self._analysis.length_field is not None:
-                apply_value(wf, self._analysis.length_field, self._length_spin.value())
-            fresh = analyze(wf)
-            if fresh.steps_fields:
-                apply_steps(wf, fresh.steps_fields, int(self._steps_spin.value()))
-            if fresh.mp_fields:
-                apply_megapixels(wf, fresh.mp_fields, float(self._mp_spin.value()))
-            save_workflow(self._workflow_path, wf)
+            self._write_panel_edits(self._workflow_path)
             append_entry(self._workflow_path, make_entry(self._prompt_tuples(), self._collect_settings(),
                                                          self._source.name if self._source else ""))
             self.append_log(f"Saved prompts, LoRAs, steps, megapixels and length to {self._workflow_path.name} (and to history)")
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Save failed", str(e))
+
+    # ------------------------------------------------------------------ #
+    # Cloning
+    # ------------------------------------------------------------------ #
+
+    def _clone_workflow(self):
+        """Copy the selected workflow to a new name and select the copy."""
+        wf_dir = Path((self._cfg.get("workflow_dir", "") or "").strip())
+        if self._workflow_path is None or not wf_dir.is_dir():
+            QMessageBox.information(self, "Clone workflow",
+                                    "Pick a workflow first (set the Workflows folder in Settings).")
+            return
+        if not self._workflow_path.exists():
+            QMessageBox.warning(self, "Clone workflow",
+                                f"{self._workflow_path.name} is no longer on disk — press ↻ to rescan.")
+            return
+
+        dlg = CloneWorkflowDialog(wf_dir, self._workflow_rel, self._analysis is not None, self)
+        if dlg.exec() != CloneWorkflowDialog.DialogCode.Accepted:
+            return
+        target = dlg.result_path()
+        if target is None:
+            return
+
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(self._workflow_path, target)
+            if dlg.with_edits() and self._analysis is not None:
+                self._write_panel_edits(target)
+            if dlg.with_history():
+                src_hist = history_path(self._workflow_path)
+                if src_hist.exists():
+                    shutil.copy2(src_hist, history_path(target))
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Clone failed", f"Could not create {target.name}:\n{e}")
+            return
+
+        rel = target.relative_to(wf_dir).as_posix()
+        source_name = self._workflow_path.name
+        self._cfg.set(self._config_key(), rel)
+        self.reload_workflows()
+        detail = " with the edits shown here" if dlg.with_edits() and self._analysis is not None else ""
+        self.append_log(f"Cloned {source_name} → {rel}{detail} — now editing the clone")
+        self.workflows_changed.emit()
 
     # ------------------------------------------------------------------ #
     # History

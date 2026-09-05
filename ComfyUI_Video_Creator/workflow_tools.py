@@ -164,6 +164,63 @@ def load_workflow(path: Path) -> dict:
     return data
 
 
+INVALID_NAME_CHARS = r'<>:"/\|?*'
+_RESERVED_NAMES = {"con", "prn", "aux", "nul",
+                   *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+
+
+def check_workflow_name(name: str) -> str:
+    """Return an error message for a proposed workflow file name, or "" if it's fine."""
+    stem = name.strip()
+    if stem.lower().endswith(".json"):
+        stem = stem[:-5].strip()
+    if not stem:
+        return "Enter a name."
+    bad = sorted({c for c in stem if c in INVALID_NAME_CHARS or ord(c) < 32})
+    if bad:
+        return "A file name cannot contain " + " ".join(bad)
+    if stem.endswith(".") or stem.endswith(" "):
+        return "A file name cannot end with a dot or a space."
+    if stem.split(".")[0].lower() in _RESERVED_NAMES:
+        return f'"{stem}" is a name Windows reserves.'
+    if stem.lower().endswith(HISTORY_SUFFIX[:-5]):
+        return "That name collides with the prompt-history file naming."
+    return ""
+
+
+def workflow_stem(name: str) -> str:
+    """The file stem for a name typed by the user (a typed .json is not doubled up)."""
+    stem = name.strip()
+    if stem.lower().endswith(".json"):
+        stem = stem[:-5].strip()
+    return stem
+
+
+def unique_workflow_path(folder: Path, stem: str) -> Path:
+    """`folder/stem.json`, or `stem (2).json`, `stem (3).json`… if that is taken."""
+    candidate = folder / f"{stem}.json"
+    n = 2
+    while candidate.exists():
+        candidate = folder / f"{stem} ({n}).json"
+        n += 1
+    return candidate
+
+
+def list_workflow_folders(workflow_dir: Path) -> list[str]:
+    """Relative POSIX paths of the workflow folder and every subfolder ("" = root)."""
+    if not workflow_dir or not workflow_dir.is_dir():
+        return []
+    out = [""]
+    for p in sorted(workflow_dir.rglob("*"), key=lambda p: str(p).lower()):
+        if not p.is_dir():
+            continue
+        rel = p.relative_to(workflow_dir)
+        if any(part.lower() == "thumbnails" for part in rel.parts):
+            continue
+        out.append(rel.as_posix())
+    return out
+
+
 def list_workflows(workflow_dir: Path) -> list[str]:
     """Relative POSIX paths of every candidate workflow JSON under the folder."""
     if not workflow_dir or not workflow_dir.is_dir():
