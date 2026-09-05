@@ -107,6 +107,10 @@ def describe_settings(settings: dict | None) -> str:
             for l in loras))
     seed = settings.get("seed")
     bits.append(f"Seed {seed}" if seed is not None else "Seed random")
+    if settings.get("steps") is not None:
+        bits.append(f"Steps {settings['steps']}")
+    if settings.get("megapixels") is not None:
+        bits.append(f"{settings['megapixels']:g} MP")
     length = settings.get("length")
     if length:
         val = length.get("value")
@@ -141,6 +145,10 @@ def format_entry(e: dict) -> str:
         lines.append(f"Workflow: {s.get('workflow', '?')}   Mode: {s.get('mode', '?')}")
         seed = s.get("seed")
         lines.append(f"Seed: {seed if seed is not None else 'random'}")
+        if s.get("steps") is not None:
+            lines.append(f"Steps: {s['steps']}")
+        if s.get("megapixels") is not None:
+            lines.append(f"Megapixels: {s['megapixels']:g}")
         if s.get("length"):
             val = s["length"].get("value")
             lines.append(f"{s['length'].get('label', 'Length')}: {val:g}" if isinstance(val, (int, float))

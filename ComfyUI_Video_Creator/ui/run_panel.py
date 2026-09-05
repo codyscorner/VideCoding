@@ -25,8 +25,8 @@ from ui.prompt_history import (
 from ui.styles import COLORS
 from ui.widgets import ElidedLabel
 from workflow_tools import (
-    Analysis, LoraSlot, WorkflowError, analyze, apply_inputs, apply_value,
-    list_loras, list_workflows, load_workflow, save_workflow,
+    Analysis, LoraSlot, WorkflowError, analyze, apply_inputs, apply_megapixels, apply_steps,
+    apply_value, list_loras, list_workflows, load_workflow, save_workflow,
 )
 
 VIDEO_INPUT_MODES = [
@@ -184,14 +184,37 @@ class RunPanel(QWidget):
         dice.setToolTip("Pick a new fixed seed")
         dice.clicked.connect(lambda: self._seed_spin.setValue(random.randint(0, 2_147_483_647)))
         seed_row.addWidget(dice)
+        seed_row.addSpacing(14)
+        self._steps_lbl = QLabel("Steps:")
+        seed_row.addWidget(self._steps_lbl)
+        self._steps_spin = QSpinBox()
+        self._steps_spin.setRange(1, 200)
+        self._steps_spin.setFixedWidth(70)
+        self._steps_spin.setToolTip("Sampler steps — more = slower but usually cleaner; fewer for quick tests")
+        self._steps_spin.valueChanged.connect(lambda _v: self._update_summary())
+        seed_row.addWidget(self._steps_spin)
         seed_row.addStretch()
+        og.addLayout(seed_row)
+
+        size_row = QHBoxLayout()
+        self._mp_lbl = QLabel("Megapixels:")
+        size_row.addWidget(self._mp_lbl)
+        self._mp_spin = QDoubleSpinBox()
+        self._mp_spin.setRange(0.05, 8.0)
+        self._mp_spin.setDecimals(2)
+        self._mp_spin.setSingleStep(0.05)
+        self._mp_spin.setFixedWidth(84)
+        self._mp_spin.setToolTip("Output size in megapixels — smaller for quick tests, larger for production")
+        self._mp_spin.valueChanged.connect(lambda _v: self._update_summary())
+        size_row.addWidget(self._mp_spin)
+        size_row.addStretch()
         self._length_lbl = QLabel("Length:")
-        seed_row.addWidget(self._length_lbl)
+        size_row.addWidget(self._length_lbl)
         self._length_spin = QDoubleSpinBox()
         self._length_spin.setMinimumWidth(110)
         self._length_spin.valueChanged.connect(lambda _v: self._update_summary())
-        seed_row.addWidget(self._length_spin)
-        og.addLayout(seed_row)
+        size_row.addWidget(self._length_spin)
+        og.addLayout(size_row)
         self._on_seed_mode()
 
         if kind == "video":
@@ -496,6 +519,28 @@ class RunPanel(QWidget):
                 self._length_spin.setSingleStep(0.5)
             self._length_spin.setValue(fld.value)
             self._length_spin.blockSignals(False)
+
+        steps = a.steps_fields if a is not None else []
+        self._steps_lbl.setVisible(bool(steps))
+        self._steps_spin.setVisible(bool(steps))
+        if steps:
+            self._steps_spin.blockSignals(True)
+            self._steps_spin.setValue(steps[0].value)
+            self._steps_spin.blockSignals(False)
+            names = ", ".join(f"{f.label} ({f.value})" for f in steps)
+            self._steps_spin.setToolTip(
+                f"Sampler steps applied to {len(steps)} node{'s' if len(steps) != 1 else ''}: {names}. "
+                "WAN hi/lo pairs keep their split point proportional.")
+
+        mps = a.mp_fields if a is not None else []
+        self._mp_lbl.setVisible(bool(mps))
+        self._mp_spin.setVisible(bool(mps))
+        if mps:
+            self._mp_spin.blockSignals(True)
+            self._mp_spin.setValue(mps[0].value)
+            self._mp_spin.blockSignals(False)
+            names = ", ".join(f"{f.label} ({f.value:g})" for f in mps)
+            self._mp_spin.setToolTip(f"Megapixels applied to {len(mps)} node{'s' if len(mps) != 1 else ''}: {names}")
         self._update_summary()
 
     def _expand_prompt(self, edit: QTextEdit, title: str):
@@ -524,6 +569,11 @@ class RunPanel(QWidget):
             apply_inputs(wf, self._lora_edits())
             if self._analysis.length_field is not None:
                 apply_value(wf, self._analysis.length_field, self._length_spin.value())
+            fresh = analyze(wf)
+            if fresh.steps_fields:
+                apply_steps(wf, fresh.steps_fields, int(self._steps_spin.value()))
+            if fresh.mp_fields:
+                apply_megapixels(wf, fresh.mp_fields, float(self._mp_spin.value()))
             save_workflow(self._workflow_path, wf)
             append_entry(self._workflow_path, make_entry(self._prompt_tuples(), self._collect_settings(),
                                                          self._source.name if self._source else ""))
@@ -577,6 +627,16 @@ class RunPanel(QWidget):
         if s.get("length") and self._length_spin.isVisible():
             try:
                 self._length_spin.setValue(float(s["length"].get("value")))
+            except (TypeError, ValueError):
+                pass
+        if s.get("steps") is not None and self._steps_spin.isVisible():
+            try:
+                self._steps_spin.setValue(int(s["steps"]))
+            except (TypeError, ValueError):
+                pass
+        if s.get("megapixels") is not None and self._mp_spin.isVisible():
+            try:
+                self._mp_spin.setValue(float(s["megapixels"]))
             except (TypeError, ValueError):
                 pass
         self._update_summary()
@@ -736,6 +796,8 @@ class RunPanel(QWidget):
             "mode": self._cfg.get("mode", "local"),
             "seed": int(self._seed_spin.value()) if self._seed_mode.currentIndex() == 1 else None,
             "length": {"label": fld.label, "value": float(self._length_spin.value())} if fld is not None else None,
+            "steps": int(self._steps_spin.value()) if (self._analysis is not None and self._analysis.steps_fields) else None,
+            "megapixels": float(self._mp_spin.value()) if (self._analysis is not None and self._analysis.mp_fields) else None,
             "loras": self._lora_records(),
             "video_input_mode": self._input_mode.currentData() if self._input_mode is not None else None,
             "extend_stitch": bool(self._stitch_chk.isChecked()) if self._stitch_chk is not None else None,
@@ -752,6 +814,10 @@ class RunPanel(QWidget):
         elif self._lora_rows:
             bits.append("LoRAs: none")
         bits.append(f"Seed: {int(self._seed_spin.value())}" if self._seed_mode.currentIndex() == 1 else "Seed: random")
+        if self._analysis is not None and self._analysis.steps_fields:
+            bits.append(f"Steps: {int(self._steps_spin.value())}")
+        if self._analysis is not None and self._analysis.mp_fields:
+            bits.append(f"MP: {self._mp_spin.value():g}")
         if self._length_spin.isVisible() or (self._analysis and self._analysis.length_field):
             bits.append(f"{self._length_lbl.text().rstrip(':')}: {self._length_spin.value():g}")
         self._summary.setFullText("Next run → " + "   |   ".join(bits) if bits else "")
@@ -802,6 +868,8 @@ class RunPanel(QWidget):
             seed=seed,
             length_field=fld,
             length_value=float(self._length_spin.value()) if fld is not None else None,
+            steps=int(self._steps_spin.value()) if self._analysis.steps_fields else None,
+            megapixels=float(self._mp_spin.value()) if self._analysis.mp_fields else None,
             video_input_mode=self._input_mode.currentData() if self._input_mode is not None else "auto",
             extend_stitch=bool(self._stitch_chk.isChecked()) if self._stitch_chk is not None else False,
         )

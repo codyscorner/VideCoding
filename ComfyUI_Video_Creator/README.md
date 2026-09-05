@@ -1,6 +1,6 @@
 # ComfyUI Video Creator
 
-Version: 1.2.0
+Version: 1.3.0
 
 Single-shot ComfyUI API workflow runner with a dark red theme. Pick an image (or a video to extend), pick a workflow JSON, press Run, and the finished video lands in a local folder — from a local ComfyUI or a RunPod pod.
 
@@ -18,7 +18,7 @@ This is a **separate app from the ComfyUI Workflow Chain Automator**. It shares 
 - **Prompt editor** built from the workflow (CLIPTextEncode positive/negative, MiniMax H3 prompt, PrimitiveStringMultiline); edits apply per run, or "Save to workflow" writes them into the JSON. Each prompt has an **⤢ Expand** button for a large separate editor window, and the Prompts / Options split is draggable
 - **LoRA picker** — one row per LoRA node in the workflow (`LoraLoaderModelOnly`, rgthree `Lora Loader Stack`, `MiniMaxH3TurboLoRA`…): editable dropdown of LoRA files from your LoRAs folder (or fetched from the connected server with ⇣ Server) plus strength spinner(s). A "Next run →" line always shows the LoRAs, seed and length about to be used
 - **Prompt history with settings** — every run appends prompts + seed + length + LoRAs/strengths + mode + source to the workflow's `<name>.prompt_history.json` (shared with the Chain Automator) and attaches the result file name when done. 📜 History searches entries and reloads the prompt alone or prompt + settings
-- **Seed** random-per-run or fixed; **Length / Duration** control when the workflow exposes one
+- **Seed** random-per-run or fixed; **Steps** applied to every sampler node (WAN hi/lo splits rescaled proportionally); **Megapixels** applied to every `megapixels` input (`ImageScaleToTotalPixels` etc.); **Length / Duration** control when the workflow exposes one
 - Extend-tab thumbnails show each video's **last frame**, the extension's starting point
 - **Library tab** — finished videos (Output folder by default): sort, multi-select, Play (playlist), Delete, Open Folder, **Send to Extend**, and a *Produced by* pane with the prompt/LoRAs/seed/length behind the selected video (from the prompt history)
 - **Local or RunPod** server with separate URLs, "Test connection", and automatic download of the result to the Output folder

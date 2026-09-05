@@ -79,12 +79,27 @@ class LoraSlot:
 
 
 @dataclass
+class StepsField:
+    """A sampler/scheduler node's `steps` input. WAN 2.2 hi/lo pairs are two
+    KSamplerAdvanced nodes sharing one step count and splitting it with
+    start_at_step / end_at_step — those boundaries are rescaled when the
+    count changes so the split point stays proportional."""
+    node_id: str
+    label: str
+    value: int
+    start: int | None = None
+    end: int | None = None
+
+
+@dataclass
 class Analysis:
     image_nodes: list[tuple[str, str]] = field(default_factory=list)          # (id, title)
     list_loaders: list[tuple[str, str]] = field(default_factory=list)         # (id, title)
     video_nodes: list[tuple[str, str, str]] = field(default_factory=list)     # (id, title, input key)
     prompts: list[PromptField] = field(default_factory=list)
     loras: list[LoraSlot] = field(default_factory=list)
+    steps_fields: list[StepsField] = field(default_factory=list)
+    mp_fields: list[ValueField] = field(default_factory=list)      # numeric `megapixels` inputs
     seed_fields: list[tuple[str, str]] = field(default_factory=list)          # (id, key)
     length_field: ValueField | None = None
     output_nodes: list[str] = field(default_factory=list)
@@ -252,11 +267,25 @@ def analyze(workflow: dict) -> Analysis:
             if length_int is None:
                 length_int = ValueField(nid, "length", "Length (frames)", "int", int(inp["length"]))
 
+        # Megapixels (ImageScaleToTotalPixels, ResolutionSelector, ...) --
+        mp = inp.get("megapixels")
+        if isinstance(mp, (int, float)) and not isinstance(mp, bool):
+            fld = ValueField(nid, "megapixels", title or ct, "float", float(mp))
+            # The scale node is what actually sizes the frames — list it first
+            # so the control shows its value (a ResolutionSelector may differ).
+            if ct == "ImageScaleToTotalPixels":
+                a.mp_fields.insert(0, fld)
+            else:
+                a.mp_fields.append(fld)
+
         # Sampler steps -----------------------------------------------
         if "sampler" in ct.lower() or ct == "BasicScheduler":
             steps = inp.get("steps")
             if _is_int(steps) and steps > 0:
                 start, end = inp.get("start_at_step"), inp.get("end_at_step")
+                a.steps_fields.append(StepsField(
+                    nid, title or ct, steps,
+                    start if _is_int(start) else None, end if _is_int(end) else None))
                 if _is_int(start) and _is_int(end):
                     steps = max(0, min(end, steps) - max(start, 0))
                 if steps:
@@ -315,6 +344,36 @@ def apply_value(workflow: dict, fld: ValueField, value: float) -> None:
     node = workflow.get(fld.node_id)
     if isinstance(node, dict):
         node.setdefault("inputs", {})[fld.key] = int(value) if fld.kind == "int" else float(value)
+
+
+def apply_steps(workflow: dict, fields: list[StepsField], new_steps: int) -> int:
+    """Set every sampler's step count, rescaling KSamplerAdvanced start/end
+    boundaries proportionally (a boundary at or past the old count means
+    "to the end" and follows the new count). Returns nodes changed."""
+    new_steps = max(1, int(new_steps))
+    n = 0
+    for fld in fields:
+        node = workflow.get(fld.node_id)
+        if not isinstance(node, dict):
+            continue
+        inp = node.setdefault("inputs", {})
+        old = fld.value if fld.value > 0 else new_steps
+        inp["steps"] = new_steps
+        if fld.start is not None:
+            inp["start_at_step"] = min(new_steps, round(fld.start * new_steps / old)) if fld.start < old else new_steps
+        if fld.end is not None:
+            inp["end_at_step"] = round(fld.end * new_steps / old) if fld.end < old else max(new_steps, fld.end)
+        n += 1
+    return n
+
+
+def apply_megapixels(workflow: dict, fields: list[ValueField], value: float) -> int:
+    n = 0
+    for fld in fields:
+        if isinstance(workflow.get(fld.node_id), dict):
+            apply_value(workflow, fld, round(float(value), 3))
+            n += 1
+    return n
 
 
 def set_output_prefix(workflow: dict, prefix: str) -> None:

@@ -1,5 +1,11 @@
 # Changelog — ComfyUI Video Creator
 
+### v1.3.0
+- **Steps control** in Options (next to Seed): shows the sampler step count found in the workflow (`KSampler`, `KSamplerAdvanced`, `BasicScheduler`…) and applies the value you set to every sampler node on each run — bump it for quality, drop it for quick tests, without opening the workflow. WAN 2.2 hi/lo `KSamplerAdvanced` pairs keep their split point proportional (8 steps split at 4 → 12 steps split at 6); a boundary at or past the old count still means "to the end". Hidden for workflows with no step input (e.g. fixed 4-step Turbo samplers)
+- **Megapixels control** (same row as Length/Duration): shows the `megapixels` value of the workflow's `ImageScaleToTotalPixels` / `ResolutionSelector` nodes and applies what you set to all of them per run — small for quick tests, large for production. Hidden when the workflow has no numeric `megapixels` input (fixed width/height WAN graphs)
+- Steps and Megapixels are written by "Save to workflow", recorded in every history entry, shown in the "Next run →" summary and the Library's Produced-by pane, and restored by "Use prompt + settings"
+- The progress bar's step total now reflects the patched step count
+
 ### v1.2.0
 - **Library tab** (modeled on the Chain Automator's): thumbnail grid of finished videos — the Output folder by default, or any folder (Settings > Folders > Library, or the … button on the tab) — with sort, multi-select, **Play** (selected videos back-to-back as a playlist, double-click plays one), **Delete** (with confirmation; removes cached thumbnails too), **Open Folder**, **Refresh**, and **Send to Extend**, which switches to the Video → Extend tab with that video selected as the source (switching the Extend folder if the video lives elsewhere)
 - Library details pane: file size, resolution, fps, duration, audio yes/no, and a **Produced by** box showing the prompt, LoRAs/strengths, seed and length the video was generated with — looked up by result file name across every workflow's prompt history

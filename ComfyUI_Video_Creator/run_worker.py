@@ -16,7 +16,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from comfy_client import ComfyClient
 from media_tools import concat_videos, extract_last_frame, resolve_ffmpeg
 from workflow_tools import (
-    ValueField, analyze, apply_inputs, apply_seed, apply_value,
+    ValueField, analyze, apply_inputs, apply_megapixels, apply_seed, apply_steps, apply_value,
     load_workflow, set_output_prefix,
 )
 
@@ -38,6 +38,8 @@ class RunRequest:
     seed: int | None = None                       # None = random
     length_field: ValueField | None = None
     length_value: float | None = None
+    steps: int | None = None                      # None = leave the workflow as is
+    megapixels: float | None = None
     video_input_mode: str = "auto"                # auto | last_frame | upload_video
     extend_stitch: bool = False
 
@@ -120,6 +122,14 @@ class RunWorker(QThread):
             if req.length_field is not None and req.length_value is not None:
                 apply_value(workflow, req.length_field, req.length_value)
                 self._log(f"{req.length_field.label}: {req.length_value:g}")
+            if req.steps is not None and info.steps_fields:
+                n_steps = apply_steps(workflow, info.steps_fields, req.steps)
+                self._log(f"Steps: {req.steps} ({n_steps} sampler node{'s' if n_steps != 1 else ''})")
+            if req.megapixels is not None and info.mp_fields:
+                n_mp = apply_megapixels(workflow, info.mp_fields, req.megapixels)
+                self._log(f"Megapixels: {req.megapixels:g} ({n_mp} node{'s' if n_mp != 1 else ''})")
+            # Re-read the patched graph so the progress plan matches what runs
+            info = analyze(workflow)
 
             # Feed the source into the graph
             if req.source_kind == "image":
