@@ -96,6 +96,29 @@ File Rename Mover/
 
 Before moving, the destination is scanned for `Base Name_NNNNNN.ext` files and numbering resumes after the highest one found. With **Folder named after Base Name** on, only `dest\[Base Name]` is scanned, so a large shared destination such as a NAS root is not walked in full and other folders with the same base name do not affect numbering.
 
+## Recent Changes
+
+Full history in [CHANGELOG.md](CHANGELOG.md).
+
+### 3.5.1 — 2026-09-05
+- Two-column form: Extension | Base Name, and Rename Pattern | Folder Organization, in the same label-over-field style as Sort by | Order
+- Status box stretches to fill the remaining window height; the form fits 1000×870 in every pattern mode
+- Shorter "Folder named after Base Name" checkbox text; example and hint labels word-wrap
+
+### 3.5.0 — 2026-09-05
+- Extension box is an editable dropdown filled from the source folder (most common first, counts on hover); rescans on any source path change, debounced 350 ms
+- Empty Extension box auto-selects the most common extension; a typed value is kept and snapped to the matching entry
+
+### 3.4.0 — 2026-09-05
+- "Folder named after Base Name" option: `dest\[Base Name]\year\month\day`; saved in config and templates, editable in Edit Template
+- Counter scan limited to `dest\[Base Name]` when the option is on
+- Preview button: dry run listing `original → new relative path`
+- Folder example line follows the Base Name text live
+- Build spec excludes the shared venv's ML packages
+
+### 3.3.0 — 2026-06-21
+- Threaded progress bar with Cancel; drag-and-drop folders from Explorer
+
 ## Icon
 
 `app_icon.ico` is embedded in the EXE. If Explorer does not show it on some systems, see `README_ICON_ISSUE.txt` for workarounds; the running window and taskbar always show it.
