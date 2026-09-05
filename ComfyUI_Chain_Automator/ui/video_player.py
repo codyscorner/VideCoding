@@ -21,8 +21,12 @@ def _ms_to_str(ms: int) -> str:
 
 
 class VideoPlayerDialog(QDialog):
-    def __init__(self, video_path: str, parent=None, playlist: list[str] = None):
+    def __init__(self, video_path: str, parent=None, playlist: list[str] = None,
+                 auto_close: bool = False):
         super().__init__(parent)
+        # auto_close: shut the window when the last video finishes (Library
+        # playback) instead of sitting on the final frame until dismissed.
+        self._auto_close = auto_close
         self._playlist = playlist if playlist else [video_path]
         self._playlist_index = 0 if not playlist else playlist.index(video_path) if video_path in playlist else 0
 
@@ -216,10 +220,13 @@ class VideoPlayerDialog(QDialog):
         self._time_label.setText(f"0:00 / {_ms_to_str(ms)}")
 
     def _on_media_status(self, status: QMediaPlayer.MediaStatus):
-        if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            if self._playlist_index < len(self._playlist) - 1:
-                self._playlist_index += 1
-                QTimer.singleShot(0, self._load_current)
+        if status != QMediaPlayer.MediaStatus.EndOfMedia:
+            return
+        if self._playlist_index < len(self._playlist) - 1:
+            self._playlist_index += 1
+            QTimer.singleShot(0, self._load_current)
+        elif self._auto_close:
+            QTimer.singleShot(0, self.close)
 
     def _on_error(self, error, error_string: str):
         self._time_label.setText(f"Error: {error_string}")
