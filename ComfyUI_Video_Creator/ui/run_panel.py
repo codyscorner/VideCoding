@@ -36,6 +36,9 @@ VIDEO_INPUT_MODES = [
 ]
 
 MAX_LOG_LINES = 600
+# Progress-bar sub-units per plan unit (one sampler step or one
+# post-sampling node), so a node's own progress fills its slice.
+PROGRESS_SUBUNITS = 100
 
 # LoRA names are shared by both tabs; scanning the folder once is enough.
 _LORA_LIST: dict[str, list[str]] = {}
@@ -79,6 +82,7 @@ class RunPanel(QWidget):
         self._sampler_total = 0
         self._phases_total = 0
         self._phases_seen = 0
+        self._phase_label = ""
         self._offset = 0
         self._last_value = 0
         self._last_max = 0
@@ -888,6 +892,7 @@ class RunPanel(QWidget):
             self._progress_lbl.setText("Starting…")
             self._run_started = time.time()
             self._sampler_total = self._phases_total = self._phases_seen = 0
+            self._phase_label = ""
             self._offset = self._last_value = self._last_max = 0
             self._elapsed_timer.start()
         elif not running:
@@ -907,29 +912,55 @@ class RunPanel(QWidget):
         self._sampler_total = max(0, total_steps)
         self._phases_total = max(0, phases)
         self._phases_seen = 0
+        self._phase_label = ""
         self._offset = self._last_value = self._last_max = 0
         total = self._sampler_total + self._phases_total
         if total > 0:
-            self._progress.setRange(0, total)
+            # Sub-units per step so a post-sampling node's own progress can
+            # fill its slice smoothly instead of jumping a whole unit.
+            self._progress.setRange(0, total * PROGRESS_SUBUNITS)
             self._progress.setValue(0)
             self._progress.setFormat("%p%")
         else:
             self._progress.setRange(0, 0)
 
+    def _advance(self, units: float):
+        """Move the bar forward only. Post-sampling nodes emit step counts of
+        their own (frames, tiles) and those must never rewind the bar."""
+        if self._progress.maximum() > 0:
+            # Stop one sub-unit short: 100% belongs to on_done, after the
+            # finished file has been pulled off the server.
+            value = min(int(units * PROGRESS_SUBUNITS), self._progress.maximum() - 1)
+            self._progress.setValue(max(self._progress.value(), value))
+
+    def _in_post_phase(self) -> bool:
+        """True once a post-sampling node is running and the sampler has no
+        steps left — anything ComfyUI reports now belongs to that node."""
+        return bool(self._phases_seen) and (
+            not self._sampler_total or self._offset + self._last_value >= self._sampler_total)
+
     def on_step(self, value: int, vmax: int):
+        if self._in_post_phase():
+            # VAE decode / video save report their own value/max; show them
+            # inside the current phase rather than restarting the step count.
+            base = self._sampler_total + self._phases_seen - 1
+            frac = min(value / vmax, 1.0) if vmax > 0 else 0.0
+            self._advance(base + frac)
+            self._progress_lbl.setText(
+                f"{self._phase_label} {value}/{vmax} · {self._elapsed()}".lstrip())
+            return
         if value < self._last_value:
             self._offset += self._last_max
         self._last_value, self._last_max = value, vmax
         cum = min(self._offset + value, self._sampler_total) if self._sampler_total else self._offset + value
-        if self._progress.maximum() > 0:
-            self._progress.setValue(cum)
+        self._advance(cum)
         shown_total = self._sampler_total or vmax
         self._progress_lbl.setText(f"Step {cum}/{shown_total} · {self._elapsed()}")
 
     def on_phase(self, label: str):
         self._phases_seen += 1
-        if self._progress.maximum() > 0:
-            self._progress.setValue(min(self._sampler_total + self._phases_seen - 1, self._progress.maximum()))
+        self._phase_label = label
+        self._advance(self._sampler_total + self._phases_seen - 1)
         self._progress_lbl.setText(f"{label} · {self._elapsed()}")
 
     def on_done(self, paths: list[str]):

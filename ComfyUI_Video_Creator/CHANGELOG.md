@@ -1,5 +1,8 @@
 # Changelog — ComfyUI Video Creator
 
+### v1.3.6
+- Progress bar no longer runs backwards near the end of a job. ComfyUI's post-sampling nodes (VAE decode, video save) emit step counts of their own; those were being folded back into the sampler count, so the bar dropped from e.g. 77% to 66% and the label flipped back to "Step 6/6". They now fill their own slice of the bar — the label reads "Saving video... 40/81" — and the bar only ever moves forward, reaching 100% when the finished file has been downloaded
+
 ### v1.3.5
 - History dialog filters: **Workflow** (current workflow by default, "All workflows", or any other workflow that has history — with entry counts; entries from other workflows show their workflow name) and **Date** (All dates, or Year / Month / Day with a second dropdown listing only the periods that have entries, with counts). Text search applies on top of both. Delete removes the entry from whichever workflow file it belongs to
 
