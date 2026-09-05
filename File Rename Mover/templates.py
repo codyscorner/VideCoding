@@ -21,6 +21,7 @@ class TemplateManager:
         "datetime_format",
         "include_counter",
         "folder_structure",
+        "base_name_folder",
         "custom_pattern"
     ]
 

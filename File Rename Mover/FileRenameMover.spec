@@ -20,6 +20,9 @@ a = Analysis(
         'matplotlib',
         'numpy',
         'PIL',
+        # shared repo .venv carries ML stacks — keep them out of the EXE
+        'torch', 'torchvision', 'torchaudio', 'tensorflow', 'keras',
+        'cv2', 'scipy', 'pandas', 'sklearn', 'transformers', 'PyQt6', 'PyQt5',
         'PySide6.QtNetwork',
         'PySide6.QtQml',
         'PySide6.QtQuick',

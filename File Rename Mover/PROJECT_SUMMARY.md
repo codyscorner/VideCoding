@@ -2,9 +2,9 @@
 
 A powerful, object-oriented tool for batch renaming and moving files with sequential numbering.
 
-## Version 3.3.0
+## Version 3.5.1
 
-Enhanced version with advanced rename patterns, sorting options, folder organization features, template management, threaded progress bar with cancel support, and drag-and-drop folder selection.
+Enhanced version with advanced rename patterns, sorting options, folder organization features (including a per-Base-Name folder), dry-run preview, template management, threaded progress bar with cancel support, and drag-and-drop folder selection.
 
 ## Features
 
@@ -31,6 +31,12 @@ Enhanced version with advanced rename patterns, sorting options, folder organiza
   - Flat structure (all files in one folder)
   - Organize by year, year/month, year/month/day
   - Organize by date or month
+  - Optional folder named after the Base Name in front of the date structure
+    (`dest\[Base Name]\year\month\day`) — v3.4+
+
+- **Preview (dry run)** (v3.4+): lists every planned move in the status box without touching files
+
+- **Extension dropdown from source folder** (v3.5+): the Extension box lists the extensions actually present in the source folder (most common first, counts on hover); still editable
 
 - **Standalone Executable**: No Python installation required
 
@@ -187,6 +193,7 @@ Configuration is stored in `config.json` and includes:
 - DateTime format preference
 - Sorting preferences (sort by, order)
 - Folder organization structure
+- Base Name folder on/off (`base_name_folder`, v3.4+)
 - Custom pattern template
 - Include counter preference
 - Last selected template (v3.2+)
@@ -298,6 +305,22 @@ MIT License - See [LICENSE](LICENSE) file for details.
 Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
+
+### v3.5.1 (September 5, 2026)
+- Two-column form: Extension | Base Name, and Rename Pattern | Folder Organization
+- Status box fills the remaining window height (no more cut-off at 1000×870)
+
+### v3.5.0 (September 5, 2026)
+- Extension box is an editable dropdown auto-filled from the source folder (debounced scan on any path change)
+- Most common extension auto-selected when the box is empty; label shows the number of types found
+
+### v3.4.0 (September 5, 2026)
+- "Create a folder named after the Base Name" checkbox: `dest\[Base Name]\year\month\day`
+- Option persisted in config and templates, editable in Edit Template, shown in Manage Templates
+- Counter continuation scans only the Base Name folder when the option is on
+- Preview button (dry run) listing `original → new relative path`
+- Folder example line follows the Base Name text live
+- Build spec excludes shared-venv ML packages
 
 ### v3.3.0 (June 21, 2026)
 - Progress bar wired to a QThread worker — UI stays responsive during operations

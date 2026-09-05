@@ -5,6 +5,69 @@ All notable changes to File Rename Mover will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.1] - 2026-09-05
+
+### Changed
+- **Two-column form.** Extension and Base Name now sit side by side (example
+  line spans both). Rename Pattern (left) and Folder Organization (right) share
+  one row. The form is ~180 px shorter, so the Status box is no longer cut off
+  at the default 1000×870 window.
+- Status box now stretches to fill whatever height is left instead of a fixed
+  150 px block with empty space under it.
+- Shorter checkbox text ("Folder named after Base Name") and word-wrapped
+  example/hint labels so nothing clips in a half-width column.
+
+## [3.5.0] - 2026-09-05
+
+### Added
+- **Extension dropdown filled from the source folder.** The Extension box is now
+  an editable dropdown. Whenever the Source Folder changes (browse, drag-and-drop,
+  typing, template load, startup) the folder is scanned and the dropdown lists
+  every extension found there, most common first, with a file count as tooltip.
+  An empty Extension box auto-selects the most common one; a value you already
+  typed is kept (and snapped to the matching entry, so `png` becomes `.png`). The label shows how many types were found and the status box
+  logs a summary (`.mp4 ×12, .png ×3, …`).
+- `FileScanner.get_extension_counts()` — non-recursive extension census.
+
+### Changed
+- Scan is debounced (350 ms) so typing a path by hand doesn't rescan per keystroke.
+
+## [3.4.0] - 2026-09-05
+
+### Added
+- **Base Name folder option** — new checkbox under Folder Organization:
+  "Create a folder named after the Base Name". When on, files land in
+  `dest\[Base Name]\...` with any date organization created inside that folder,
+  e.g. `dest\Sahara\2026\09\05\Sahara_000001.mp4`. Works with every structure
+  including `flat` (which gives plain `dest\[Base Name]\`).
+  - Saved in config (`base_name_folder`) and in templates; editable in the
+    Edit Template dialog; shown in Manage Templates details.
+  - Counter continuation scans only `dest\[Base Name]` when the option is on, so a
+    large shared destination (NAS root) is not walked in full and files with the
+    same base name elsewhere in the destination don't affect the numbering.
+- **Preview button** — dry run that lists every planned move
+  (`original → [Base Name]\yyyy\mm\dd\new_name`) in the status box without
+  touching any files. Uses the same validation as Move and Rename.
+- Folder Organization example line now updates live as you type the Base Name
+  and toggle the checkbox.
+
+### Changed
+- `FolderOrganizer.get_destination_subfolder()` / `get_folder_structure_example()`
+  take an optional `base_name_folder` argument.
+- `FileRenamer.generate_preview()` now returns the relative destination path
+  (subfolders included), not just the new filename.
+- Input validation and option collection factored into
+  `MainWindowQt._collect_operation()` shared by Preview and Move and Rename.
+- Build spec excludes the shared venv's ML packages (torch, tensorflow, cv2, …)
+  and PyQt5/PyQt6 so the EXE stays lean.
+
+## [3.3.0] - 2026-06-21
+
+### Added
+- Progress bar wired to a QThread worker; UI stays responsive during operations
+- Cancel button aborts after the current file completes
+- Source/Destination fields accept folders dragged from Windows Explorer
+
 ## [2.1.4] - 2025-12-08
 
 ### Fixed

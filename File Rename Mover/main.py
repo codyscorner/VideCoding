@@ -14,7 +14,7 @@ from templates import TemplateManager
 from ui.main_window_qt import MainWindowQt
 
 # Version number
-VERSION = "3.3.0"
+VERSION = "3.5.1"
 
 
 def get_script_directory() -> Path:
