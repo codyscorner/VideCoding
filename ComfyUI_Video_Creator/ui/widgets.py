@@ -278,11 +278,13 @@ class MediaBrowser(QWidget):
     folder_changed = pyqtSignal(str)
     sort_changed = pyqtSignal(str)
 
-    def __init__(self, kind: str, folder: str, sort_option: str, ffmpeg_getter, parent=None):
+    def __init__(self, kind: str, folder: str, sort_option: str, ffmpeg_getter, parent=None,
+                 multi: bool = False, last_frame: bool = True, title: str | None = None, hint: str = ""):
         super().__init__(parent)
         self.kind = kind                      # "image" | "video"
         self._folder = folder
         self._ffmpeg_getter = ffmpeg_getter
+        self._last_frame = last_frame
         self._loader: QThread | None = None
 
         layout = QVBoxLayout(self)
@@ -292,7 +294,7 @@ class MediaBrowser(QWidget):
         row = QHBoxLayout()
         row.setSpacing(6)
         noun = "Image" if kind == "image" else "Video"
-        lbl = QLabel(f"{noun} Folder:")
+        lbl = QLabel(f"{title or noun} Folder:")
         lbl.setStyleSheet(f"color: {COLORS['accent_hover']}; font-weight: bold;")
         row.addWidget(lbl)
         self._path_edit = QLineEdit(folder)
@@ -327,11 +329,11 @@ class MediaBrowser(QWidget):
             self._sort_combo.setCurrentText(sort_option)
         self._sort_combo.currentTextChanged.connect(self._on_sort)
         row2.addWidget(self._sort_combo)
-        if kind == "video":
-            hint = QLabel("Thumbnails show each video's LAST frame — the extension's starting point")
-            hint.setObjectName("status_dim")
+        if hint:
+            hint_lbl = QLabel(hint)
+            hint_lbl.setObjectName("status_dim")
             row2.addSpacing(12)
-            row2.addWidget(hint)
+            row2.addWidget(hint_lbl)
         row2.addStretch()
         self._status = QLabel("")
         self._status.setObjectName("status_dim")
@@ -339,6 +341,8 @@ class MediaBrowser(QWidget):
         layout.addLayout(row2)
 
         self.grid = ThumbnailGrid()
+        if multi:
+            self.grid.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.grid.itemSelectionChanged.connect(self._on_selection)
         self.grid.itemDoubleClicked.connect(lambda it: self.activated.emit(Path(it.data(Qt.ItemDataRole.UserRole))))
         layout.addWidget(self.grid, stretch=1)
@@ -357,6 +361,9 @@ class MediaBrowser(QWidget):
     def selected_path(self) -> Path | None:
         key = self.grid.selected_key()
         return Path(key) if key else None
+
+    def selected_paths(self) -> list[Path]:
+        return [Path(it.data(Qt.ItemDataRole.UserRole)) for it in self.grid.selectedItems()]
 
     def _browse(self):
         start = self._folder if self._folder and Path(self._folder).is_dir() else str(Path.home())
@@ -397,7 +404,7 @@ class MediaBrowser(QWidget):
         if self.kind == "image":
             self._loader = ImageLoaderThread(folder, sort_option)
         else:
-            self._loader = VideoLoaderThread(folder, self._ffmpeg_getter(), sort_option)
+            self._loader = VideoLoaderThread(folder, self._ffmpeg_getter(), sort_option, last_frame=self._last_frame)
         self._loader.item_ready.connect(self.grid.add_item)
         self._loader.progress.connect(lambda c, t: self._status.setText(f"Loading {c}/{t}…"))
         self._loader.finished_loading.connect(lambda n: self._on_loaded(n, previous))

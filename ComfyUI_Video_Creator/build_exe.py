@@ -71,15 +71,24 @@ def main():
     print(f"Built {exe_src} ({exe_src.stat().st_size // (1024 * 1024)} MB)")
 
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    # robocopy retries while the old EXE is still open; exit code < 8 = success
-    r = subprocess.run(
-        ["robocopy", str(exe_src.parent), str(OUTPUT), exe_src.name, "/R:10", "/W:5"],
-        capture_output=True, text=True,
-    )
-    if r.returncode >= 8:
-        print(r.stdout)
-        print(r.stderr)
-        sys.exit(1)
+    target = OUTPUT / exe_src.name
+    stale = OUTPUT / f"{APP_NAME}.old.exe"
+    if stale.exists():
+        try:
+            stale.unlink()   # fails harmlessly if that old instance is still running
+        except OSError:
+            pass
+    # A running EXE can't be overwritten, but Windows lets it be renamed —
+    # so the deploy never has to wait for the user to close the app; the
+    # next launch simply picks up the new file.
+    if target.exists():
+        try:
+            with open(target, "ab"):
+                pass
+        except OSError:
+            print("Deployed EXE is running — renaming it aside so the new build can land")
+            target.replace(stale)
+    shutil.copy2(exe_src, target)
 
     shutil.copy2(ROOT / "app_icon.ico", OUTPUT / "app_icon.ico")
     # Never overwrite the live config next to the deployed EXE.

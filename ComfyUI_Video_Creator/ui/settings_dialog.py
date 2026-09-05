@@ -82,6 +82,8 @@ class SettingsDialog(QDialog):
                                             "Where finished videos are downloaded to…")
         self._loras_dir = self._folder_row(fl, "LoRAs:", config.get("loras_dir", ""),
                                            "ComfyUI models/loras folder — fills the LoRA dropdowns…")
+        self._library_dir = self._folder_row(fl, "Library:", config.get("library_dir", ""),
+                                             "Folder shown on the Library tab (blank = the Output folder)…")
         left.addWidget(folders_group)
 
         # ── Staging ──────────────────────────────────────────────────────
@@ -219,6 +221,7 @@ class SettingsDialog(QDialog):
         c.set("workflow_dir", self._workflow_dir.text().strip())
         c.set("output_dir", self._output_dir.text().strip())
         c.set("loras_dir", self._loras_dir.text().strip())
+        c.set("library_dir", self._library_dir.text().strip())
         c.set("staging_dir_local", self._staging_dir.text().strip())
         c.set("runpod_input_dir", self._runpod_input.text().strip())
         c.set("ffmpeg_path", self._ffmpeg.text().strip())

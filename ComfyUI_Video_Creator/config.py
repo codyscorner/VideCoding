@@ -30,6 +30,8 @@ class ConfigManager:
         "video_dir": "",
         "workflow_dir": "P:/AI/ComfyLocal/ComfyUI_windows_portable/Workflow_API",
         "output_dir": "",
+        "library_dir": "",                     # blank = output_dir
+        "library_sort": "Newest First",
         "loras_dir": "P:/AI/ComfyLocal/ComfyUI_windows_portable/ComfyUI/models/loras",
         # Staging for workflows that read a whole folder (LoadImageListFromDir)
         "staging_dir_local": "",

@@ -1,6 +1,6 @@
 # ComfyUI Video Creator
 
-Version: 1.1.0
+Version: 1.2.0
 
 Single-shot ComfyUI API workflow runner with a dark red theme. Pick an image (or a video to extend), pick a workflow JSON, press Run, and the finished video lands in a local folder — from a local ComfyUI or a RunPod pod.
 
@@ -20,6 +20,7 @@ This is a **separate app from the ComfyUI Workflow Chain Automator**. It shares 
 - **Prompt history with settings** — every run appends prompts + seed + length + LoRAs/strengths + mode + source to the workflow's `<name>.prompt_history.json` (shared with the Chain Automator) and attaches the result file name when done. 📜 History searches entries and reloads the prompt alone or prompt + settings
 - **Seed** random-per-run or fixed; **Length / Duration** control when the workflow exposes one
 - Extend-tab thumbnails show each video's **last frame**, the extension's starting point
+- **Library tab** — finished videos (Output folder by default): sort, multi-select, Play (playlist), Delete, Open Folder, **Send to Extend**, and a *Produced by* pane with the prompt/LoRAs/seed/length behind the selected video (from the prompt history)
 - **Local or RunPod** server with separate URLs, "Test connection", and automatic download of the result to the Output folder
 - Live step progress over the ComfyUI websocket (polling fallback), Cancel that interrupts the server, built-in video player, run log
 
@@ -43,6 +44,7 @@ pip install PyQt6 requests websocket-client pillow pyinstaller
 2. Image → Video: click an image, pick a workflow, adjust the prompt/seed/length, **Create Video**.
 3. Video → Extend: click a video, pick a workflow, choose the input mode (Auto is fine), tick *Append the new clip*, **Extend Video**.
 4. Results appear in the Results list — double-click to play, or Open Folder.
+5. Library: review everything in the Output folder, play a selection back-to-back, delete misses, or send a clip back to Extend.
 
 ## Configuration
 
@@ -56,6 +58,7 @@ pip install PyQt6 requests websocket-client pillow pyinstaller
 | `workflow_dir` | Folder scanned (recursively) for workflow `.json` files |
 | `output_dir` | Where finished videos are downloaded |
 | `loras_dir` | ComfyUI `models/loras` folder that fills the LoRA dropdowns |
+| `library_dir` | Folder shown on the Library tab (blank = the Output folder) |
 | `staging_dir_local` | Local folder for staging an image for folder-loader workflows (blank = app `temp`) |
 | `runpod_input_dir` | Absolute path of ComfyUI's `input` folder on the pod (folder-loader workflows) |
 | `ffmpeg_path` | Optional explicit ffmpeg path |

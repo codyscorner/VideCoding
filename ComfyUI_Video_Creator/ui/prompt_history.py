@@ -119,6 +119,76 @@ def describe_settings(settings: dict | None) -> str:
     return "  |  ".join(bits)
 
 
+def format_entry(e: dict) -> str:
+    """Multi-line human-readable dump of one history entry."""
+    lines = [f"Saved: {e.get('timestamp', '?')}"]
+    if e.get("source"):
+        lines.append(f"Source: {e['source']}")
+    if e.get("app"):
+        lines.append(f"App: {e['app']}")
+    lines.append("")
+    prompts = e.get("prompts") or {}
+    if prompts:
+        for p in prompts.values():
+            lines += [f"── {p.get('label', 'Prompt')} ──", p.get("text", ""), ""]
+    else:
+        lines += ["── Positive ──", e.get("positive", ""), ""]
+        if e.get("negative"):
+            lines += ["── Negative ──", e.get("negative", ""), ""]
+    s = e.get("settings") or {}
+    if s:
+        lines.append("── Settings ──")
+        lines.append(f"Workflow: {s.get('workflow', '?')}   Mode: {s.get('mode', '?')}")
+        seed = s.get("seed")
+        lines.append(f"Seed: {seed if seed is not None else 'random'}")
+        if s.get("length"):
+            val = s["length"].get("value")
+            lines.append(f"{s['length'].get('label', 'Length')}: {val:g}" if isinstance(val, (int, float))
+                         else f"{s['length'].get('label', 'Length')}: {val}")
+        for l in s.get("loras", []):
+            strengths = ", ".join(f"{k}={v:g}" for k, v in (l.get("strengths") or {}).items())
+            lines.append(f"LoRA {l.get('label', '')}: {l.get('name', 'None')}  {strengths}")
+        if s.get("video_input_mode"):
+            lines.append(f"Video input: {s['video_input_mode']}   Append to source: {s.get('extend_stitch')}")
+        lines.append("")
+    if e.get("results"):
+        lines.append("── Results ──")
+        lines += e["results"]
+    return "\n".join(lines)
+
+
+_LOOKUP_CACHE: dict[str, tuple[float, list[dict]]] = {}
+
+
+def find_entry_for_result(workflow_dir: Path, filename: str) -> tuple[Path, dict] | None:
+    """Scan every history file under the workflow folder for the entry whose
+    results list names this file. Returns (workflow json path, entry)."""
+    if not workflow_dir or not workflow_dir.is_dir():
+        return None
+    for hist in workflow_dir.rglob(f"*{HISTORY_SUFFIX}"):
+        try:
+            mtime = hist.stat().st_mtime
+        except OSError:
+            continue
+        key = str(hist)
+        cached = _LOOKUP_CACHE.get(key)
+        if cached is None or cached[0] != mtime:
+            try:
+                with open(hist, encoding="utf-8") as f:
+                    data = json.load(f)
+            except (OSError, ValueError):
+                data = []
+            entries = data if isinstance(data, list) else []
+            _LOOKUP_CACHE[key] = (mtime, entries)
+        else:
+            entries = cached[1]
+        for entry in reversed(entries):
+            if filename in (entry.get("results") or []):
+                wf_path = hist.with_name(hist.name[: -len(HISTORY_SUFFIX)] + ".json")
+                return wf_path, entry
+    return None
+
+
 # --------------------------------------------------------------------- #
 # Dialogs
 # --------------------------------------------------------------------- #
@@ -269,40 +339,7 @@ class PromptHistoryDialog(QDialog):
             return
         e = self._filtered[row]
         self._selected = e
-        lines = [f"Saved: {e.get('timestamp', '?')}"]
-        if e.get("source"):
-            lines.append(f"Source: {e['source']}")
-        if e.get("app"):
-            lines.append(f"App: {e['app']}")
-        lines.append("")
-        prompts = e.get("prompts") or {}
-        if prompts:
-            for p in prompts.values():
-                lines += [f"── {p.get('label', 'Prompt')} ──", p.get("text", ""), ""]
-        else:
-            lines += ["── Positive ──", e.get("positive", ""), ""]
-            if e.get("negative"):
-                lines += ["── Negative ──", e.get("negative", ""), ""]
-        s = e.get("settings") or {}
-        if s:
-            lines.append("── Settings ──")
-            lines.append(f"Workflow: {s.get('workflow', '?')}   Mode: {s.get('mode', '?')}")
-            seed = s.get("seed")
-            lines.append(f"Seed: {seed if seed is not None else 'random'}")
-            if s.get("length"):
-                val = s["length"].get("value")
-                lines.append(f"{s['length'].get('label', 'Length')}: {val:g}" if isinstance(val, (int, float))
-                             else f"{s['length'].get('label', 'Length')}: {val}")
-            for l in s.get("loras", []):
-                strengths = ", ".join(f"{k}={v:g}" for k, v in (l.get("strengths") or {}).items())
-                lines.append(f"LoRA {l.get('label', '')}: {l.get('name', 'None')}  {strengths}")
-            if s.get("video_input_mode"):
-                lines.append(f"Video input: {s['video_input_mode']}   Append to source: {s.get('extend_stitch')}")
-            lines.append("")
-        if e.get("results"):
-            lines.append("── Results ──")
-            lines += e["results"]
-        self._preview.setPlainText("\n".join(lines))
+        self._preview.setPlainText(format_entry(e))
 
     def _emit(self, signal):
         if self._selected is not None:

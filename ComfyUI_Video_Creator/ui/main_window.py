@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 from config import ConfigManager
 from media_tools import resolve_ffmpeg
 from run_worker import RunRequest, RunWorker
+from ui.library_tab import LibraryTab
 from ui.run_panel import RunPanel
 from ui.settings_dialog import SettingsDialog
 from ui.styles import COLORS, STYLESHEET
@@ -70,9 +71,15 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._make_tab(self._image_browser, self._image_panel), "🖼  Image → Video")
 
         self._video_browser = MediaBrowser("video", self.config.get("video_dir", ""),
-                                           self.config.get("video_sort", "Newest First"), self._ffmpeg)
+                                           self.config.get("video_sort", "Newest First"), self._ffmpeg,
+                                           hint="Thumbnails show each video's LAST frame — the extension's starting point")
         self._video_panel = RunPanel("video", self.config)
         self._tabs.addTab(self._make_tab(self._video_browser, self._video_panel), "🎬  Video → Extend")
+
+        self._library = LibraryTab(self.config, self._ffmpeg)
+        self._library.play_requested.connect(self._play_list)
+        self._library.send_to_extend.connect(self._send_to_extend)
+        self._tabs.addTab(self._library, "📚  Library")
         root.addWidget(self._tabs, stretch=1)
 
         self.setCentralWidget(central)
@@ -84,6 +91,7 @@ class MainWindow(QMainWindow):
         # panels see the restored selection state.
         self._image_browser.refresh()
         self._video_browser.refresh()
+        self._library.refresh()
 
     def _make_tab(self, browser: MediaBrowser, panel: RunPanel) -> QWidget:
         page = QWidget()
@@ -117,7 +125,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _open_settings(self):
-        before = {k: self.config.get(k) for k in ("image_dir", "video_dir", "workflow_dir", "ffmpeg_path", "loras_dir")}
+        before = {k: self.config.get(k) for k in ("image_dir", "video_dir", "workflow_dir", "ffmpeg_path", "loras_dir", "output_dir", "library_dir")}
         dlg = SettingsDialog(self.config, self)
         if dlg.exec() != SettingsDialog.DialogCode.Accepted:
             return
@@ -129,6 +137,9 @@ class MainWindow(QMainWindow):
         if self.config.get("workflow_dir") != before["workflow_dir"]:
             self._image_panel.reload_workflows()
             self._video_panel.reload_workflows()
+        if (self.config.get("output_dir") != before["output_dir"]
+                or self.config.get("library_dir") != before["library_dir"]):
+            self._library.set_folder(self._library.effective_folder())
         for panel in (self._image_panel, self._video_panel):
             panel._font_spin.setValue(int(self.config.get("prompt_font_size", 10) or 10))
             if self.config.get("loras_dir") != before["loras_dir"]:
@@ -174,6 +185,7 @@ class MainWindow(QMainWindow):
     def _on_done(self, paths: list):
         if self._active_panel is not None:
             self._active_panel.on_done(list(paths))
+        self._library.refresh()
         # New files may have landed in the folder the Video tab is showing
         out_dir = Path((self.config.get("output_dir", "") or "").strip() or ".")
         vid_dir = Path(self._video_browser.folder) if self._video_browser.folder else None
@@ -204,6 +216,42 @@ class MainWindow(QMainWindow):
         self._player = VideoPlayerDialog(path, self)
         self._player.show()
 
+    def _play_list(self, paths: list):
+        paths = [p for p in paths if p and Path(p).exists()]
+        if not paths:
+            return
+        if self._player is not None:
+            self._player.close()
+        self._player = VideoPlayerDialog(paths[0], self, playlist=paths)
+        self._player.show()
+
+    def _send_to_extend(self, path: Path):
+        """Library → Extend: select the video in the Extend tab (switching the
+        Extend folder to the library folder if it lives elsewhere)."""
+        path = Path(path)
+        self._tabs.setCurrentIndex(1)
+        folder = str(path.parent)
+        if self._video_browser.folder and Path(self._video_browser.folder).resolve() == path.parent.resolve():
+            if not self._video_browser.grid.select_key(str(path)):
+                self._video_panel.set_source(path)
+        else:
+            self.config.set("video_dir", folder)
+            self.config.save()
+            self._video_browser.set_folder(folder)
+            self._video_panel.set_source(path)
+            self._pending_select = str(path)
+            self._video_browser.grid.model().rowsInserted.connect(self._try_pending_select)
+        self._video_panel.append_log(f"Source from Library: {path.name}")
+
+    def _try_pending_select(self, *_):
+        key = getattr(self, "_pending_select", None)
+        if key and self._video_browser.grid.select_key(key):
+            self._pending_select = None
+            try:
+                self._video_browser.grid.model().rowsInserted.disconnect(self._try_pending_select)
+            except TypeError:
+                pass
+
     # ------------------------------------------------------------------ #
 
     def closeEvent(self, event):
@@ -220,5 +268,6 @@ class MainWindow(QMainWindow):
             self._worker.wait(5000)
         self._image_browser.shutdown()
         self._video_browser.shutdown()
+        self._library.shutdown()
         self.config.save()
         event.accept()
