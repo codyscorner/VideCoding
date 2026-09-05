@@ -2,12 +2,21 @@
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_dynamic_libs
 
-datas = []
+datas = [
+    ('app_icon.ico', '.'),
+    ('ui/dark_theme.qss', 'ui'),
+]
 binaries = []
 datas += collect_data_files('PySide6')
 binaries += collect_dynamic_libs('PySide6')
-datas += [('../app_icon.ico', '.')]
 
+
+EXCLUDES = [
+    "torch", "torchvision", "torchaudio", "tensorflow", "transformers", "cv2",
+    "scipy", "pandas", "matplotlib", "PIL", "numpy", "onnx", "onnxruntime",
+    "triton", "IPython", "jupyter", "sklearn", "numba", "jax", "safetensors",
+    "tokenizers", "einops", "av", "soundfile", "pygame",
+]
 
 a = Analysis(
     ['app.py'],
@@ -18,7 +27,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=EXCLUDES,
     noarchive=False,
     optimize=0,
 )
@@ -43,5 +52,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='../app_icon.ico',
+    icon=['assets\\icons\\app.ico'],
 )
