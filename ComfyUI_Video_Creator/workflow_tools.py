@@ -9,6 +9,7 @@ the video, and how many sampler steps to expect for the progress bar.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,6 +35,9 @@ STATUS_NODE_LABELS = {
 
 HISTORY_SUFFIX = ".prompt_history.json"
 
+LORA_EXTS = {".safetensors", ".pt", ".pt2", ".bin", ".pth", ".ckpt", ".pkl", ".sft"}
+_LORA_KEY_RE = re.compile(r"^lora(_name|_\d+)$")
+
 
 class WorkflowError(Exception):
     pass
@@ -58,11 +62,29 @@ class ValueField:
 
 
 @dataclass
+class LoraSlot:
+    """One selectable LoRA in the workflow: a name input plus its strength
+    input(s). `LoraLoaderModelOnly` has lora_name/strength_model, rgthree's
+    stack has lora_01..lora_NN with strength_NN, MiniMax H3 Turbo has
+    lora_name/strength."""
+    node_id: str
+    name_key: str
+    label: str
+    name: str
+    strengths: dict[str, float] = field(default_factory=dict)   # strength key -> value
+    allow_none: bool = False
+
+    def strength_label(self, key: str) -> str:
+        return {"strength_model": "Model", "strength_clip": "CLIP"}.get(key, "")
+
+
+@dataclass
 class Analysis:
     image_nodes: list[tuple[str, str]] = field(default_factory=list)          # (id, title)
     list_loaders: list[tuple[str, str]] = field(default_factory=list)         # (id, title)
     video_nodes: list[tuple[str, str, str]] = field(default_factory=list)     # (id, title, input key)
     prompts: list[PromptField] = field(default_factory=list)
+    loras: list[LoraSlot] = field(default_factory=list)
     seed_fields: list[tuple[str, str]] = field(default_factory=list)          # (id, key)
     length_field: ValueField | None = None
     output_nodes: list[str] = field(default_factory=list)
@@ -199,6 +221,23 @@ def analyze(workflow: dict) -> Analysis:
             neg = "neg" in title.lower()
             (negatives if neg else positives).append(PromptField(nid, "value", title or "Text", neg, inp["value"]))
 
+        # LoRAs --------------------------------------------------------
+        if "lora" in ct.lower():
+            for key, val in inp.items():
+                if not (isinstance(val, str) and _LORA_KEY_RE.match(key)):
+                    continue
+                if key == "lora_name":
+                    cand = ["strength_model", "strength_clip", "strength"]
+                    slot_label = title or ct
+                else:
+                    cand = [key.replace("lora_", "strength_")]
+                    slot_label = f"{title or 'LoRA Stack'} #{key.split('_')[1]}"
+                strengths = {
+                    k: float(inp[k]) for k in cand
+                    if isinstance(inp.get(k), (int, float)) and not isinstance(inp.get(k), bool)
+                }
+                a.loras.append(LoraSlot(nid, key, slot_label, val, strengths, allow_none=(key != "lora_name")))
+
         # Seeds --------------------------------------------------------
         for key in ("noise_seed", "seed"):
             if _is_int(inp.get(key)):
@@ -234,11 +273,29 @@ def analyze(workflow: dict) -> Analysis:
 # Patching
 # --------------------------------------------------------------------- #
 
-def apply_prompts(workflow: dict, edits: dict[tuple[str, str], str]) -> None:
-    for (nid, key), text in edits.items():
+def apply_inputs(workflow: dict, edits: dict[tuple[str, str], object]) -> None:
+    """Set node inputs by (node id, input key). Used for prompt text and
+    LoRA name/strength edits alike."""
+    for (nid, key), value in edits.items():
         node = workflow.get(nid)
         if isinstance(node, dict):
-            node.setdefault("inputs", {})[key] = text
+            node.setdefault("inputs", {})[key] = value
+
+
+apply_prompts = apply_inputs
+
+
+def list_loras(loras_dir: Path, sep: str = "\\") -> list[str]:
+    """LoRA file names the way ComfyUI lists them: paths relative to the
+    models/loras folder. ComfyUI joins subfolders with the server OS
+    separator (backslash on Windows, slash on a RunPod Linux pod)."""
+    if not loras_dir or not loras_dir.is_dir():
+        return []
+    out = []
+    for p in loras_dir.rglob("*"):
+        if p.is_file() and p.suffix.lower() in LORA_EXTS and not p.name.startswith("."):
+            out.append(sep.join(p.relative_to(loras_dir).parts))
+    return sorted(out, key=str.lower)
 
 
 def apply_seed(workflow: dict, seed: int) -> int:

@@ -66,6 +66,23 @@ class ComfyClient:
             raise RuntimeError(f"ComfyUI rejected the workflow ({r.status_code}): {_format_prompt_error(body)}")
         return r.json()["prompt_id"]
 
+    def list_models(self, folder: str = "loras") -> list[str]:
+        """Names the server's Load LoRA nodes accept. Newer ComfyUI exposes
+        /models/<folder>; older builds only have /object_info."""
+        try:
+            r = requests.get(f"{self.url}/models/{folder}", timeout=20)
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, list):
+                    return [str(x) for x in data]
+        except (requests.RequestException, ValueError):
+            pass
+        r = requests.get(f"{self.url}/object_info/LoraLoaderModelOnly", timeout=20)
+        r.raise_for_status()
+        info = r.json().get("LoraLoaderModelOnly", {})
+        opts = (info.get("input", {}).get("required", {}).get("lora_name") or [[]])[0]
+        return [str(x) for x in opts] if isinstance(opts, list) else []
+
     def history(self, prompt_id: str) -> dict:
         r = requests.get(f"{self.url}/history/{prompt_id}", timeout=20)
         r.raise_for_status()

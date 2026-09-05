@@ -17,10 +17,10 @@ from PyQt6.QtCore import QSize, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
+    QListWidget, QListWidgetItem, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from media_tools import IMAGE_EXTS, VIDEO_EXTS, extract_thumbnail
+from media_tools import IMAGE_EXTS, VIDEO_EXTS, extract_last_frame, extract_thumbnail
 from ui.styles import COLORS
 
 THUMB_SIZE = 200
@@ -36,6 +36,38 @@ def sort_params(option: str):
     if option == "Oldest First":
         return (lambda p: p.stat().st_mtime), False
     return (lambda p: p.name.lower()), False
+
+
+# --------------------------------------------------------------------- #
+# Small helpers
+# --------------------------------------------------------------------- #
+
+class ElidedLabel(QLabel):
+    """Single-line label that elides its text to the available width and
+    shows the full text as a tooltip."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full = ""
+        self.setWordWrap(False)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setFullText(text)
+
+    def setFullText(self, text: str):
+        self._full = text or ""
+        self.setToolTip(self._full)
+        self._refresh()
+
+    def fullText(self) -> str:
+        return self._full
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh()
+
+    def _refresh(self):
+        width = max(self.width() - 4, 40)
+        super().setText(self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, width))
 
 
 # --------------------------------------------------------------------- #
@@ -176,11 +208,12 @@ class VideoLoaderThread(QThread):
     progress = pyqtSignal(int, int)
     finished_loading = pyqtSignal(int)
 
-    def __init__(self, folder: Path, ffmpeg: str, sort_option: str):
+    def __init__(self, folder: Path, ffmpeg: str, sort_option: str, last_frame: bool = True):
         super().__init__()
         self._folder = folder
         self._ffmpeg = ffmpeg
         self._sort_key, self._reverse = sort_params(sort_option)
+        self._last_frame = last_frame
         self._cancelled = False
 
     def cancel(self):
@@ -205,9 +238,22 @@ class VideoLoaderThread(QThread):
         for vid in videos:
             if self._cancelled:
                 return
-            thumb = thumb_dir / (vid.stem + ".jpg")
-            if not thumb.exists():
-                extract_thumbnail(self._ffmpeg, vid, thumb)
+            # The Extend tab shows each video's LAST frame — that's the
+            # starting point of the extension. Cached under its own name so
+            # it never collides with the Chain Automator's first-frame cache.
+            thumb = thumb_dir / (vid.stem + ("_last.jpg" if self._last_frame else ".jpg"))
+            try:
+                stale = thumb.exists() and thumb.stat().st_mtime < vid.stat().st_mtime
+            except OSError:
+                stale = False
+            if not thumb.exists() or stale:
+                if self._last_frame:
+                    try:
+                        extract_last_frame(self._ffmpeg, vid, thumb)
+                    except Exception:
+                        extract_thumbnail(self._ffmpeg, vid, thumb)
+                else:
+                    extract_thumbnail(self._ffmpeg, vid, thumb)
             img = QImage(str(thumb)) if thumb.exists() else QImage()
             if img.isNull():
                 img = QImage(THUMB_SIZE, THUMB_SIZE, QImage.Format.Format_RGB32)
@@ -281,6 +327,11 @@ class MediaBrowser(QWidget):
             self._sort_combo.setCurrentText(sort_option)
         self._sort_combo.currentTextChanged.connect(self._on_sort)
         row2.addWidget(self._sort_combo)
+        if kind == "video":
+            hint = QLabel("Thumbnails show each video's LAST frame — the extension's starting point")
+            hint.setObjectName("status_dim")
+            row2.addSpacing(12)
+            row2.addWidget(hint)
         row2.addStretch()
         self._status = QLabel("")
         self._status.setObjectName("status_dim")

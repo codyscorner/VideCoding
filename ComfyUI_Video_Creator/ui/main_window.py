@@ -117,7 +117,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _open_settings(self):
-        before = {k: self.config.get(k) for k in ("image_dir", "video_dir", "workflow_dir", "ffmpeg_path")}
+        before = {k: self.config.get(k) for k in ("image_dir", "video_dir", "workflow_dir", "ffmpeg_path", "loras_dir")}
         dlg = SettingsDialog(self.config, self)
         if dlg.exec() != SettingsDialog.DialogCode.Accepted:
             return
@@ -131,6 +131,8 @@ class MainWindow(QMainWindow):
             self._video_panel.reload_workflows()
         for panel in (self._image_panel, self._video_panel):
             panel._font_spin.setValue(int(self.config.get("prompt_font_size", 10) or 10))
+            if self.config.get("loras_dir") != before["loras_dir"]:
+                panel.reload_loras_from_folder()
 
     # ------------------------------------------------------------------ #
     # Running

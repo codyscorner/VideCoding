@@ -16,7 +16,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from comfy_client import ComfyClient
 from media_tools import concat_videos, extract_last_frame, resolve_ffmpeg
 from workflow_tools import (
-    ValueField, analyze, apply_prompts, apply_seed, apply_value,
+    ValueField, analyze, apply_inputs, apply_seed, apply_value,
     load_workflow, set_output_prefix,
 )
 
@@ -34,6 +34,7 @@ class RunRequest:
     source_path: Path
     source_kind: str                              # "image" | "video"
     prompts: dict[tuple[str, str], str] = field(default_factory=dict)
+    lora_edits: dict[tuple[str, str], object] = field(default_factory=dict)
     seed: int | None = None                       # None = random
     length_field: ValueField | None = None
     length_value: float | None = None
@@ -105,7 +106,13 @@ class RunWorker(QThread):
 
             # Text / seed / length edits
             if req.prompts:
-                apply_prompts(workflow, req.prompts)
+                apply_inputs(workflow, req.prompts)
+            if req.lora_edits:
+                apply_inputs(workflow, req.lora_edits)
+            for slot in analyze(workflow).loras:
+                if slot.name and slot.name != "None":
+                    strengths = ", ".join(f"{v:g}" for v in slot.strengths.values()) or "-"
+                    self._log(f"LoRA {slot.label}: {slot.name} ({strengths})")
             seed = req.seed if req.seed is not None else random.randint(0, 2**32 - 1)
             n_seed = apply_seed(workflow, seed)
             if n_seed:

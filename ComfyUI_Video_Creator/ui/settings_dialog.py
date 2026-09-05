@@ -80,6 +80,8 @@ class SettingsDialog(QDialog):
                                               "Folder of API-format workflow .json files (subfolders included)…")
         self._output_dir = self._folder_row(fl, "Output:", config.get("output_dir", ""),
                                             "Where finished videos are downloaded to…")
+        self._loras_dir = self._folder_row(fl, "LoRAs:", config.get("loras_dir", ""),
+                                           "ComfyUI models/loras folder — fills the LoRA dropdowns…")
         left.addWidget(folders_group)
 
         # ── Staging ──────────────────────────────────────────────────────
@@ -216,6 +218,7 @@ class SettingsDialog(QDialog):
         c.set("video_dir", self._video_dir.text().strip())
         c.set("workflow_dir", self._workflow_dir.text().strip())
         c.set("output_dir", self._output_dir.text().strip())
+        c.set("loras_dir", self._loras_dir.text().strip())
         c.set("staging_dir_local", self._staging_dir.text().strip())
         c.set("runpod_input_dir", self._runpod_input.text().strip())
         c.set("ffmpeg_path", self._ffmpeg.text().strip())

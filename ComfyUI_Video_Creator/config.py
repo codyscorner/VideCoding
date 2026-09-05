@@ -30,6 +30,7 @@ class ConfigManager:
         "video_dir": "",
         "workflow_dir": "P:/AI/ComfyLocal/ComfyUI_windows_portable/Workflow_API",
         "output_dir": "",
+        "loras_dir": "P:/AI/ComfyLocal/ComfyUI_windows_portable/ComfyUI/models/loras",
         # Staging for workflows that read a whole folder (LoadImageListFromDir)
         "staging_dir_local": "",
         "runpod_input_dir": "/workspace/runpod-slim/ComfyUI/input",
@@ -45,6 +46,8 @@ class ConfigManager:
         "seed_mode": "random",                 # random | fixed
         "seed_value": 0,
         "prompt_font_size": 10,
+        "panel_split_image": [],
+        "panel_split_video": [],
     }
 
     def __init__(self, config_path: Path):
