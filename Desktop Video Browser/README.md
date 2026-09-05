@@ -46,6 +46,19 @@ python video_browser/app.py
 pyinstaller --noconsole --onefile --icon=assets/icons/app.ico video_browser/app.py
 ```
 
+## Roadmap
+
+Ideas not yet built:
+
+- Thumbnail previews in the file list
+- Video metadata display (duration, resolution, codec)
+- Keyboard shortcuts
+- Light theme toggle
+- Multi-folder watch list
+- Tagging system with a small SQLite index
+- Video trimming or frame capture
+- AI-powered video tagging / automatic scene detection
+
 ## Project Status
 
-In development. See `Video_Browser_PLAN.md` for the full feature roadmap.
+In development.

@@ -58,7 +58,7 @@ From the project folder, using the repo's `.venv` (it has PySide6 and PyInstalle
 ..\.venv\Scripts\pyinstaller.exe --noconfirm --clean FileRenameMover.spec
 ```
 
-The EXE lands in `dist\FileRenameMover.exe`. Bump `VERSION` in `main.py`, `CHANGELOG.md`, and `PROJECT_SUMMARY.md` before every build. Built EXEs are deployed to `P:\Apps\VibeCoded\File Rename Mover\`.
+The EXE lands in `dist\FileRenameMover.exe`. Bump `VERSION` in `main.py`, `CHANGELOG.md`, and this README before every build. Built EXEs are deployed to `P:\Apps\VibeCoded\File Rename Mover\`.
 
 ## Files next to the EXE
 
@@ -88,8 +88,7 @@ File Rename Mover/
 │   ├── manage_templates_dialog_qt.py
 │   └── styles_qt.py               # DarkRedTheme QSS
 ├── FileRenameMover.spec           # PyInstaller spec (excludes unused Qt modules and ML packages)
-├── CHANGELOG.md                   # Per-version change log
-└── PROJECT_SUMMARY.md             # Architecture and version history
+└── CHANGELOG.md                   # Per-version change log
 ```
 
 ## How the counter works

@@ -10,4 +10,4 @@
 
 ## v1.5 and earlier
 
-See PROJECT_SUMMARY.md Version History.
+See README.md Version History.

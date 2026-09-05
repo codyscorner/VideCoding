@@ -83,3 +83,7 @@ The EXE is output to `dist\FolderBackupArchiver.exe`.
 | `rotation_keep_n` | Number of backups to keep per prefix (`0` = keep all) |
 | `notifications_enabled` | Whether tray notifications are turned on |
 | `source_manifests` | Per-source-folder manifest hash used by incremental mode |
+
+## Design Notes
+
+All planned features shipped (incremental mode, rotation, tray notifications). A scheduled/silent CLI mode for Task Scheduler was considered and intentionally skipped — this stays a manual, on-demand backup tool by design.
