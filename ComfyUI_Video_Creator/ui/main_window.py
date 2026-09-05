@@ -213,7 +213,8 @@ class MainWindow(QMainWindow):
             return
         if self._player is not None:
             self._player.close()
-        self._player = VideoPlayerDialog(path, self)
+        # Every player in this app closes itself once the video ends.
+        self._player = VideoPlayerDialog(path, self, auto_close=True)
         self._player.show()
 
     def _play_list(self, paths: list):
