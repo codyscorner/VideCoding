@@ -121,7 +121,14 @@ Full history in [CHANGELOG.md](CHANGELOG.md).
 
 ## Icon
 
-`app_icon.ico` is embedded in the EXE. If Explorer does not show it on some systems, see `README_ICON_ISSUE.txt` for workarounds; the running window and taskbar always show it.
+`app_icon.ico` is embedded in the EXE and always shows on the running window and taskbar. On some Windows systems Explorer still shows the generic EXE icon even though PyInstaller reports "Copying icon to EXE". This is a known PyInstaller quirk, not a build error. If it bothers you, re-stamp the icon after building:
+
+- **Resource Hacker** (GUI): open `FileRenameMover.exe`, Action → Replace Icon, pick `app_icon.ico`, save.
+- **rcedit** (command line):
+
+```
+rcedit.exe FileRenameMover.exe --set-icon app_icon.ico
+```
 
 ## License
 

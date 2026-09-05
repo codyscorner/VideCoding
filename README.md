@@ -1,128 +1,59 @@
-# VibeCoding Projects
-
-A collection of desktop utilities, AI tools, and games built with Python, .NET, and web technologies.
+# VibeCoding
 
 **Author:** [Cody's Corner](https://github.com/codyscorner) — [@codyscorner](https://github.com/codyscorner)
 
----
+This is my personal lab. It's a monorepo of small desktop utilities, AI-pipeline tools, and the occasional game, built by vibe coding with Claude Code: an idea pops into my head, I describe it, we build it, I use it, and it grows from there.
 
-## 📚 Documentation
+Nothing here is a product. Each folder is an experiment that solved a real itch on my own machines: moving and renaming batches of files, driving ComfyUI workflows, poking at S3 buckets, pulling metadata out of videos, and whatever else came up that week. Some projects are polished and get used daily; some were one-afternoon curiosities that stopped where the curiosity did. Both kinds stay here on purpose, because the point of the repo is to keep the experiments, the history, and the lessons in one place.
 
-Every project has a single `PROJECT_SUMMARY.md` in its folder — click any project name below to read it.
+## What you'll find
 
----
+- **Desktop utilities** — mostly Python with PyQt6 or PySide6, shipped as portable single-file EXEs that keep their settings next to the executable
+- **AI and image tools** — front ends and automation for local ComfyUI, image sorting and dedupe with CLIP and YOLO, prompt management
+- **File management** — rename, move, copy, sync, dedupe, archive, and find
+- **Small games and one-offs** — HTML games and quick scripts that were fun to try
 
-## 🗂️ Projects
+## How it's organized
 
-### 🎬 Video & Media
+Every project lives in its own top-level folder and stands alone. Open a folder and you'll find:
 
-| Project | Version | Status | Stack |
-|---|---|---|---|
-| [ComfyUI Workflow Chain Automator](ComfyUI_Chain_Automator/PROJECT_SUMMARY.md) | 3.3.0 | ✅ Active | Python, PyQt6 |
-| [ComfyUI Style Randomizer](ComfyUI_Style_Randomizer/PROJECT_SUMMARY.md) | 1.4.0 | ✅ Active | Python, PyQt6 |
-| [Cumfy Workflow Editor](Cumfy_Workflow_Editor/PROJECT_SUMMARY.md) | 1.0.0 | 🔨 In Progress | Python, PyQt6 |
-| [Desktop Video Browser](Desktop%20Video%20Browser/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PySide6 |
-| [VideoDropPlayer](VideoDropPlayer/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6 |
-| [MP4 Frame Extractor](MP4%20Frame%20Extractor/PROJECT_SUMMARY.md) | 1.5 | ✅ Active | Python, PyQt6 |
-| [VHS Metadata Parser](VHS_Metadata_Parser/PROJECT_SUMMARY.md) | 1.1.0 | ✅ Active | Python, PyQt6 |
-| [Photo Gallery](PhotoGallery/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6 |
-| [StopWatch](StopWatch/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6 |
+- `README.md` — what it does, how to run and build it, and recent changes (where one exists; older projects still use `PROJECT_SUMMARY.md` for this)
+- `PROJECT_SUMMARY.md` — architecture notes and version history
+- `CHANGELOG.md` — per-version change log
+- A PyInstaller `.spec` for projects that build to an EXE
 
----
+Built EXEs are deployed outside the repo to `P:\Apps\VibeCoded\<App Name>\`.
 
-### 🤖 AI & Image Tools
+## Running things
 
-| Project | Version | Status | Stack |
-|---|---|---|---|
-| [AI Image Studio](AI_Image_Generator/PROJECT_SUMMARY.md) | 2.0.0 | 🔨 In Progress | Python, PyQt6, ComfyUI |
-| [Image Dedupe Search](Image_Dedupe_Search/PROJECT_SUMMARY.md) | 1.4.0 | ✅ Active | Python, PySide6, CLIP |
-| [Image People Sorter](Image%20People%20Sorter/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6, YOLOv8 |
-| [Picture Flipper](Picture_Fipper/PROJECT_SUMMARY.md) | 1.3.0 | ✅ Active | Python, PySide6, YOLOv8 |
-| [FaceFinder](FaceFinder/PROJECT_SUMMARY.md) | 1.2.0 | ✅ Active | Python, PyQt6 |
-| [IMDB Photo Downloader](IMDB_Scraper/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6, Playwright |
-| [IconMaker](IconMaker/PROJECT_SUMMARY.md) | 1.0.0 | 🔧 Utility | Python, ComfyUI |
+**Python apps** — from inside the project folder, using the shared `.venv` at the repo root:
 
----
-
-### 📁 File Management
-
-| Project | Version | Status | Stack |
-|---|---|---|---|
-| [File Copy Manager](File%20Copy%20Manager/PROJECT_SUMMARY.md) | 3.2.0 | ✅ Active | Python, PyQt6 |
-| [File Rename Mover](File%20Rename%20Mover/README.md) | 3.5.1 | ✅ Active | Python, PySide6 |
-| [File Hash Dedupe](File%20Hash%20Dedupe/PROJECT_SUMMARY.md) | 1.2.0 | ✅ Active | Python, PyQt6 |
-| [FileFinder](FileFinder/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6 |
-| [Bulk File Randomizer](Bulk%20File%20Randomizer/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6 |
-| [Win Folder Mover](Win%20Folder%20Mover/PROJECT_SUMMARY.md) | 1.0.2 | ✅ Active | Python, PyQt6 |
-| [Unzipper](Unzipper/PROJECT_SUMMARY.md) | 1.1.0 | ✅ Active | Python, PyQt6 |
-| [7z Folder Backup](7z_Folder_backup/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6 |
-| [FolderSync](FolderSync/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6 |
-
----
-
-### 🖼️ Image Conversion & Resizing
-
-| Project | Version | Status | Stack |
-|---|---|---|---|
-| [ImageConverter](ImageConverter/PROJECT_SUMMARY.md) | — | 📋 Planned | Python, PyQt6, Pillow |
-| [Image Resize](Image%20Resize/PROJECT_SUMMARY.md) | 1.2.0 | ✅ Active | Python, PyQt6, Pillow |
-| [JPG to PNG Converter](JPG2PNG_Converter/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6, Pillow |
-
----
-
-### 🛠️ System & Utilities
-
-| Project | Version | Status | Stack |
-|---|---|---|---|
-| [PromptArchiver](PromptArchiver/PROJECT_SUMMARY.md) | 1.2.5 | ✅ Active | Electron, React, TypeScript |
-| [ScreenSnap](ScreenSnap/PROJECT_SUMMARY.md) | — | 🔨 In Progress | C#, WPF, .NET 10, SkiaSharp |
-| [Network Toggle Status](NetworkToggleStatus/PROJECT_SUMMARY.md) | 1.2.0 | ✅ Active | PowerShell |
-| [MP4 Metadata Editor](FilePropertiesUpdater/PROJECT_SUMMARY.md) | 1.1.0 | ✅ Active | Python, PyQt6 |
-| [Calculator](Calculator/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6 |
-
----
-
-### 🎮 Games
-
-| Project | Version | Status | Stack |
-|---|---|---|---|
-| [Lunar Lander](Lunar%20Lander/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Complete | HTML5, JavaScript |
-| [Missile Command](MissileCommandGame/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Complete | HTML5, JavaScript |
-
----
-
-## ⚡ Quick Start
-
-**Python apps** — run from source or use the pre-built EXE in `P:\Apps\VibeCoded\<App Name>\`:
 ```bash
 python main.py
 ```
 
-**PromptArchiver** (Electron):
+**Building an EXE** — each project has its own spec; the pattern is:
+
 ```bash
-cd PromptArchiver
-npm install && npm start
+..\.venv\Scripts\pyinstaller.exe --noconfirm --clean <Project>.spec
 ```
 
-**ScreenSnap** (.NET):
-```bash
-dotnet run --project src/ScreenSnap.UI
-```
+**Web games** — open the HTML file in any modern browser.
 
-**Games** — open the HTML file in any modern browser.
+**.NET and Electron projects** — see the README in that folder.
+
+## Conventions
+
+- One project, one folder, no shared code between projects
+- Config lives next to the EXE, never in `%APPDATA%`
+- Version is bumped in `main.py`, `CHANGELOG.md`, and `PROJECT_SUMMARY.md` before every build
+- Dialogs must fit a 1920×1080 screen
+- Work happens on a feature branch and lands on `master` through a pull request
+
+## License
+
+MIT unless a project folder says otherwise.
 
 ---
 
-## 📊 Status Key
-
-| Badge | Meaning |
-|---|---|
-| ✅ Active | Built and in use |
-| 🔨 In Progress | Under active development |
-| 📋 Planned | Design complete, not yet built |
-| 🔧 Utility | Script/tool, not a full GUI app |
-| 🎮 Complete | Finished, no planned changes |
-
----
-
-**Last Updated:** 2026-06-28
+**Last Updated:** 2026-09-05
