@@ -2184,7 +2184,8 @@ class MainWindow(QMainWindow):
                     existing.append(p)
                     seen.add(p)
             if existing:
-                player = VideoPlayerDialog(existing[0], parent=self, playlist=existing)
+                # Batch-completion playback closes itself after the last result.
+                player = VideoPlayerDialog(existing[0], parent=self, playlist=existing, auto_close=True)
                 player.exec()
 
     def _on_error(self, message: str):

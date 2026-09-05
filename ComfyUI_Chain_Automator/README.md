@@ -1,6 +1,6 @@
 # ComfyUI Workflow Chain Automator
 
-Version: 3.10.4
+Version: 3.10.5
 
 Automates a chain of ComfyUI segments (up to 10), stitching the outputs into a single final video. Supports both local ComfyUI and RunPod deployments.
 

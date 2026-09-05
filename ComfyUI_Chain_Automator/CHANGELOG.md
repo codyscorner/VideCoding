@@ -1,5 +1,8 @@
 # Changelog — ComfyUI Workflow Chain Automator
 
+### v3.10.5
+- The end-of-batch playback of fresh results now also closes itself after the last video, so every player in the app auto-closes
+
 ### v3.10.4
 - Library: the video player closes itself when the last selected video finishes (Play Selected playlist or a double-clicked single video) instead of sitting on the final frame until dismissed. The end-of-batch playback of fresh results is unchanged and still stays open
 
