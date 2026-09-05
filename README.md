@@ -49,7 +49,7 @@ Every project has a single `PROJECT_SUMMARY.md` in its folder — click any proj
 | Project | Version | Status | Stack |
 |---|---|---|---|
 | [File Copy Manager](File%20Copy%20Manager/PROJECT_SUMMARY.md) | 3.2.0 | ✅ Active | Python, PyQt6 |
-| [File Rename Mover](File%20Rename%20Mover/PROJECT_SUMMARY.md) | 3.2.0 | ✅ Active | Python, PySide6 |
+| [File Rename Mover](File%20Rename%20Mover/README.md) | 3.5.1 | ✅ Active | Python, PySide6 |
 | [File Hash Dedupe](File%20Hash%20Dedupe/PROJECT_SUMMARY.md) | 1.2.0 | ✅ Active | Python, PyQt6 |
 | [FileFinder](FileFinder/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6 |
 | [Bulk File Randomizer](Bulk%20File%20Randomizer/PROJECT_SUMMARY.md) | 1.0.0 | ✅ Active | Python, PyQt6 |
