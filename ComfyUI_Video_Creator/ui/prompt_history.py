@@ -16,7 +16,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMessageBox, QPushButton, QSplitter, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -232,39 +232,114 @@ class PromptExpandDialog(QDialog):
 
 
 class PromptHistoryDialog(QDialog):
-    """Search, inspect, reuse and delete history entries for one workflow."""
+    """Search, filter (workflow / date), inspect, reuse and delete history
+    entries — for the current workflow or across every workflow's history."""
     use_prompt = pyqtSignal(dict)        # entry — prompt text only
     use_all = pyqtSignal(dict)           # entry — prompt + settings
 
-    def __init__(self, workflow_path: Path, parent=None):
+    ALL_WORKFLOWS = "__all__"
+    DATE_MODES = [("all", "All dates"), ("year", "Year"), ("month", "Month"), ("day", "Day")]
+
+    def __init__(self, workflow_path: Path, parent=None, workflow_dir: Path | None = None):
         super().__init__(parent)
         self._workflow_path = workflow_path
-        self._entries = list(reversed(load_history(workflow_path)))   # newest first
-        self._filtered: list[dict] = []
-        self._selected: dict | None = None
+        self._workflow_dir = workflow_dir
+        self._current_rel = self._rel(workflow_path)
+        # (rel, workflow json path, entry) for every entry, newest first
+        self._rows: list[tuple[str, Path, dict]] = []
+        self._filtered: list[tuple[str, Path, dict]] = []
+        self._selected: tuple[str, Path, dict] | None = None
+        self._load_rows()
 
         self.setWindowTitle(f"Prompt History — {workflow_path.name}")
-        self.setMinimumSize(1000, 600)
-        self.resize(1300, 760)
+        self.setMinimumSize(1000, 620)
+        self.resize(1360, 800)
         self.setStyleSheet(parent.window().styleSheet() if parent else "")
         self._build_ui()
+        self._rebuild_date_values()
         self._populate()
+
+    # ------------------------------------------------------------------ #
+    # Data
+    # ------------------------------------------------------------------ #
+
+    def _rel(self, wf_path: Path) -> str:
+        if self._workflow_dir is not None:
+            try:
+                return wf_path.relative_to(self._workflow_dir).as_posix()
+            except ValueError:
+                pass
+        return wf_path.name
+
+    def _load_rows(self):
+        self._rows = []
+        files: list[Path] = []
+        if self._workflow_dir is not None and self._workflow_dir.is_dir():
+            files = sorted(self._workflow_dir.rglob(f"*{HISTORY_SUFFIX}"), key=lambda p: str(p).lower())
+        own = history_path(self._workflow_path)
+        if own not in files:
+            files.insert(0, own)
+        for hist in files:
+            wf_path = hist.with_name(hist.name[: -len(HISTORY_SUFFIX)] + ".json")
+            rel = self._rel(wf_path)
+            try:
+                with open(hist, encoding="utf-8") as f:
+                    data = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, list):
+                for e in data:
+                    if isinstance(e, dict):
+                        self._rows.append((rel, wf_path, e))
+        self._rows.sort(key=lambda r: r[2].get("timestamp", ""), reverse=True)
+
+    # ------------------------------------------------------------------ #
+    # UI
+    # ------------------------------------------------------------------ #
 
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 14)
         root.setSpacing(8)
 
-        srow = QHBoxLayout()
-        srow.addWidget(QLabel("Search:"))
+        wrow = QHBoxLayout()
+        wrow.addWidget(QLabel("Workflow:"))
+        self._wf_combo = QComboBox()
+        counts: dict[str, int] = {}
+        for rel, _p, _e in self._rows:
+            counts[rel] = counts.get(rel, 0) + 1
+        self._wf_combo.addItem(f"All workflows ({len(self._rows)})", self.ALL_WORKFLOWS)
+        self._wf_combo.addItem(f"{self._current_rel} ({counts.get(self._current_rel, 0)})  — current", self._current_rel)
+        for rel in sorted(counts, key=str.lower):
+            if rel != self._current_rel:
+                self._wf_combo.addItem(f"{rel} ({counts[rel]})", rel)
+        self._wf_combo.setCurrentIndex(1)
+        self._wf_combo.currentIndexChanged.connect(self._on_filter_source_changed)
+        wrow.addWidget(self._wf_combo, stretch=1)
+        root.addLayout(wrow)
+
+        frow = QHBoxLayout()
+        frow.addWidget(QLabel("Date:"))
+        self._date_mode = QComboBox()
+        for key, label in self.DATE_MODES:
+            self._date_mode.addItem(label, key)
+        self._date_mode.setFixedWidth(110)
+        self._date_mode.currentIndexChanged.connect(self._on_filter_source_changed)
+        frow.addWidget(self._date_mode)
+        self._date_value = QComboBox()
+        self._date_value.setMinimumWidth(190)
+        self._date_value.currentIndexChanged.connect(lambda _i: self._populate())
+        frow.addWidget(self._date_value)
+        frow.addSpacing(14)
+        frow.addWidget(QLabel("Search:"))
         self._search = QLineEdit()
-        self._search.setPlaceholderText("Filter by prompt text, LoRA name, seed, result file…")
+        self._search.setPlaceholderText("Filter by prompt text, LoRA name, seed, steps, result file, source image…")
         self._search.textChanged.connect(self._populate)
-        srow.addWidget(self._search, stretch=1)
+        frow.addWidget(self._search, stretch=1)
         self._count_lbl = QLabel("")
         self._count_lbl.setObjectName("status_dim")
-        srow.addWidget(self._count_lbl)
-        root.addLayout(srow)
+        frow.addWidget(self._count_lbl)
+        root.addLayout(frow)
 
         split = QSplitter(Qt.Orientation.Horizontal)
         self._list = QListWidget()
@@ -273,7 +348,6 @@ class PromptHistoryDialog(QDialog):
         self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._list.currentRowChanged.connect(self._on_select)
         split.addWidget(self._list)
-
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -283,7 +357,7 @@ class PromptHistoryDialog(QDialog):
         split.addWidget(right)
         split.setStretchFactor(0, 2)
         split.setStretchFactor(1, 3)
-        split.setSizes([520, 780])
+        split.setSizes([560, 800])
         root.addWidget(split, stretch=1)
 
         brow = QHBoxLayout()
@@ -292,7 +366,7 @@ class PromptHistoryDialog(QDialog):
         self._use_btn.clicked.connect(lambda: self._emit(self.use_prompt))
         brow.addWidget(self._use_btn)
         self._use_all_btn = QPushButton("Use prompt + settings")
-        self._use_all_btn.setToolTip("Load the prompt and restore the LoRAs, strengths, seed and length it ran with")
+        self._use_all_btn.setToolTip("Load the prompt and restore the LoRAs, strengths, seed, steps, megapixels and length it ran with")
         self._use_all_btn.clicked.connect(lambda: self._emit(self.use_all))
         brow.addWidget(self._use_all_btn)
         del_btn = QPushButton("Delete")
@@ -307,10 +381,48 @@ class PromptHistoryDialog(QDialog):
         root.addLayout(brow)
 
     # ------------------------------------------------------------------ #
+    # Filtering
+    # ------------------------------------------------------------------ #
+
+    def _workflow_rows(self) -> list[tuple[str, Path, dict]]:
+        sel = self._wf_combo.currentData()
+        if sel == self.ALL_WORKFLOWS:
+            return self._rows
+        return [r for r in self._rows if r[0] == sel]
 
     @staticmethod
-    def _entry_text(e: dict) -> str:
-        parts = [e.get("positive", ""), e.get("negative", ""), describe_settings(e.get("settings")),
+    def _date_key(entry: dict, mode: str) -> str:
+        ts = entry.get("timestamp", "") or ""
+        return {"year": ts[:4], "month": ts[:7], "day": ts[:10]}.get(mode, "")
+
+    def _on_filter_source_changed(self, *_):
+        self._rebuild_date_values()
+        self._populate()
+
+    def _rebuild_date_values(self):
+        mode = self._date_mode.currentData()
+        prev = self._date_value.currentData()
+        self._date_value.blockSignals(True)
+        self._date_value.clear()
+        if mode == "all":
+            self._date_value.setEnabled(False)
+            self._date_value.addItem("—", "")
+        else:
+            self._date_value.setEnabled(True)
+            counts: dict[str, int] = {}
+            for _r, _p, e in self._workflow_rows():
+                k = self._date_key(e, mode)
+                if k:
+                    counts[k] = counts.get(k, 0) + 1
+            for k in sorted(counts, reverse=True):
+                self._date_value.addItem(f"{k}  ({counts[k]})", k)
+            idx = self._date_value.findData(prev) if prev else -1
+            self._date_value.setCurrentIndex(idx if idx >= 0 else 0)
+        self._date_value.blockSignals(False)
+
+    @staticmethod
+    def _entry_text(rel: str, e: dict) -> str:
+        parts = [rel, e.get("positive", ""), e.get("negative", ""), describe_settings(e.get("settings")),
                  " ".join(e.get("results", []) or []), e.get("source", "") or ""]
         for p in (e.get("prompts") or {}).values():
             parts.append(p.get("text", ""))
@@ -318,20 +430,29 @@ class PromptHistoryDialog(QDialog):
 
     def _populate(self):
         q = self._search.text().strip().lower()
-        self._filtered = [e for e in self._entries if not q or q in self._entry_text(e)]
+        mode = self._date_mode.currentData()
+        dval = self._date_value.currentData() if mode != "all" else ""
+        show_wf = self._wf_combo.currentData() == self.ALL_WORKFLOWS
+        rows = self._workflow_rows()
+        self._filtered = [
+            r for r in rows
+            if (not dval or self._date_key(r[2], mode) == dval)
+            and (not q or q in self._entry_text(r[0], r[2]))
+        ]
         self._list.clear()
-        for e in self._filtered:
+        for rel, _p, e in self._filtered:
             preview = (e.get("positive") or next(iter((e.get("prompts") or {}).values()), {}).get("text", "") or "").replace("\n", " ")
             preview = preview[:90] + ("…" if len(preview) > 90 else "")
+            line = e.get("timestamp", "?")
+            if show_wf:
+                line += f"   [{rel}]"
             settings = describe_settings(e.get("settings"))
-            line = f"{e.get('timestamp', '?')}"
             if settings:
                 line += f"   {settings}"
             if e.get("results"):
                 line += f"   → {Path(e['results'][-1]).name}"
-            item = QListWidgetItem(line + "\n    " + preview)
-            self._list.addItem(item)
-        self._count_lbl.setText(f"{len(self._filtered)} of {len(self._entries)}")
+            self._list.addItem(QListWidgetItem(line + "\n    " + preview))
+        self._count_lbl.setText(f"{len(self._filtered)} of {len(rows)}")
         if self._filtered:
             self._list.setCurrentRow(0)
         else:
@@ -345,23 +466,31 @@ class PromptHistoryDialog(QDialog):
             self._selected = None
             self._preview.setPlainText("")
             return
-        e = self._filtered[row]
-        self._selected = e
-        self._preview.setPlainText(format_entry(e))
+        self._selected = self._filtered[row]
+        rel, _p, e = self._selected
+        head = f"Workflow: {rel}\n" if rel != self._current_rel else ""
+        self._preview.setPlainText(head + format_entry(e))
+
+    # ------------------------------------------------------------------ #
+    # Actions
+    # ------------------------------------------------------------------ #
 
     def _emit(self, signal):
         if self._selected is not None:
-            signal.emit(self._selected)
+            signal.emit(self._selected[2])
             self.close()
 
     def _delete(self):
         if self._selected is None:
             return
-        if QMessageBox.question(self, "Delete entry", "Delete this history entry?") != QMessageBox.StandardButton.Yes:
+        rel, wf_path, entry = self._selected
+        if QMessageBox.question(self, "Delete entry", f"Delete this history entry from {rel}?") != QMessageBox.StandardButton.Yes:
             return
-        entries = load_history(self._workflow_path)
-        entries = [x for x in entries if x is not self._selected and not (
-            x.get("timestamp") == self._selected.get("timestamp") and x.get("positive") == self._selected.get("positive"))]
-        save_history(self._workflow_path, entries)
-        self._entries = list(reversed(entries))
+        entries = load_history(wf_path)
+        entries = [x for x in entries if not (
+            x.get("timestamp") == entry.get("timestamp") and x.get("positive") == entry.get("positive")
+            and x.get("settings") == entry.get("settings"))]
+        save_history(wf_path, entries)
+        self._load_rows()
+        self._rebuild_date_values()
         self._populate()
