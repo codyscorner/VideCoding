@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QSplitter,
     QTabWidget, QVBoxLayout, QWidget,
@@ -14,7 +14,11 @@ from ui.run_panel import RunPanel
 from ui.settings_dialog import SettingsDialog
 from ui.styles import COLORS, STYLESHEET
 from ui.video_player import VideoPlayerDialog
-from ui.widgets import MediaBrowser
+from ui.widgets import THUMB_SIZE, MediaBrowser
+
+# Width that shows exactly two thumbnail columns: two grid cells plus the
+# grid spacing, the list padding, the frame and a scrollbar.
+TWO_COLUMN_WIDTH = 2 * (THUMB_SIZE + 14) + 3 * 4 + 12 + 2 + 14
 
 
 class MainWindow(QMainWindow):
@@ -25,6 +29,8 @@ class MainWindow(QMainWindow):
         self._worker: RunWorker | None = None
         self._active_panel: RunPanel | None = None
         self._player: VideoPlayerDialog | None = None
+        self._tab_splitters: list[QSplitter] = []
+        self._splits_initialised = False
 
         self.setWindowTitle(f"ComfyUI Video Creator v{version}")
         self.setStyleSheet(STYLESHEET)
@@ -100,11 +106,26 @@ class MainWindow(QMainWindow):
         split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(browser)
         split.addWidget(panel)
-        split.setStretchFactor(0, 1)
-        split.setStretchFactor(1, 0)
-        split.setSizes([1000, 600])
+        # Thumbnails start two columns wide; the prompt/settings panel takes
+        # the rest. Drag the divider (or resize the window) for more thumbs.
+        split.setStretchFactor(0, 0)
+        split.setStretchFactor(1, 1)
+        split.setChildrenCollapsible(False)
         lay.addWidget(split)
+        self._tab_splitters.append(split)
         return page
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._splits_initialised:
+            self._splits_initialised = True
+            QTimer.singleShot(0, self._init_tab_splits)
+
+    def _init_tab_splits(self):
+        for split in self._tab_splitters:
+            total = sum(split.sizes()) or split.width()
+            if total > 0:
+                split.setSizes([TWO_COLUMN_WIDTH, max(total - TWO_COLUMN_WIDTH, 560)])
 
     def _wire(self, browser: MediaBrowser, panel: RunPanel, dir_key: str, sort_key: str):
         browser.selection_changed.connect(panel.set_source)
