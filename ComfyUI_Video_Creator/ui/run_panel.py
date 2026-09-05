@@ -40,6 +40,12 @@ MAX_LOG_LINES = 600
 # post-sampling node), so a node's own progress fills its slice.
 PROGRESS_SUBUNITS = 100
 
+# The positive prompt editor is what gets edited every run, so it takes
+# all the slack in the Prompts pane; the negative is a pop-out only.
+POSITIVE_PROMPT_MIN_H = 120
+# Most of the splitter belongs to the prompts; Options + LoRAs scroll.
+LOWER_PANE_MAX_FRACTION = 0.4
+
 # LoRA names are shared by both tabs; scanning the folder once is enough.
 _LORA_LIST: dict[str, list[str]] = {}
 
@@ -380,7 +386,8 @@ class RunPanel(QWidget):
         total = sum(self._split.sizes()) or self._split.height()
         if total <= 0:
             return
-        want_lower = min(self._lower_inner.sizeHint().height() + 12, int(total * 0.5))
+        want_lower = min(self._lower_inner.sizeHint().height() + 12,
+                         int(total * LOWER_PANE_MAX_FRACTION))
         self._split.setSizes([max(total - want_lower, 120), want_lower])
 
     def _on_split_moved(self, *_):
@@ -486,24 +493,18 @@ class RunPanel(QWidget):
             self._prompt_box.addStretch()
         else:
             for pf in a.prompts:
-                head = QHBoxLayout()
-                lbl = QLabel(pf.label)
-                lbl.setStyleSheet(f"color: {COLORS['fg_secondary']}; font-weight: bold;")
-                head.addWidget(lbl)
-                head.addStretch()
-                expand = QPushButton("⤢ Expand")
-                expand.setObjectName("small_btn")
-                expand.setToolTip("Edit this prompt in a large separate window")
-                head.addWidget(expand)
-                self._prompt_box.addLayout(head)
-                edit = QTextEdit()
-                edit.setAcceptRichText(False)
-                edit.setPlainText(pf.text)
-                edit.setMinimumHeight(50)
-                edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-                self._prompt_box.addWidget(edit, stretch=(1 if pf.negative else 3))
-                expand.clicked.connect(lambda _c, e=edit, t=pf.label: self._expand_prompt(e, t))
+                # The negative prompt is boilerplate that is hardly ever
+                # touched (WAN 2.2 and friends still need one), so it gets a
+                # single row — label, one-line preview, ⤢ Edit — and its
+                # editor is hidden. The whole pane goes to the positive
+                # prompt, which is what gets rewritten every run.
+                if pf.negative:
+                    edit = self._negative_row(pf)
+                else:
+                    edit = self._positive_editor(pf)
                 self._prompt_edits.append((pf, edit))
+            if all(pf.negative for pf in a.prompts):
+                self._prompt_box.addStretch()
         self._apply_font_size(self._font_spin.value())
 
         fld = a.length_field if a is not None else None
@@ -546,6 +547,58 @@ class RunPanel(QWidget):
             names = ", ".join(f"{f.label} ({f.value:g})" for f in mps)
             self._mp_spin.setToolTip(f"Megapixels applied to {len(mps)} node{'s' if len(mps) != 1 else ''}: {names}")
         self._update_summary()
+
+    def _hidden_editor(self, pf) -> QTextEdit:
+        """The real editor every prompt keeps — overrides, history, save to
+        workflow and font size all read it. Added to the layout (hidden ones
+        take no space) so a rebuild disposes of it with everything else."""
+        edit = QTextEdit()
+        edit.setAcceptRichText(False)
+        edit.setPlainText(pf.text)
+        self._prompt_box.addWidget(edit)
+        return edit
+
+    def _positive_editor(self, pf) -> QTextEdit:
+        head = QHBoxLayout()
+        lbl = QLabel(pf.label)
+        lbl.setStyleSheet(f"color: {COLORS['fg_secondary']}; font-weight: bold;")
+        head.addWidget(lbl)
+        head.addStretch()
+        expand = QPushButton("⤢ Expand")
+        expand.setObjectName("small_btn")
+        expand.setToolTip("Edit this prompt in a large separate window")
+        head.addWidget(expand)
+        self._prompt_box.addLayout(head)
+        edit = self._hidden_editor(pf)
+        edit.setVisible(True)
+        edit.setMinimumHeight(POSITIVE_PROMPT_MIN_H)
+        edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._prompt_box.setStretchFactor(edit, 1)
+        expand.clicked.connect(lambda _c, e=edit, t=pf.label: self._expand_prompt(e, t))
+        return edit
+
+    def _negative_row(self, pf) -> QTextEdit:
+        row = QHBoxLayout()
+        lbl = QLabel(pf.label)
+        lbl.setStyleSheet(f"color: {COLORS['fg_secondary']}; font-weight: bold;")
+        row.addWidget(lbl)
+        preview = ElidedLabel("")
+        preview.setObjectName("status_dim")
+        row.addWidget(preview, stretch=1)
+        edit_btn = QPushButton("⤢ Edit")
+        edit_btn.setObjectName("small_btn")
+        edit_btn.setToolTip("Edit the negative prompt in a large separate window")
+        row.addWidget(edit_btn)
+        self._prompt_box.addLayout(row)
+        edit = self._hidden_editor(pf)
+        edit.setVisible(False)
+        # textChanged keeps the preview honest however the text arrives —
+        # the pop-out, a history recall, or "Use prompt + settings".
+        edit.textChanged.connect(
+            lambda e=edit, p=preview: p.setFullText(" ".join(e.toPlainText().split())))
+        preview.setFullText(" ".join(edit.toPlainText().split()))
+        edit_btn.clicked.connect(lambda _c, e=edit, t=pf.label: self._expand_prompt(e, t))
+        return edit
 
     def _expand_prompt(self, edit: QTextEdit, title: str):
         dlg = PromptExpandDialog(title, edit.toPlainText(), edit.font(), self)
