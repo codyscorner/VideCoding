@@ -1,5 +1,8 @@
 # Changelog — ComfyUI Workflow Chain Automator
 
+### v3.10.4
+- Library: the video player closes itself when the last selected video finishes (Play Selected playlist or a double-clicked single video) instead of sitting on the final frame until dismissed. The end-of-batch playback of fresh results is unchanged and still stays open
+
 ### v3.10.3
 - Build fix: `build_exe.py` / `build.bat` now switch to the repo `.venv` Python automatically (and refuse to build if boto3 still can't be imported). A hand-run build with the system Python had produced an EXE without boto3, so the deployed app showed "boto3 is not installed in the Python running this app" for the pod LoRA check even though it was the EXE
 

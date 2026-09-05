@@ -1328,13 +1328,15 @@ class MainWindow(QMainWindow):
         existing = [k for k in keys if Path(k).exists()]
         if not existing:
             return
-        player = VideoPlayerDialog(existing[0], parent=self, playlist=existing)
+        # Library playback closes itself after the last clip — nothing to
+        # dismiss once the selection has played through.
+        player = VideoPlayerDialog(existing[0], parent=self, playlist=existing, auto_close=True)
         player.exec()
 
     def _on_video_double_clicked(self, item: QListWidgetItem):
         path = item.data(Qt.ItemDataRole.UserRole)
         if path and Path(path).exists():
-            player = VideoPlayerDialog(path, parent=self)
+            player = VideoPlayerDialog(path, parent=self, auto_close=True)
             player.exec()
 
     def _delete_selected_video(self):
