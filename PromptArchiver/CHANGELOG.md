@@ -35,6 +35,6 @@ the standard VibeCoded toolset (same stack as Music Player, AI Image Studio, etc
 
 ## [1.2.5] and earlier
 
-Electron era — see PROJECT_SUMMARY.md history and git log. Final Electron
+Electron era — see README.md history and git log. Final Electron
 feature set: multi-file support, clone prompts, add/replace file modes, star
 ratings, AI model metadata, negative prompts, drag-and-drop in compiled app.

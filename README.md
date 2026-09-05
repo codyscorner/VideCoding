@@ -17,8 +17,7 @@ Nothing here is a product. Each folder is an experiment that solved a real itch 
 
 Every project lives in its own top-level folder and stands alone. Open a folder and you'll find:
 
-- `README.md` — what it does, how to run and build it, and recent changes (where one exists; older projects still use `PROJECT_SUMMARY.md` for this)
-- `PROJECT_SUMMARY.md` — architecture notes and version history
+- `README.md` — what it does, how to run and build it, and recent changes; this is the one doc every project keeps
 - `CHANGELOG.md` — per-version change log
 - A PyInstaller `.spec` for projects that build to an EXE
 
@@ -46,7 +45,7 @@ python main.py
 
 - One project, one folder, no shared code between projects
 - Config lives next to the EXE, never in `%APPDATA%`
-- Version is bumped in `main.py`, `CHANGELOG.md`, and `PROJECT_SUMMARY.md` before every build
+- Version is bumped in `main.py`, `CHANGELOG.md`, and `README.md` before every build
 - Dialogs must fit a 1920×1080 screen
 - Work happens on a feature branch and lands on `master` through a pull request
 

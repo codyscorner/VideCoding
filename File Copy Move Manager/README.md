@@ -158,8 +158,7 @@ File Copy Move Manager/
 ├── config.json              # User settings (auto-generated)
 ├── README.md
 ├── CHANGELOG.md
-├── FEATURES.md
-└── PROJECT_SUMMARY.md
+└── FEATURES.md
 ```
 
 ---
@@ -211,6 +210,10 @@ File Copy Move Manager/
 | 1.0.0 | 2025-12-08 | Initial release |
 
 ---
+
+## Roadmap
+
+- **Command-line interface** — headless mode for scripting / scheduled tasks (low priority, not started)
 
 ## Related Projects
 

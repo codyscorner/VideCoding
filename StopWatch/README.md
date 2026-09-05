@@ -1,6 +1,6 @@
 # Stopwatch & Timer
 
-A desktop stopwatch and countdown timer with an aqua theme and audio chime alert, built with Python and Tkinter.
+A desktop stopwatch and countdown timer with an aqua theme and audio chime alert, built with Python, PyQt6, and pygame (for the chime audio).
 
 ## Features
 
