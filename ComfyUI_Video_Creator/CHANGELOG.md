@@ -1,5 +1,8 @@
 # Changelog — ComfyUI Video Creator
 
+### v1.3.5
+- History dialog filters: **Workflow** (current workflow by default, "All workflows", or any other workflow that has history — with entry counts; entries from other workflows show their workflow name) and **Date** (All dates, or Year / Month / Day with a second dropdown listing only the periods that have entries, with counts). Text search applies on top of both. Delete removes the entry from whichever workflow file it belongs to
+
 ### v1.3.4
 - Image → Video and Video → Extend tabs open with the thumbnail pane two columns wide so the prompt and settings panel gets the room; drag the divider or resize the window for more thumbnails
 

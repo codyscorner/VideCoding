@@ -588,7 +588,8 @@ class RunPanel(QWidget):
     def _open_history(self):
         if self._workflow_path is None:
             return
-        dlg = PromptHistoryDialog(self._workflow_path, self)
+        wf_dir = Path((self._cfg.get("workflow_dir", "") or "").strip())
+        dlg = PromptHistoryDialog(self._workflow_path, self, workflow_dir=wf_dir if str(wf_dir) else None)
         dlg.use_prompt.connect(lambda e: self._apply_history(e, with_settings=False))
         dlg.use_all.connect(lambda e: self._apply_history(e, with_settings=True))
         dlg.exec()
