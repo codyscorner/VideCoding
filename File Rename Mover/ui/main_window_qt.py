@@ -6,13 +6,14 @@ from PySide6.QtWidgets import (
     QScrollArea, QFrame, QFileDialog, QMessageBox, QSizePolicy,
     QProgressBar, QApplication
 )
-from PySide6.QtCore import Qt, Slot, QThread, Signal
+from PySide6.QtCore import Qt, Slot, QThread, Signal, QTimer
 from PySide6.QtGui import QFont, QIcon, QCloseEvent
+import os
 from pathlib import Path
 from typing import Optional, Callable
 
 from config import ConfigManager
-from file_operations import FileRenamer
+from file_operations import FileRenamer, FileScanner
 from ui.styles_qt import ThemeManager
 from sorting import SortBy, SortOrder
 from rename_patterns import PatternType, DateTimeFormat, PatternFactory
@@ -55,6 +56,60 @@ class FolderDropLineEdit(QLineEdit):
             event.acceptProposedAction()
         else:
             event.ignore()
+
+
+class ExtensionCombo(QComboBox):
+    """
+    Editable extension picker.
+
+    Behaves like the QLineEdit it replaces (``text()``, ``setText()``,
+    ``textChanged``) so the rest of the window doesn't care, but its dropdown is
+    filled with the extensions actually present in the source folder.
+    """
+
+    textChanged = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.NoInsert)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.lineEdit().setPlaceholderText("e.g. .mp4  (pick a source folder to list what's in it)")
+        self.editTextChanged.connect(self.textChanged.emit)
+
+    def text(self) -> str:
+        return self.currentText()
+
+    def setText(self, value: str) -> None:
+        self.setEditText(value or "")
+
+    def set_extensions(self, counts: list) -> None:
+        """
+        Replace the dropdown items with ``[(ext, count), ...]``, keeping whatever
+        is typed in the edit box. If the box is empty, the most common extension
+        is selected.
+        """
+        current = self.currentText().strip()
+        self.blockSignals(True)
+        try:
+            self.clear()
+            for ext, count in counts:
+                self.addItem(ext)
+                idx = self.count() - 1
+                plural = "file" if count == 1 else "files"
+                self.setItemData(idx, f"{count} {plural}", Qt.ToolTipRole)
+            self.setEditText(current)
+        finally:
+            self.blockSignals(False)
+
+        if not current and counts:
+            self.setCurrentIndex(0)  # emits editTextChanged -> textChanged
+        elif current:
+            # Snap to the matching item so the dropdown highlights it
+            for i in range(self.count()):
+                if self.itemText(i).lower() == current.lower() or self.itemText(i).lower() == '.' + current.lower():
+                    self.setCurrentIndex(i)
+                    break
 
 
 class RenameWorker(QThread):
@@ -301,8 +356,10 @@ class MainWindowQt(QMainWindow):
     def _create_basic_inputs(self, parent_layout: QVBoxLayout) -> None:
         """Create extension and base name inputs"""
         # Extension
-        parent_layout.addWidget(QLabel("Extension:"))
-        self.ext_entry = QLineEdit()
+        self.ext_label = QLabel("Extension:")
+        parent_layout.addWidget(self.ext_label)
+        self.ext_entry = ExtensionCombo()
+        self.ext_entry.setToolTip("Extensions found in the source folder, most common first. You can also type one.")
         parent_layout.addWidget(self.ext_entry)
 
         # Base name
@@ -524,6 +581,16 @@ class MainWindowQt(QMainWindow):
 
     def _connect_signals(self) -> None:
         """Connect UI signals to slots"""
+        # Source folder -> refresh extension dropdown (debounced so typing a path
+        # doesn't scan on every keystroke; browse/drop/template/config all funnel
+        # through the same textChanged signal)
+        self._ext_scan_timer = QTimer(self)
+        self._ext_scan_timer.setSingleShot(True)
+        self._ext_scan_timer.setInterval(350)
+        self._ext_scan_timer.timeout.connect(self._refresh_extension_list)
+        self.source_entry.textChanged.connect(self._ext_scan_timer.start)
+        self._refresh_extension_list()
+
         # Text changes that update example
         self.ext_entry.textChanged.connect(self._update_example)
         self.rename_entry.textChanged.connect(self._update_example)
@@ -578,6 +645,28 @@ class MainWindowQt(QMainWindow):
             self.custom_pattern_widget.setVisible(True)
 
         self._update_example()
+
+    @Slot()
+    def _refresh_extension_list(self) -> None:
+        """Fill the Extension dropdown with the extensions present in the source folder"""
+        folder = self.source_entry.text().strip()
+        if not folder or not os.path.isdir(folder):
+            self.ext_entry.set_extensions([])
+            self.ext_label.setText("Extension:")
+            return
+
+        counts = FileScanner.get_extension_counts(folder)
+        self.ext_entry.set_extensions(counts)
+
+        if counts:
+            kinds = len(counts)
+            self.ext_label.setText(f"Extension:  ({kinds} type{'s' if kinds != 1 else ''} found in source)")
+            summary = ", ".join(f"{ext} \u00d7{n}" for ext, n in counts[:8])
+            if kinds > 8:
+                summary += f", \u2026 +{kinds - 8} more"
+            self.add_status(f"Source folder contains: {summary}")
+        else:
+            self.ext_label.setText("Extension:  (no files found in source)")
 
     @Slot()
     def _update_example(self) -> None:

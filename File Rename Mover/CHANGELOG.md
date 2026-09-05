@@ -5,6 +5,21 @@ All notable changes to File Rename Mover will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.0] - 2026-09-05
+
+### Added
+- **Extension dropdown filled from the source folder.** The Extension box is now
+  an editable dropdown. Whenever the Source Folder changes (browse, drag-and-drop,
+  typing, template load, startup) the folder is scanned and the dropdown lists
+  every extension found there, most common first, with a file count as tooltip.
+  An empty Extension box auto-selects the most common one; a value you already
+  typed is kept (and snapped to the matching entry, so `png` becomes `.png`). The label shows how many types were found and the status box
+  logs a summary (`.mp4 ×12, .png ×3, …`).
+- `FileScanner.get_extension_counts()` — non-recursive extension census.
+
+### Changed
+- Scan is debounced (350 ms) so typing a path by hand doesn't rescan per keystroke.
+
 ## [3.4.0] - 2026-09-05
 
 ### Added

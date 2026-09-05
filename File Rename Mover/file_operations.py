@@ -137,6 +137,32 @@ class FileScanner:
         return files
 
     @staticmethod
+    def get_extension_counts(folder_path: str) -> List[tuple[str, int]]:
+        """
+        Count the file extensions present directly inside a folder (not recursive)
+
+        Args:
+            folder_path: Folder to scan
+
+        Returns:
+            List of (extension, count) tuples, extension lower-cased with its leading
+            dot, most common first then alphabetical. Files without an extension are
+            ignored. Empty list if the folder cannot be read.
+        """
+        counts: dict[str, int] = {}
+        try:
+            with os.scandir(folder_path) as entries:
+                for entry in entries:
+                    if not entry.is_file():
+                        continue
+                    ext = os.path.splitext(entry.name)[1].lower()
+                    if ext and ext != '.':
+                        counts[ext] = counts.get(ext, 0) + 1
+        except OSError:
+            return []
+        return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+    @staticmethod
     def get_max_counter(folder_path: str, base_name: str, extension: str, padding: int = 6) -> int:
         """
         Scan destination folder for existing files and find the highest counter

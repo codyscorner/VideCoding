@@ -2,7 +2,7 @@
 
 A powerful, object-oriented tool for batch renaming and moving files with sequential numbering.
 
-## Version 3.4.0
+## Version 3.5.0
 
 Enhanced version with advanced rename patterns, sorting options, folder organization features (including a per-Base-Name folder), dry-run preview, template management, threaded progress bar with cancel support, and drag-and-drop folder selection.
 
@@ -35,6 +35,8 @@ Enhanced version with advanced rename patterns, sorting options, folder organiza
     (`dest\[Base Name]\year\month\day`) — v3.4+
 
 - **Preview (dry run)** (v3.4+): lists every planned move in the status box without touching files
+
+- **Extension dropdown from source folder** (v3.5+): the Extension box lists the extensions actually present in the source folder (most common first, counts on hover); still editable
 
 - **Standalone Executable**: No Python installation required
 
@@ -303,6 +305,10 @@ MIT License - See [LICENSE](LICENSE) file for details.
 Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
+
+### v3.5.0 (September 5, 2026)
+- Extension box is an editable dropdown auto-filled from the source folder (debounced scan on any path change)
+- Most common extension auto-selected when the box is empty; label shows the number of types found
 
 ### v3.4.0 (September 5, 2026)
 - "Create a folder named after the Base Name" checkbox: `dest\[Base Name]\year\month\day`
