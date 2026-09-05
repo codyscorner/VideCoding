@@ -154,6 +154,8 @@ class ManageTemplatesDialogQt(QDialog):
             details.append(f"Pattern: {template['pattern_type']}")
         if template.get('folder_structure'):
             details.append(f"Folder Structure: {template['folder_structure']}")
+        if template.get('base_name_folder'):
+            details.append("Base Name Folder: yes")
 
         self.details_text.setText('\n'.join(details))
 

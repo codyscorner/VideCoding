@@ -23,7 +23,8 @@ class FolderOrganizer:
     def get_destination_subfolder(
         file_path: str,
         structure: FolderStructure,
-        use_file_date: bool = True
+        use_file_date: bool = True,
+        base_name_folder: Optional[str] = None
     ) -> str:
         """
         Get the subfolder path based on organization structure
@@ -32,10 +33,26 @@ class FolderOrganizer:
             file_path: Path to the file
             structure: Folder structure to use
             use_file_date: If True, use file's date; otherwise use current date
+            base_name_folder: If given, a folder with this name is placed in front of
+                the date structure, e.g. ``Basename/YYYY/MM/DD``
 
         Returns:
-            Relative subfolder path (empty string for flat structure)
+            Relative subfolder path (empty string for flat structure without a
+            base-name folder)
         """
+        date_part = FolderOrganizer._get_date_subfolder(file_path, structure, use_file_date)
+        prefix = (base_name_folder or "").strip()
+        if prefix and date_part:
+            return os.path.join(prefix, date_part)
+        return prefix or date_part
+
+    @staticmethod
+    def _get_date_subfolder(
+        file_path: str,
+        structure: FolderStructure,
+        use_file_date: bool = True
+    ) -> str:
+        """Date-only part of the subfolder path (no base-name folder)."""
         if structure == FolderStructure.FLAT:
             return ""
 
@@ -95,12 +112,16 @@ class FolderOrganizer:
         return full_path
 
     @staticmethod
-    def get_folder_structure_example(structure: FolderStructure) -> str:
+    def get_folder_structure_example(
+        structure: FolderStructure,
+        base_name_folder: Optional[str] = None
+    ) -> str:
         """
         Get an example of the folder structure
 
         Args:
             structure: Folder structure type
+            base_name_folder: Optional base-name folder shown in front of the date part
 
         Returns:
             Example string
@@ -108,23 +129,23 @@ class FolderOrganizer:
         dt = datetime(2025, 11, 27, 14, 30, 0)
         sep = os.sep  # Use OS-specific separator (\ for Windows, / for Unix)
 
-        if structure == FolderStructure.FLAT:
-            return f"dest_folder{sep}"
-
-        elif structure == FolderStructure.BY_YEAR:
-            return f"dest_folder{sep}{dt.strftime('%Y')}{sep}"
-
+        if structure == FolderStructure.BY_YEAR:
+            date_part = dt.strftime('%Y')
         elif structure == FolderStructure.BY_YEAR_MONTH:
-            return f"dest_folder{sep}{dt.strftime('%Y')}{sep}{dt.strftime('%m')}{sep}"
-
+            date_part = f"{dt.strftime('%Y')}{sep}{dt.strftime('%m')}"
         elif structure == FolderStructure.BY_YEAR_MONTH_DAY:
-            return f"dest_folder{sep}{dt.strftime('%Y')}{sep}{dt.strftime('%m')}{sep}{dt.strftime('%d')}{sep}"
-
+            date_part = f"{dt.strftime('%Y')}{sep}{dt.strftime('%m')}{sep}{dt.strftime('%d')}"
         elif structure == FolderStructure.BY_DATE:
-            return f"dest_folder{sep}{dt.strftime('%Y-%m-%d')}{sep}"
-
+            date_part = dt.strftime('%Y-%m-%d')
         elif structure == FolderStructure.BY_MONTH:
-            return f"dest_folder{sep}{dt.strftime('%Y-%m')}{sep}"
-
+            date_part = dt.strftime('%Y-%m')
         else:
-            return f"dest_folder{sep}"
+            date_part = ""
+
+        parts = ["dest_folder"]
+        prefix = (base_name_folder or "").strip()
+        if prefix:
+            parts.append(prefix)
+        if date_part:
+            parts.append(date_part)
+        return sep.join(parts) + sep

@@ -19,6 +19,7 @@ class ConfigManager:
         "datetime_format": "YYYYMMDD",
         "include_counter": True,
         "folder_structure": "flat",
+        "base_name_folder": False,
         "custom_pattern": "{counter}",
         "verify_hash": False,
         "last_template": ""

@@ -75,6 +75,7 @@ class RenameWorker(QThread):
         sort_order,
         folder_structure,
         verify_hash: bool,
+        base_name_folder: bool = False,
         parent=None,
     ):
         super().__init__(parent)
@@ -87,6 +88,7 @@ class RenameWorker(QThread):
         self._sort_order = sort_order
         self._folder_structure = folder_structure
         self._verify_hash = verify_hash
+        self._base_name_folder = base_name_folder
         self._cancelled = False
 
     def cancel(self):
@@ -102,6 +104,7 @@ class RenameWorker(QThread):
             sort_order=self._sort_order,
             folder_structure=self._folder_structure,
             verify_hash=self._verify_hash,
+            base_name_folder=self._base_name_folder,
         )
         try:
             results = file_renamer.move_and_rename(
@@ -397,6 +400,17 @@ class MainWindowQt(QMainWindow):
         self.folder_structure_combo.currentTextChanged.connect(self._update_folder_example)
         parent_layout.addWidget(self.folder_structure_combo)
 
+        # Base-name folder option: dest\[Base Name]\year\month\day
+        self.base_name_folder_check = QCheckBox(
+            "Create a folder named after the Base Name  ([Base Name]\\year\\month\\day)"
+        )
+        self.base_name_folder_check.setToolTip(
+            "Files are moved into a folder named after the Base Name inside the destination.\n"
+            "Any date organization above is created inside that folder."
+        )
+        self.base_name_folder_check.stateChanged.connect(self._update_folder_example)
+        parent_layout.addWidget(self.base_name_folder_check)
+
         # Example label
         self.folder_example_label = self._create_italic_label()
         parent_layout.addWidget(self.folder_example_label)
@@ -404,6 +418,11 @@ class MainWindowQt(QMainWindow):
     def _create_buttons(self, parent_layout: QVBoxLayout) -> None:
         """Create action buttons"""
         button_layout = QHBoxLayout()
+
+        self.preview_button = QPushButton("Preview")
+        self.preview_button.setToolTip("Dry run: list what would be moved and renamed without touching any files")
+        self.preview_button.clicked.connect(self._preview)
+        button_layout.addWidget(self.preview_button)
 
         self.move_button = QPushButton("Move and Rename")
         self.move_button.clicked.connect(self._move_and_rename)
@@ -487,6 +506,7 @@ class MainWindowQt(QMainWindow):
         idx = self.folder_structure_combo.findText(folder_structure)
         if idx >= 0:
             self.folder_structure_combo.setCurrentIndex(idx)
+        self.base_name_folder_check.setChecked(bool(self.config.get("base_name_folder", False)))
 
         # Restore last selected template in the dropdown (without loading it)
         last_template = self.config.get("last_template", "")
@@ -507,6 +527,7 @@ class MainWindowQt(QMainWindow):
         # Text changes that update example
         self.ext_entry.textChanged.connect(self._update_example)
         self.rename_entry.textChanged.connect(self._update_example)
+        self.rename_entry.textChanged.connect(self._update_folder_example)
         self.datetime_format_combo.currentTextChanged.connect(self._update_example)
         self.include_counter_check.stateChanged.connect(self._update_example)
         self.custom_pattern_entry.textChanged.connect(self._update_example)
@@ -593,7 +614,10 @@ class MainWindowQt(QMainWindow):
         """Update the folder organization example"""
         try:
             structure = FolderStructure(self.folder_structure_combo.currentText())
-            example = FolderOrganizer.get_folder_structure_example(structure)
+            base_name_folder = None
+            if self.base_name_folder_check.isChecked():
+                base_name_folder = self.rename_entry.text().strip() or "[Base Name]"
+            example = FolderOrganizer.get_folder_structure_example(structure, base_name_folder)
             self.folder_example_label.setText(f"Example: {example}")
         except Exception:
             self.folder_example_label.setText("")
@@ -635,9 +659,12 @@ class MainWindowQt(QMainWindow):
         dialog = SettingsDialogQt(self, self)
         dialog.exec()
 
-    @Slot()
-    def _move_and_rename(self) -> None:
-        """Handle move and rename operation — starts a background worker thread."""
+    def _collect_operation(self) -> Optional[dict]:
+        """
+        Read and validate every input the operation needs.
+
+        Shows an error dialog and returns None when something is missing or invalid.
+        """
         source_folder = self.source_entry.text().strip()
         dest_folder = self.dest_entry.text().strip()
         extension = self.ext_entry.text().strip()
@@ -645,16 +672,16 @@ class MainWindowQt(QMainWindow):
 
         if not source_folder:
             QMessageBox.critical(self, "Error", "Please select a source folder")
-            return
+            return None
         if not dest_folder:
             QMessageBox.critical(self, "Error", "Please select a destination folder")
-            return
+            return None
         if not extension:
             QMessageBox.critical(self, "Error", "Please enter a file extension")
-            return
+            return None
         if not base_name:
             QMessageBox.critical(self, "Error", "Please enter a base name")
-            return
+            return None
 
         # Pre-validate before spinning up the thread so errors surface as dialogs
         from file_operations import FileValidator
@@ -664,7 +691,7 @@ class MainWindowQt(QMainWindow):
             FileValidator.validate_rename_pattern(base_name)
         except ValueError as e:
             QMessageBox.critical(self, "Validation Error", str(e))
-            return
+            return None
 
         try:
             pattern_type = PatternType(self.pattern_type_combo.currentText())
@@ -683,9 +710,69 @@ class MainWindowQt(QMainWindow):
             folder_structure = FolderStructure(self.folder_structure_combo.currentText())
         except ValueError as e:
             QMessageBox.critical(self, "Validation Error", str(e))
+            return None
+
+        return {
+            "source_folder": source_folder,
+            "dest_folder": dest_folder,
+            "extension": extension,
+            "base_name": base_name,
+            "rename_pattern": pattern,
+            "sort_by": sort_by,
+            "sort_order": sort_order,
+            "folder_structure": folder_structure,
+            "verify_hash": self.config.get("verify_hash", False),
+            "base_name_folder": self.base_name_folder_check.isChecked(),
+        }
+
+    @Slot()
+    def _preview(self) -> None:
+        """Dry run: list the planned moves in the status box without touching files."""
+        op = self._collect_operation()
+        if op is None:
             return
 
-        verify_hash = self.config.get("verify_hash", False)
+        renamer = FileRenamer(
+            rename_pattern=op["rename_pattern"],
+            sort_by=op["sort_by"],
+            sort_order=op["sort_order"],
+            folder_structure=op["folder_structure"],
+            base_name_folder=op["base_name_folder"],
+        )
+        try:
+            preview = renamer.generate_preview(
+                op["source_folder"], op["extension"], op["base_name"], op["dest_folder"]
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Preview Error", str(e))
+            return
+
+        self.status_listbox.clear()
+        if not preview:
+            self.add_status(f"Preview: no '{op['extension']}' files found in source folder")
+            return
+
+        self.add_status(f"Preview: {len(preview)} file(s) would be moved to {op['dest_folder']}")
+        for original, new_path in preview:
+            self.add_status(f"  {original} → {new_path}")
+        self.add_status("Preview only — nothing has been moved.")
+        self.status_listbox.scrollToTop()
+
+    @Slot()
+    def _move_and_rename(self) -> None:
+        """Handle move and rename operation — starts a background worker thread."""
+        op = self._collect_operation()
+        if op is None:
+            return
+        source_folder = op["source_folder"]
+        dest_folder = op["dest_folder"]
+        extension = op["extension"]
+        base_name = op["base_name"]
+        pattern = op["rename_pattern"]
+        sort_by = op["sort_by"]
+        sort_order = op["sort_order"]
+        folder_structure = op["folder_structure"]
+        verify_hash = op["verify_hash"]
 
         # Snapshot config values to save when the worker finishes
         self._pending_config = {
@@ -697,6 +784,7 @@ class MainWindowQt(QMainWindow):
             "datetime_format": self.datetime_format_combo.currentText(),
             "include_counter": self.include_counter_check.isChecked(),
             "folder_structure": self.folder_structure_combo.currentText(),
+            "base_name_folder": self.base_name_folder_check.isChecked(),
             "custom_pattern": self.custom_pattern_entry.text(),
         }
 
@@ -707,6 +795,7 @@ class MainWindowQt(QMainWindow):
         self.progress_label.setText("")
         self.progress_label.setVisible(True)
         self.move_button.setEnabled(False)
+        self.preview_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
 
         self._worker = RenameWorker(
@@ -719,6 +808,7 @@ class MainWindowQt(QMainWindow):
             sort_order=sort_order,
             folder_structure=folder_structure,
             verify_hash=verify_hash,
+            base_name_folder=op["base_name_folder"],
         )
         self._worker.status_updated.connect(self.add_status)
         self._worker.progress_updated.connect(self._on_worker_progress)
@@ -750,6 +840,7 @@ class MainWindowQt(QMainWindow):
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
         self.move_button.setEnabled(True)
+        self.preview_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
 
         if cancelled:
@@ -804,6 +895,7 @@ class MainWindowQt(QMainWindow):
             "datetime_format": self.datetime_format_combo.currentText(),
             "include_counter": self.include_counter_check.isChecked(),
             "folder_structure": self.folder_structure_combo.currentText(),
+            "base_name_folder": self.base_name_folder_check.isChecked(),
             "custom_pattern": self.custom_pattern_entry.text()
         }
 
@@ -845,6 +937,9 @@ class MainWindowQt(QMainWindow):
             idx = self.folder_structure_combo.findText(settings["folder_structure"] or "flat")
             if idx >= 0:
                 self.folder_structure_combo.setCurrentIndex(idx)
+
+        if "base_name_folder" in settings:
+            self.base_name_folder_check.setChecked(bool(settings.get("base_name_folder", False)))
 
         if "custom_pattern" in settings:
             self.custom_pattern_entry.setText(settings["custom_pattern"] or "{counter}")

@@ -180,7 +180,8 @@ class FileRenamer:
         sort_order: SortOrder = SortOrder.ASCENDING,
         folder_structure: FolderStructure = FolderStructure.FLAT,
         verify_hash: bool = False,
-        cancel_check: Optional[Callable[[], bool]] = None
+        cancel_check: Optional[Callable[[], bool]] = None,
+        base_name_folder: bool = False
     ):
         """
         Initialize the file renamer
@@ -194,6 +195,9 @@ class FileRenamer:
             folder_structure: Folder organization structure
             verify_hash: Whether to verify file integrity with hash after copy
             cancel_check: Optional callable returning True when operation should abort
+            base_name_folder: If True, files go into a ``<base_name>`` folder inside
+                the destination, in front of any date structure
+                (``dest/<base_name>/YYYY/MM/DD``)
         """
         self.status_callback = status_callback
         self.progress_callback = progress_callback
@@ -205,8 +209,29 @@ class FileRenamer:
         self.sort_order = sort_order
         self.folder_structure = folder_structure
         self.verify_hash = verify_hash
+        self.base_name_folder = base_name_folder
         self.sorter = FileSorter()
         self.organizer = FolderOrganizer()
+
+    def _counter_scan_root(self, dest_folder: str, base_name: str) -> str:
+        """
+        Folder whose tree is scanned for existing ``base_name_NNNNNN`` files.
+
+        With the base-name folder option on, only ``dest/<base_name>`` is scanned so
+        a large shared destination (e.g. a NAS root) is not walked in full.
+        """
+        if self.base_name_folder:
+            return os.path.join(dest_folder, base_name)
+        return dest_folder
+
+    def _subfolder_for(self, source_path: str, base_name: str) -> str:
+        """Relative subfolder (base-name folder + date structure) for a file."""
+        return self.organizer.get_destination_subfolder(
+            source_path,
+            self.folder_structure,
+            use_file_date=True,
+            base_name_folder=base_name if self.base_name_folder else None
+        )
 
     def _log_status(self, message: str) -> None:
         """Log status message if callback is set"""
@@ -335,8 +360,12 @@ class FileRenamer:
             self.sort_order
         )
 
+        if self.base_name_folder:
+            self._log_status(f"Files will be placed under folder: {base_name}{os.sep}")
+
         # Get starting counter by scanning destination for existing files
-        max_existing = self.scanner.get_max_counter(dest_folder, base_name, extension)
+        scan_root = self._counter_scan_root(dest_folder, base_name)
+        max_existing = self.scanner.get_max_counter(scan_root, base_name, extension)
         counter = max_existing + 1
         if max_existing > 0:
             self._log_status(f"Found existing files up to {base_name}_{str(max_existing).zfill(6)}{extension}, starting at {counter}")
@@ -405,11 +434,7 @@ class FileRenamer:
         )
 
         # Determine destination folder with organization
-        subfolder = self.organizer.get_destination_subfolder(
-            source_path,
-            self.folder_structure,
-            use_file_date=True
-        )
+        subfolder = self._subfolder_for(source_path, base_name)
 
         # Create destination path
         if subfolder:
@@ -476,6 +501,8 @@ class FileRenamer:
         """
         Generate a preview of what files would be renamed to
 
+        Nothing is moved or created; this is a dry run of ``move_and_rename``.
+
         Args:
             source_folder: Source folder path
             extension: File extension to process
@@ -483,7 +510,8 @@ class FileRenamer:
             dest_folder: Optional destination folder to check for existing files
 
         Returns:
-            List of (original_name, new_name) tuples
+            List of (original_name, new_relative_path) tuples where the new path
+            includes the base-name folder and date subfolder when enabled
         """
         extension = self.validator.validate_extension(extension)
         source_files = self.scanner.get_files_with_extension(source_folder, extension)
@@ -502,7 +530,8 @@ class FileRenamer:
         # Get starting counter by checking destination folder for existing files
         counter = 1
         if dest_folder and os.path.exists(dest_folder):
-            max_existing = self.scanner.get_max_counter(dest_folder, base_name, extension)
+            scan_root = self._counter_scan_root(dest_folder, base_name)
+            max_existing = self.scanner.get_max_counter(scan_root, base_name, extension)
             counter = max_existing + 1
 
         # Generate preview using current pattern
@@ -515,7 +544,9 @@ class FileRenamer:
                 counter,
                 source_path
             )
-            preview.append((filename, new_filename))
+            subfolder = self._subfolder_for(source_path, base_name)
+            new_path = os.path.join(subfolder, new_filename) if subfolder else new_filename
+            preview.append((filename, new_path))
             counter += 1
 
         return preview

@@ -185,6 +185,11 @@ class EditTemplateDialogQt(QDialog):
         ])
         layout.addWidget(self.folder_structure_combo)
 
+        self.base_name_folder_check = QCheckBox(
+            "Create a folder named after the Base Name  ([Base Name]\\year\\month\\day)"
+        )
+        layout.addWidget(self.base_name_folder_check)
+
         layout.addStretch()
 
         scroll_area.setWidget(scroll_content)
@@ -241,6 +246,7 @@ class EditTemplateDialogQt(QDialog):
         idx = self.folder_structure_combo.findText(folder_structure)
         if idx >= 0:
             self.folder_structure_combo.setCurrentIndex(idx)
+        self.base_name_folder_check.setChecked(bool(self.template_data.get("base_name_folder", False)))
 
         # Update visibility
         self._on_pattern_type_changed()
@@ -304,6 +310,7 @@ class EditTemplateDialogQt(QDialog):
             "datetime_format": self.datetime_format_combo.currentText(),
             "include_counter": self.include_counter_check.isChecked(),
             "folder_structure": self.folder_structure_combo.currentText(),
+            "base_name_folder": self.base_name_folder_check.isChecked(),
             "custom_pattern": self.custom_pattern_entry.text()
         }
 
