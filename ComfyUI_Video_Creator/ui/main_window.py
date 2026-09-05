@@ -91,6 +91,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self._wire(self._image_browser, self._image_panel, "image_dir", "image_sort")
         self._wire(self._video_browser, self._video_panel, "video_dir", "video_sort")
+        # A clone made on one tab has to show up in the other tab's dropdown too.
+        self._image_panel.workflows_changed.connect(self._video_panel.refresh_workflow_list)
+        self._video_panel.workflows_changed.connect(self._image_panel.refresh_workflow_list)
         self._video_browser.activated.connect(lambda p: self._play(str(p)))
         self._update_mode_label()
         # Initial scans run after the signals above are wired so the run

@@ -1,6 +1,6 @@
 # ComfyUI Video Creator
 
-Version: 1.3.7
+Version: 1.3.8
 
 Single-shot ComfyUI API workflow runner with a dark red theme. Pick an image (or a video to extend), pick a workflow JSON, press Run, and the finished video lands in a local folder — from a local ComfyUI or a RunPod pod.
 
@@ -15,6 +15,7 @@ This is a **separate app from the ComfyUI Workflow Chain Automator**. It shares 
 
   Auto-detected from the workflow, with a manual override. Optionally the new clip is **appended to the source video** (`<name>_extended_<stamp>.mp4`)
 - **Workflow dropdown** — every API-format `.json` under the Workflows folder (subfolders included). Batch-style workflows using `LoadImageListFromDir //Inspire` also work: the single image is staged into a fresh run folder and the loader pointed at it
+- **⧉ Clone workflow** — copy the selected workflow to a new name (and any subfolder) and switch to the copy, so you can experiment without touching a workflow that already works. Optionally seeds the clone with the prompts, LoRAs and settings currently on screen, and optionally copies its prompt history
 - **Prompt editor** built from the workflow (CLIPTextEncode positive/negative, MiniMax H3 prompt, PrimitiveStringMultiline); edits apply per run, or "Save to workflow" writes them into the JSON. Each prompt has an **⤢ Expand** button for a large separate editor window, and the Prompts / Options split is draggable
 - **LoRA picker** — one row per LoRA node in the workflow (`LoraLoaderModelOnly`, rgthree `Lora Loader Stack`, `MiniMaxH3TurboLoRA`…): editable dropdown of LoRA files from your LoRAs folder (or fetched from the connected server with ⇣ Server) plus strength spinner(s). A "Next run →" line always shows the LoRAs, seed and length about to be used
 - **Prompt history with settings** — every run appends prompts + seed + length + LoRAs/strengths + mode + source to the workflow's `<name>.prompt_history.json` (shared with the Chain Automator) and attaches the result file name when done. 📜 History searches entries and reloads the prompt alone or prompt + settings
@@ -89,7 +90,7 @@ Builds with the repo `.venv`, deploys `ComfyUI_Video_Creator.exe`, `app_icon.ico
 | `comfy_client.py` | Upload, queue, websocket/poll wait, history, download, interrupt |
 | `run_worker.py` | Background thread for one run: feed source → queue → wait → download → optional stitch |
 | `media_tools.py` | ffmpeg discovery, last frame, thumbnails, probe, concat |
-| `ui/` | Dark red theme, thumbnail browsers, run panel, settings dialog, video player, main window |
+| `ui/` | Dark red theme, thumbnail browsers, run panel, clone dialog, settings dialog, video player, main window |
 
 ## Changelog
 
