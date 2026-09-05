@@ -254,20 +254,34 @@ class MainWindowQt(QMainWindow):
         # Sorting options
         self._create_sorting_section(scroll_layout)
 
-        # Pattern options
-        self._create_pattern_section(scroll_layout)
-
-        # Folder organization
-        self._create_folder_organization_section(scroll_layout)
+        # Rename pattern (left) and Folder organization (right) side by side
+        # Each column lives in a container whose width hint is ignored, so the two
+        # stretch factors split the row exactly 50/50 no matter how long a label is.
+        two_col = QHBoxLayout()
+        two_col.setSpacing(20)
+        pattern_box = QWidget()
+        pattern_box.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        pattern_col = QVBoxLayout(pattern_box)
+        pattern_col.setContentsMargins(0, 0, 0, 0)
+        pattern_col.setSpacing(10)
+        self._create_pattern_section(pattern_col)
+        pattern_col.addStretch()
+        folder_box = QWidget()
+        folder_box.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        folder_col = QVBoxLayout(folder_box)
+        folder_col.setContentsMargins(0, 0, 0, 0)
+        folder_col.setSpacing(10)
+        self._create_folder_organization_section(folder_col)
+        folder_col.addStretch()
+        two_col.addWidget(pattern_box, 1)
+        two_col.addWidget(folder_box, 1)
+        scroll_layout.addLayout(two_col)
 
         # Buttons
         self._create_buttons(scroll_layout)
 
-        # Status listbox
+        # Status listbox — takes every remaining pixel instead of a trailing stretch
         self._create_status_listbox(scroll_layout)
-
-        # Add stretch to push content to top
-        scroll_layout.addStretch()
 
         scroll_area.setWidget(scroll_content)
         main_layout.addWidget(scroll_area)
@@ -356,18 +370,28 @@ class MainWindowQt(QMainWindow):
     def _create_basic_inputs(self, parent_layout: QVBoxLayout) -> None:
         """Create extension and base name inputs"""
         # Extension
+        row = QHBoxLayout()
+        row.setSpacing(20)
+
+        # Extension (left)
+        ext_col = QVBoxLayout()
         self.ext_label = QLabel("Extension:")
-        parent_layout.addWidget(self.ext_label)
+        ext_col.addWidget(self.ext_label)
         self.ext_entry = ExtensionCombo()
         self.ext_entry.setToolTip("Extensions found in the source folder, most common first. You can also type one.")
-        parent_layout.addWidget(self.ext_entry)
+        ext_col.addWidget(self.ext_entry)
+        row.addLayout(ext_col, 1)
 
-        # Base name
-        parent_layout.addWidget(QLabel("Base Name:"))
+        # Base name (right)
+        name_col = QVBoxLayout()
+        name_col.addWidget(QLabel("Base Name:"))
         self.rename_entry = QLineEdit()
-        parent_layout.addWidget(self.rename_entry)
+        name_col.addWidget(self.rename_entry)
+        row.addLayout(name_col, 1)
 
-        # Example label
+        parent_layout.addLayout(row)
+
+        # Example label spans both columns
         self.example_label = self._create_italic_label()
         parent_layout.addWidget(self.example_label)
 
@@ -436,6 +460,7 @@ class MainWindowQt(QMainWindow):
         hint_label = self._create_italic_label(
             "Available: {counter}, {date}, {time}, {datetime}, {year}, {month}, {day}, {original}"
         )
+        hint_label.setWordWrap(True)
         custom_layout.addWidget(hint_label)
         self.custom_pattern_entry = QLineEdit()
         self.custom_pattern_entry.setText("{counter}")
@@ -458,18 +483,17 @@ class MainWindowQt(QMainWindow):
         parent_layout.addWidget(self.folder_structure_combo)
 
         # Base-name folder option: dest\[Base Name]\year\month\day
-        self.base_name_folder_check = QCheckBox(
-            "Create a folder named after the Base Name  ([Base Name]\\year\\month\\day)"
-        )
+        self.base_name_folder_check = QCheckBox("Folder named after Base Name")
         self.base_name_folder_check.setToolTip(
-            "Files are moved into a folder named after the Base Name inside the destination.\n"
-            "Any date organization above is created inside that folder."
+            "Files are moved into dest\\[Base Name]\\year\\month\\day.\n"
+            "Any date organization above is created inside the Base Name folder."
         )
         self.base_name_folder_check.stateChanged.connect(self._update_folder_example)
         parent_layout.addWidget(self.base_name_folder_check)
 
         # Example label
         self.folder_example_label = self._create_italic_label()
+        self.folder_example_label.setWordWrap(True)
         parent_layout.addWidget(self.folder_example_label)
 
     def _create_buttons(self, parent_layout: QVBoxLayout) -> None:
@@ -521,7 +545,8 @@ class MainWindowQt(QMainWindow):
 
         self.status_listbox = QListWidget()
         self.status_listbox.setMinimumHeight(150)
-        parent_layout.addWidget(self.status_listbox)
+        self.status_listbox.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        parent_layout.addWidget(self.status_listbox, 1)
 
         # Initial status message
         self.add_status("Ready to move and rename files...")

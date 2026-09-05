@@ -2,7 +2,7 @@
 
 A powerful, object-oriented tool for batch renaming and moving files with sequential numbering.
 
-## Version 3.5.0
+## Version 3.5.1
 
 Enhanced version with advanced rename patterns, sorting options, folder organization features (including a per-Base-Name folder), dry-run preview, template management, threaded progress bar with cancel support, and drag-and-drop folder selection.
 
@@ -305,6 +305,10 @@ MIT License - See [LICENSE](LICENSE) file for details.
 Contributions with AI assistance by Claude (Anthropic)
 
 ## Version History
+
+### v3.5.1 (September 5, 2026)
+- Two-column form: Extension | Base Name, and Rename Pattern | Folder Organization
+- Status box fills the remaining window height (no more cut-off at 1000×870)
 
 ### v3.5.0 (September 5, 2026)
 - Extension box is an editable dropdown auto-filled from the source folder (debounced scan on any path change)
