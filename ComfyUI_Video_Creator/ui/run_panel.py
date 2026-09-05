@@ -577,7 +577,7 @@ class RunPanel(QWidget):
             save_workflow(self._workflow_path, wf)
             append_entry(self._workflow_path, make_entry(self._prompt_tuples(), self._collect_settings(),
                                                          self._source.name if self._source else ""))
-            self.append_log(f"Saved prompts and LoRAs to {self._workflow_path.name} (and to history)")
+            self.append_log(f"Saved prompts, LoRAs, steps, megapixels and length to {self._workflow_path.name} (and to history)")
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Save failed", str(e))
 

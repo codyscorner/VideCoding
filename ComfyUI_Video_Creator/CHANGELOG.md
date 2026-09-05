@@ -1,5 +1,9 @@
 # Changelog — ComfyUI Video Creator
 
+### v1.3.3
+- The player now auto-closes at the end of the video everywhere, including playback from a tab's Results list (v1.3.2 only did it for the Library)
+- "Save to workflow" log line now lists everything it wrote (prompts, LoRAs, steps, megapixels, length)
+
 ### v1.3.2
 - Library playback closes the player automatically when the last selected video finishes (single video or playlist) — no more dismissing a window sitting on the final frame. Playback from a tab's Results list still stays open
 
