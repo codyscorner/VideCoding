@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 )
 
 from config import ConfigManager
+from file_ops import delete_paths, thumbnail_caches
 from media_tools import probe
 from ui.prompt_history import find_entry_for_result, format_entry
 from ui.styles import COLORS
@@ -50,7 +51,7 @@ class LibraryTab(QWidget):
 
         self.browser = MediaBrowser(
             "video", self.effective_folder(), config.get("library_sort", "Newest First"),
-            ffmpeg_getter, multi=True, last_frame=False, title="Library",
+            ffmpeg_getter, multi=True, last_frame=False, title="Library", show_delete=False,
             hint="Finished videos — Output folder unless you pick another one",
         )
         self.browser.selection_changed.connect(lambda _p: self._update_details())
@@ -89,7 +90,7 @@ class LibraryTab(QWidget):
         row2.addWidget(refresh_btn)
         del_btn = QPushButton("🗑 Delete")
         del_btn.setObjectName("cancel_btn")
-        del_btn.setToolTip("Delete the selected video file(s) permanently")
+        del_btn.setToolTip("Delete the selected video file(s) — goes to the Recycle Bin (Del)")
         del_btn.clicked.connect(self._delete_selected)
         row2.addWidget(del_btn)
         row2.addStretch()
@@ -172,24 +173,18 @@ class LibraryTab(QWidget):
         names = "\n".join(p.name for p in paths[:8]) + ("\n…" if len(paths) > 8 else "")
         ans = QMessageBox.question(
             self, "Delete video" + ("s" if len(paths) > 1 else ""),
-            f"Permanently delete {len(paths)} file{'s' if len(paths) > 1 else ''}?\n\n{names}",
+            f"Send {len(paths)} file{'s' if len(paths) > 1 else ''} to the Recycle Bin?\n\n{names}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if ans != QMessageBox.StandardButton.Yes:
             return
-        errors = []
+        self.browser.deleting.emit(paths)
+        root = Path(self.browser.folder) if self.browser.folder else None
+        caches: list[Path] = []
         for p in paths:
-            try:
-                p.unlink()
-            except OSError as e:
-                errors.append(f"{p.name}: {e}")
-                continue
-            for thumb in (p.parent / "thumbnails" / f"{p.stem}.jpg", p.parent / "thumbnails" / f"{p.stem}_last.jpg"):
-                try:
-                    thumb.unlink()
-                except OSError:
-                    pass
+            caches += thumbnail_caches(p, root)
+        _n, errors, _recycled = delete_paths(paths + caches)
         if errors:
             QMessageBox.warning(self, "Delete", "Some files could not be deleted:\n" + "\n".join(errors))
         self.refresh()

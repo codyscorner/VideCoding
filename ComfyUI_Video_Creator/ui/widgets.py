@@ -13,13 +13,15 @@ import zlib
 from pathlib import Path
 
 from PIL import Image, ImageOps
-from PyQt6.QtCore import QSize, Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
+from PyQt6.QtCore import QEvent, QSize, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QIcon, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QCompleter, QFileDialog, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
+    QSizePolicy, QVBoxLayout, QWidget,
 )
 
+from file_ops import delete_paths, thumbnail_caches
 from media_tools import IMAGE_EXTS, VIDEO_EXTS, extract_last_frame, extract_thumbnail
 from ui.styles import COLORS
 
@@ -73,6 +75,53 @@ class ElidedLabel(QLabel):
 # --------------------------------------------------------------------- #
 # Grid
 # --------------------------------------------------------------------- #
+
+class FilterComboBox(QComboBox):
+    """Combo that filters as you type, matching anywhere in the entry.
+
+    Qt's stock completer only matches from the start, which is useless for a
+    list of workflows where the part you remember ("makeout", "cumshot") sits
+    in the middle of `Video_MiniMax_Makeout on Bed/workflow_segment_01.json`.
+
+    `strict` decides what happens to text that matches nothing: the workflow
+    picker snaps back to its current entry, the LoRA pickers keep it (a LoRA
+    can live on the server without being in the local folder).
+    """
+
+    def __init__(self, parent=None, strict: bool = True, placeholder: str = "Type to filter…"):
+        super().__init__(parent)
+        self._strict = strict
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        completer = QCompleter(self.model(), self)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setMaxVisibleItems(20)
+        self.setCompleter(completer)
+        self.lineEdit().setPlaceholderText(placeholder)
+        self.lineEdit().installEventFilter(self)
+        # A line edit scrolls to the caret; long workflow paths would show
+        # their tail. Keep the start of the name in view instead.
+        self.currentIndexChanged.connect(lambda _i: self.lineEdit().setCursorPosition(0))
+
+    def eventFilter(self, obj, event):
+        # A click in the box selects everything, so typing replaces the entry
+        # instead of landing in the middle of it.
+        if obj is self.lineEdit() and event.type() == QEvent.Type.MouseButtonPress:
+            QTimer.singleShot(0, self.lineEdit().selectAll)
+        return super().eventFilter(obj, event)
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        if not self._strict:
+            return
+        idx = self.findText(self.currentText().strip(), Qt.MatchFlag.MatchFixedString)
+        if idx >= 0:
+            self.setCurrentIndex(idx)
+        else:
+            self.setEditText(self.itemText(self.currentIndex()))
+
 
 class ThumbnailGrid(QListWidget):
     def __init__(self, parent=None):
@@ -167,6 +216,9 @@ class ImageLoaderThread(QThread):
         for img_path in images:
             if self._cancelled:
                 return
+            if not img_path.exists():   # deleted while this scan was running
+                total -= 1
+                continue
             img = QImage()
             thumb_path = thumb_dir / self._thumb_name(img_path) if thumb_dir else None
             try:
@@ -238,6 +290,9 @@ class VideoLoaderThread(QThread):
         for vid in videos:
             if self._cancelled:
                 return
+            if not vid.exists():        # deleted while this scan was running
+                total -= 1
+                continue
             # The Extend tab shows each video's LAST frame — that's the
             # starting point of the extension. Cached under its own name so
             # it never collides with the Chain Automator's first-frame cache.
@@ -254,6 +309,11 @@ class VideoLoaderThread(QThread):
                         extract_thumbnail(self._ffmpeg, vid, thumb)
                 else:
                     extract_thumbnail(self._ffmpeg, vid, thumb)
+            if self._cancelled:         # extraction is slow; check again after it
+                return
+            if not vid.exists():
+                total -= 1
+                continue
             img = QImage(str(thumb)) if thumb.exists() else QImage()
             if img.isNull():
                 img = QImage(THUMB_SIZE, THUMB_SIZE, QImage.Format.Format_RGB32)
@@ -277,15 +337,19 @@ class MediaBrowser(QWidget):
     activated = pyqtSignal(object)           # Path (double-click)
     folder_changed = pyqtSignal(str)
     sort_changed = pyqtSignal(str)
+    deleting = pyqtSignal(list)              # list[Path] about to be deleted (close players!)
+    deleted = pyqtSignal(list)               # list[Path] removed from the folder
 
     def __init__(self, kind: str, folder: str, sort_option: str, ffmpeg_getter, parent=None,
-                 multi: bool = False, last_frame: bool = True, title: str | None = None, hint: str = ""):
+                 multi: bool = False, last_frame: bool = True, title: str | None = None, hint: str = "",
+                 show_delete: bool = True):
         super().__init__(parent)
         self.kind = kind                      # "image" | "video"
         self._folder = folder
         self._ffmpeg_getter = ffmpeg_getter
         self._last_frame = last_frame
         self._loader: QThread | None = None
+        self._retired: list[QThread] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -319,6 +383,15 @@ class MediaBrowser(QWidget):
         open_btn.setToolTip("Open folder in Explorer")
         open_btn.clicked.connect(self._open_folder)
         row.addWidget(open_btn)
+        self._del_btn = QPushButton("🗑")
+        self._del_btn.setObjectName("small_btn")
+        self._del_btn.setFixedWidth(40)
+        self._del_btn.setToolTip(
+            f"Delete the selected {kind} — goes to the Recycle Bin (Del)")
+        self._del_btn.setEnabled(False)
+        self._del_btn.clicked.connect(self.delete_selected)
+        self._del_btn.setVisible(show_delete)     # the Library has its own labelled button
+        row.addWidget(self._del_btn)
         layout.addLayout(row)
 
         row2 = QHBoxLayout()
@@ -345,6 +418,11 @@ class MediaBrowser(QWidget):
             self.grid.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.grid.itemSelectionChanged.connect(self._on_selection)
         self.grid.itemDoubleClicked.connect(lambda it: self.activated.emit(Path(it.data(Qt.ItemDataRole.UserRole))))
+        self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.grid.customContextMenuRequested.connect(self._grid_menu)
+        shortcut = QShortcut(QKeySequence.StandardKey.Delete, self.grid)
+        shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        shortcut.activated.connect(self.delete_selected)
         layout.addWidget(self.grid, stretch=1)
 
     # ------------------------------------------------------------------ #
@@ -386,13 +464,84 @@ class MediaBrowser(QWidget):
         self.refresh()
 
     def _on_selection(self):
+        self._del_btn.setEnabled(bool(self.grid.selectedItems()))
         self.selection_changed.emit(self.selected_path())
+
+    def _grid_menu(self, pos):
+        item = self.grid.itemAt(pos)
+        if item is None:
+            return
+        if not item.isSelected():
+            self.grid.setCurrentItem(item)
+        menu = QMenu(self.grid)
+        menu.addAction("Open containing folder", self._open_folder)
+        menu.addSeparator()
+        n = len(self.grid.selectedItems())
+        menu.addAction(f"Delete {n} file{'s' if n != 1 else ''} (Recycle Bin)", self.delete_selected)
+        menu.exec(self.grid.mapToGlobal(pos))
+
+    def delete_selected(self):
+        items = self.grid.selectedItems()
+        paths = [Path(it.data(Qt.ItemDataRole.UserRole)) for it in items]
+        if not paths:
+            return
+        names = "\n".join(p.name for p in paths[:8]) + ("\n…" if len(paths) > 8 else "")
+        ans = QMessageBox.question(
+            self, "Delete " + (self.kind if len(paths) == 1 else f"{len(paths)} files"),
+            f"Send {'this file' if len(paths) == 1 else f'these {len(paths)} files'} to the "
+            f"Recycle Bin?\n\n{names}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        self.deleting.emit(paths)
+        root = Path(self._folder) if self._folder else None
+        caches: list[Path] = []
+        for p in paths:
+            caches += thumbnail_caches(p, root)
+        _n, errors, _recycled = delete_paths(paths + caches)
+        for it in items:
+            if not Path(it.data(Qt.ItemDataRole.UserRole)).exists():
+                self.grid.takeItem(self.grid.row(it))
+        gone = [p for p in paths if not p.exists()]
+        noun = "image" if self.kind == "image" else "video"
+        self._status.setText(f"{self.grid.count()} {noun}{'s' if self.grid.count() != 1 else ''}")
+        self._on_selection()
+        if errors:
+            QMessageBox.warning(self, "Delete", "Some files could not be deleted:\n" + "\n".join(errors))
+        if gone:
+            self.deleted.emit(gone)
+
+    def _release_loader(self):
+        """Let go of the running scan before starting another one.
+
+        Disconnecting first is the whole point: a loader that is midway
+        through an ffmpeg extraction can't be stopped on the spot, and while
+        it lived on it kept emitting into the grid — so a rescan was refilled
+        with the previous listing, deleted files included, and the view looked
+        stuck. The thread is also parked until it really ends, because a
+        QThread collected while still running takes the app down with it."""
+        loader, self._loader = self._loader, None
+        if loader is None:
+            return
+        for sig in (loader.item_ready, loader.progress, loader.finished_loading):
+            try:
+                sig.disconnect()
+            except TypeError:
+                pass
+        if loader.isRunning():
+            loader.cancel()
+            self._retired.append(loader)
+            loader.finished.connect(lambda: self._retire_done(loader))
+
+    def _retire_done(self, loader):
+        if loader in self._retired:
+            self._retired.remove(loader)
 
     def refresh(self):
         previous = self.grid.selected_key()
-        if self._loader is not None and self._loader.isRunning():
-            self._loader.cancel()
-            self._loader.wait(3000)
+        self._release_loader()
         self.grid.clear()
         self.selection_changed.emit(None)
         folder = Path(self._folder) if self._folder else None
@@ -416,7 +565,18 @@ class MediaBrowser(QWidget):
         if previous:
             self.grid.select_key(previous)
 
+    def remove_paths(self, paths: list[Path]):
+        """Drop rows for files another view just deleted, without a rescan."""
+        gone = {str(Path(p)) for p in paths}
+        for i in range(self.grid.count() - 1, -1, -1):
+            if self.grid.item(i).data(Qt.ItemDataRole.UserRole) in gone:
+                self.grid.takeItem(i)
+        noun = "image" if self.kind == "image" else "video"
+        self._status.setText(f"{self.grid.count()} {noun}{'s' if self.grid.count() != 1 else ''}")
+        self._on_selection()
+
     def shutdown(self):
-        if self._loader is not None and self._loader.isRunning():
-            self._loader.cancel()
-            self._loader.wait(3000)
+        self._release_loader()
+        for loader in [*self._retired]:
+            loader.cancel()
+            loader.wait(3000)
