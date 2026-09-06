@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import shutil
 import threading
 import time
@@ -14,10 +15,11 @@ from pathlib import Path
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from comfy_client import ComfyClient
-from media_tools import concat_videos, extract_last_frame, resolve_ffmpeg
+from media_tools import concat_videos, extract_last_frame, probe, resolve_ffmpeg
 from workflow_tools import (
-    ValueField, analyze, apply_inputs, apply_megapixels, apply_seed, apply_steps, apply_value,
-    load_workflow, set_output_prefix,
+    ValueField, analyze, apply_inputs, apply_megapixels, apply_output_format, apply_seed,
+    apply_steps, apply_value, list_workflows, load_workflow, match_format_value, output_formats,
+    set_output_prefix,
 )
 
 logger = logging.getLogger("video_creator")
@@ -125,9 +127,30 @@ class RunWorker(QThread):
             if req.steps is not None and info.steps_fields:
                 n_steps = apply_steps(workflow, info.steps_fields, req.steps)
                 self._log(f"Steps: {req.steps} ({n_steps} sampler node{'s' if n_steps != 1 else ''})")
-            if req.megapixels is not None and info.mp_fields:
-                n_mp = apply_megapixels(workflow, info.mp_fields, req.megapixels)
-                self._log(f"Megapixels: {req.megapixels:g} ({n_mp} node{'s' if n_mp != 1 else ''})")
+            src = probe(self._ffmpeg, req.source_path) if req.source_kind == "video" else None
+            if src is not None and src.width:
+                self._log(
+                    f"Source: {src.width}x{src.height} {src.fps:g}fps {src.vcodec or 'unknown codec'}"
+                    f"{'' if src.has_audio else ' (no audio)'}"
+                )
+            mp_value = req.megapixels
+            if req.source_kind == "video" and req.extend_stitch and info.mp_fields:
+                # The new clip gets appended to this video, so generate it at the
+                # source's own frame size instead of the megapixels box's value.
+                if src is not None and src.width and src.height:
+                    matched = round(src.width * src.height / (1024 * 1024), 3)
+                    if mp_value is None or abs(matched - mp_value) > 0.005:
+                        was = f"{mp_value:g}" if mp_value is not None else "the workflow's value"
+                        self._log(
+                            f"Appending — matching the source's {src.width}x{src.height}: "
+                            f"megapixels {matched:g} (was {was})"
+                        )
+                    mp_value = matched
+            if mp_value is not None and info.mp_fields:
+                n_mp = apply_megapixels(workflow, info.mp_fields, mp_value)
+                self._log(f"Megapixels: {mp_value:g} ({n_mp} node{'s' if n_mp != 1 else ''})")
+            if src is not None:
+                self._check_output_format(workflow, src, req)
             # Re-read the patched graph so the progress plan matches what runs
             info = analyze(workflow)
 
@@ -255,6 +278,44 @@ class RunWorker(QThread):
         extract_last_frame(self._ffmpeg, video_path, frame)
         self._feed_image(workflow, info, frame)
 
+    def _check_output_format(self, workflow: dict, src, req: RunRequest) -> None:
+        """The extension should be written in the same codec as the video it
+        extends. Retune the graph about to run when the clip gets appended,
+        otherwise just say what the mismatch is."""
+        if not src.vcodec:
+            return
+        for fmt in output_formats(workflow):
+            if not fmt.codec or fmt.codec == src.vcodec:
+                continue
+            node = workflow.get(fmt.node_id, {})
+            allowed = self._client.list_options(node.get("class_type", ""), fmt.key)
+            target = match_format_value(fmt.value, src.vcodec, allowed)
+            if req.extend_stitch and target:
+                apply_output_format(workflow, fmt, target)
+                self._log(
+                    f"Output format: {fmt.value} -> {target} to match the source video ({src.vcodec})"
+                )
+            elif req.extend_stitch:
+                self._log(
+                    f"WARNING: this workflow saves {fmt.codec} ({fmt.value}) but the source video is "
+                    f"{src.vcodec}, and the server offers no {src.vcodec} option for {fmt.label} — "
+                    f"the appended file will be re-encoded."
+                )
+            else:
+                self._log(
+                    f"Note: this workflow saves {fmt.codec} ({fmt.value}); the source video is {src.vcodec}."
+                )
+        if src.fps:
+            for nid, node in workflow.items():
+                if not isinstance(node, dict) or node.get("class_type") not in ("VHS_VideoCombine",):
+                    continue
+                rate = (node.get("inputs") or {}).get("frame_rate")
+                if isinstance(rate, (int, float)) and abs(float(rate) - src.fps) > 0.01:
+                    self._log(
+                        f"Note: this workflow saves at {float(rate):g} fps, the source video is "
+                        f"{src.fps:g} fps — the appended clip gets resampled to {src.fps:g}."
+                    )
+
     def _on_phase(self, label: str):
         self._log(label)
         self.phase.emit(label)
@@ -273,22 +334,31 @@ class RunWorker(QThread):
             )
         out_dir = Path((self._cfg.get("output_dir", "") or "").strip() or (self._base_dir / "output"))
         out_dir.mkdir(parents=True, exist_ok=True)
-        stem = _safe(req.source_path.stem)
+        stem = self._output_stem(req)
         label = _safe(req.workflow_label)
         results: list[Path] = []
         for idx, f in enumerate(files, 1):
             ext = Path(f["filename"]).suffix or ".mp4"
             suffix = f"_{idx}" if len(files) > 1 else ""
-            dest = out_dir / f"{stem}_{label}_{self._run_id}{suffix}{ext}"
+            mark = f"_{EXT_MARK}" if req.source_kind == "video" else ""
+            dest = out_dir / _fit_name(out_dir, stem, f"_{label}{mark}_{self._run_id}{suffix}{ext}")
             self._log(f"Downloading {f['filename']} → {dest.name}")
             self._client.download(f, dest)
             results.append(dest)
             self._log(f"Saved {dest.name} ({dest.stat().st_size // 1024} KB)")
         return results
 
+    def _output_stem(self, req: RunRequest) -> str:
+        """What a result file is named after. Video sources shed the workflow
+        and stamp a previous run appended, so a chain of extensions keeps one
+        stable base name instead of growing past what Windows allows."""
+        if req.source_kind != "video":
+            return _safe(req.source_path.stem)
+        return _base_stem(req.source_path.stem, _workflow_labels(self._cfg.get("workflow_dir", "")))
+
     def _stitch_extension(self, source: Path, clip: Path, req: RunRequest) -> Path:
         out_dir = clip.parent
-        dest = out_dir / f"{_safe(source.stem)}_extended_{self._run_id}.mp4"
+        dest = out_dir / _fit_name(out_dir, self._output_stem(req), f"_extended_{self._run_id}.mp4")
         self._log(f"Appending new clip to {source.name} → {dest.name}")
         concat_videos(self._ffmpeg, [source, clip], dest)
         self._log(f"Extended video saved ({dest.stat().st_size // 1024} KB)")
@@ -297,6 +367,68 @@ class RunWorker(QThread):
 
 class _Cancelled(Exception):
     pass
+
+
+_STAMP_RE = re.compile(r"_\d{8}_\d{6}$")
+
+# Longest full path we will write. Windows refuses at 260.
+MAX_PATH = 250
+
+# Marks a clip produced from a video source, i.e. an extension.
+EXT_MARK = "EXT"
+
+
+def _workflow_labels(workflow_dir: str) -> list[str]:
+    """Every label the app puts in an output name: a workflow's subfolder when
+    it lives in one, otherwise its file stem."""
+    try:
+        rels = list_workflows(Path((workflow_dir or "").strip()))
+    except Exception:  # noqa: BLE001
+        return []
+    labels = set()
+    for rel in rels:
+        parts = Path(rel).parts
+        labels.add(parts[0] if len(parts) > 1 else Path(rel).stem)
+    # longest first so "Video_Kiss_A" never matches inside "Video_Kiss_A_Long"
+    return sorted(labels, key=len, reverse=True)
+
+
+def _base_stem(stem: str, labels: list[str], passes: int = 4) -> str:
+    """Strip what earlier runs appended, so extending an extension doesn't
+    grow the name every pass: both `<base>_<workflow>_<stamp>` and
+    `<base>_extended_<stamp>` come back as `<base>`."""
+    out = _safe(stem)
+    for _ in range(passes):
+        trimmed = _STAMP_RE.sub("", out)
+        if trimmed == out:
+            break
+        ours = False
+        mark = "_" + EXT_MARK.lower()
+        if trimmed.lower().endswith(mark) and len(trimmed) > len(mark):
+            trimmed = trimmed[: -len(mark)]
+            ours = True
+        low = trimmed.lower()
+        for tail in ["extended"] + labels:
+            t = "_" + _safe(tail).lower()
+            if low.endswith(t) and len(trimmed) > len(t):
+                trimmed = trimmed[: -len(t)]
+                ours = True
+                break
+        if not ours:
+            # A stamp with nothing of ours in front of it belongs to the file
+            # itself (a camera name like IMG_20260101_120000) — keep it.
+            break
+        out = trimmed
+    return out or "video"
+
+
+def _fit_name(out_dir: Path, stem: str, tail: str) -> str:
+    """`stem + tail`, with the stem shortened if the whole path would be too
+    long for Windows. The tail (workflow, stamp, extension) is never cut."""
+    room = MAX_PATH - len(str(out_dir)) - 1 - len(tail)
+    if len(stem) > max(room, 8):
+        stem = stem[: max(room, 8)].rstrip("_")
+    return stem + tail
 
 
 def _safe(name: str) -> str:

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, Qt, QTimer, QUrl
+from PyQt6.QtCore import QEvent, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QVideoWidget
@@ -17,9 +17,15 @@ def _ms_to_str(ms: int) -> str:
 
 
 class VideoPlayerDialog(QDialog):
+    closed = pyqtSignal()
+
     def __init__(self, video_path: str, parent=None, playlist: list[str] | None = None,
                  auto_close: bool = False):
         super().__init__(parent)
+        # Closing must destroy the window, not hide it: a hidden dialog keeps
+        # its QMediaPlayer, and on Windows that keeps the video file open.
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._released = False
         # auto_close: shut the window when the last video finishes (Library
         # playback) instead of sitting on the final frame until dismissed.
         self._auto_close = auto_close
@@ -179,6 +185,32 @@ class VideoPlayerDialog(QDialog):
                 return True
         return super().eventFilter(obj, event)
 
+    def holds(self, paths) -> bool:
+        """True if any of `paths` is in this player's playlist."""
+        mine = {str(Path(p)) for p in self._playlist}
+        return any(str(Path(p)) in mine for p in paths)
+
+    def release(self):
+        """Let go of the video file.
+
+        stop() is not enough on Windows: the Media Foundation backend keeps
+        the file handle until the source is cleared or the player destroyed,
+        and a locked file can't be deleted. Clear the source, detach the
+        outputs, and schedule the player for destruction."""
+        if self._released:
+            return
+        self._released = True
+        try:
+            self._player.stop()
+            self._player.setSource(QUrl())
+            self._player.setVideoOutput(None)
+            self._player.setAudioOutput(None)
+        except RuntimeError:
+            pass
+        self._player.deleteLater()
+        self._audio.deleteLater()
+
     def closeEvent(self, event):
-        self._player.stop()
+        self.release()
+        self.closed.emit()
         event.accept()

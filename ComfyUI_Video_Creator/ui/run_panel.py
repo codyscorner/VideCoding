@@ -26,7 +26,7 @@ from ui.prompt_history import (
     make_entry,
 )
 from ui.styles import COLORS
-from ui.widgets import ElidedLabel
+from ui.widgets import ElidedLabel, FilterComboBox
 from workflow_tools import (
     Analysis, LoraSlot, WorkflowError, analyze, apply_inputs, apply_megapixels, apply_steps,
     apply_value, list_loras, list_workflows, load_workflow, save_workflow,
@@ -107,8 +107,11 @@ class RunPanel(QWidget):
         wf_layout = QVBoxLayout(wf_group)
         wf_layout.setSpacing(4)
         row = QHBoxLayout()
-        self._wf_combo = QComboBox()
+        self._wf_combo = FilterComboBox(placeholder="Type any part of a workflow name to filter…")
         self._wf_combo.setMinimumWidth(300)
+        self._wf_combo.setToolTip(
+            "Workflows found under the Workflows folder. Click and start typing to filter — "
+            "any workflow containing what you type stays in the list, wherever the match falls.")
         self._wf_combo.currentIndexChanged.connect(self._on_workflow_changed)
         row.addWidget(self._wf_combo, stretch=1)
         refresh = QPushButton("↻")
@@ -224,7 +227,9 @@ class RunPanel(QWidget):
         self._mp_spin.setDecimals(2)
         self._mp_spin.setSingleStep(0.05)
         self._mp_spin.setFixedWidth(84)
-        self._mp_spin.setToolTip("Output size in megapixels — smaller for quick tests, larger for production")
+        self._mp_spin.setToolTip(
+            "Output size in megapixels — smaller for quick tests, larger for production.\n"
+            "Ignored while 'Append the new clip' is ticked: the source video's size wins.")
         self._mp_spin.valueChanged.connect(lambda _v: self._update_summary())
         size_row.addWidget(self._mp_spin)
         size_row.addStretch()
@@ -251,9 +256,15 @@ class RunPanel(QWidget):
                 lambda _i: self._cfg.set("video_input_mode", self._input_mode.currentData()))
             mode_row.addWidget(self._input_mode, stretch=1)
             og.addLayout(mode_row)
-            self._stitch_chk = QCheckBox("Append the new clip to the source video (saves <name>_extended.mp4 as well)")
+            self._stitch_chk = QCheckBox(
+                "Append the new clip to the source video "
+                "(matches the source's frame size, saves <name>_extended.mp4 as well)")
+            self._stitch_chk.setToolTip(
+                "The new clip is generated at the source video's own resolution so the two join "
+                "cleanly, and the joined file is written alongside the clip.")
             self._stitch_chk.setChecked(bool(config.get("extend_stitch", True)))
             self._stitch_chk.toggled.connect(lambda v: self._cfg.set("extend_stitch", bool(v)))
+            self._stitch_chk.toggled.connect(lambda _v: self._update_summary())
             og.addWidget(self._stitch_chk)
         else:
             self._input_mode = None
@@ -831,11 +842,11 @@ class RunPanel(QWidget):
             lbl.setMinimumWidth(90)
             lbl.setMaximumWidth(150)
             self._lora_grid.addWidget(lbl, row, 0)
-            combo = QComboBox()
-            combo.setEditable(True)
-            combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+            combo = FilterComboBox(strict=False, placeholder="Type to filter…")
             combo.setMinimumWidth(140)
-            combo.setToolTip("LoRA file name as ComfyUI lists it (subfolders included). Type to search.")
+            combo.setToolTip(
+                "LoRA file name as ComfyUI lists it (subfolders included). Type any part of a name "
+                "to filter the list; a name that isn't in the list is kept as typed.")
             self._lora_grid.addWidget(combo, row, 1)
             spins: dict[str, QDoubleSpinBox] = {}
             sbox = QHBoxLayout()
@@ -948,7 +959,10 @@ class RunPanel(QWidget):
         if self._analysis is not None and self._analysis.steps_fields:
             bits.append(f"Steps: {int(self._steps_spin.value())}")
         if self._analysis is not None and self._analysis.mp_fields:
-            bits.append(f"MP: {self._mp_spin.value():g}")
+            if self._stitch_chk is not None and self._stitch_chk.isChecked():
+                bits.append("MP: source video's size")
+            else:
+                bits.append(f"MP: {self._mp_spin.value():g}")
         if self._length_spin.isVisible() or (self._analysis and self._analysis.length_field):
             bits.append(f"{self._length_lbl.text().rstrip(':')}: {self._length_spin.value():g}")
         self._summary.setFullText("Next run → " + "   |   ".join(bits) if bits else "")

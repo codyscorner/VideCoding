@@ -82,7 +82,12 @@ class MainWindow(QMainWindow):
         self._video_panel = RunPanel("video", self.config)
         self._tabs.addTab(self._make_tab(self._video_browser, self._video_panel), "🎬  Video → Extend")
 
+        for b in (self._video_browser, self._image_browser):
+            b.deleting.connect(self._on_files_deleting)
+            b.deleted.connect(self._on_files_deleted)
         self._library = LibraryTab(self.config, self._ffmpeg)
+        self._library.browser.deleting.connect(self._on_files_deleting)
+        self._library.browser.deleted.connect(self._on_files_deleted)
         self._library.play_requested.connect(self._play_list)
         self._library.send_to_extend.connect(self._send_to_extend)
         self._tabs.addTab(self._library, "📚  Library")
@@ -235,11 +240,40 @@ class MainWindow(QMainWindow):
     def _play(self, path: str):
         if not path or not Path(path).exists():
             return
-        if self._player is not None:
-            self._player.close()
-        # Every player in this app closes itself once the video ends.
-        self._player = VideoPlayerDialog(path, self, auto_close=True)
-        self._player.show()
+        self._open_player(path, None)
+
+    def _open_player(self, path: str, playlist):
+        self._close_player()
+        # Every player in this app closes itself once the video ends, and
+        # closing destroys it, so the file it played is free again.
+        dlg = VideoPlayerDialog(path, self, playlist=playlist, auto_close=True)
+        dlg.closed.connect(lambda d=dlg: self._forget_player(d))
+        self._player = dlg
+        dlg.show()
+
+    def _close_player(self):
+        dlg, self._player = self._player, None
+        if dlg is None:
+            return
+        try:
+            dlg.close()          # runs release() via closeEvent
+        except RuntimeError:     # already destroyed by WA_DeleteOnClose
+            pass
+
+    def _forget_player(self, dlg):
+        if self._player is dlg:
+            self._player = None
+
+    def _on_files_deleting(self, paths: list):
+        """The player holds its file open; close it before the delete runs."""
+        dlg = self._player
+        if dlg is None:
+            return
+        try:
+            if dlg.holds(paths):
+                self._close_player()
+        except RuntimeError:
+            self._player = None
 
     def _play_list(self, paths: list):
         """Library playback: plays the selection back-to-back and closes
@@ -247,10 +281,16 @@ class MainWindow(QMainWindow):
         paths = [p for p in paths if p and Path(p).exists()]
         if not paths:
             return
-        if self._player is not None:
-            self._player.close()
-        self._player = VideoPlayerDialog(paths[0], self, playlist=paths, auto_close=True)
-        self._player.show()
+        self._open_player(paths[0], paths)
+
+    def _on_files_deleted(self, paths: list):
+        """A file deleted in one tab is gone for the others too — the Library
+        and the Extend tab often point at the same folder, and a tile for a
+        file that no longer exists is worse than a slightly stale count."""
+        sender = self.sender()
+        for browser in (self._image_browser, self._video_browser, self._library.browser):
+            if browser is not sender:
+                browser.remove_paths(paths)
 
     def _send_to_extend(self, path: Path):
         """Library → Extend: select the video in the Extend tab (switching the
@@ -293,6 +333,7 @@ class MainWindow(QMainWindow):
                 return
             self._worker.cancel()
             self._worker.wait(5000)
+        self._close_player()
         self._image_browser.shutdown()
         self._video_browser.shutdown()
         self._library.shutdown()
