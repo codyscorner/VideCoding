@@ -1,5 +1,10 @@
 # Changelog — ComfyUI Video Creator
 
+### v1.6.4
+- **LoRA picker dropdowns no longer eat the panel's scroll wheel.** Scrolling over a LoRA dropdown while it wasn't focused used to silently change the selected LoRA instead of scrolling the Options + LoRAs panel underneath it. The scroll wheel now only changes the value when you've actually clicked into the box first.
+- **Restored the dropdown arrow** on every combo box — a themed `QComboBox::drop-down` with no `down-arrow` rule was rendering with no visible arrow at all, so it didn't read as a dropdown. Added the small CSS-triangle arrow already used in other apps in the repo (e.g. File Rename Mover).
+- **LoRA list status now shows both sources at once** — "N from folder   ·   M from server" — instead of the folder count disappearing the moment you fetch from the server (and vice versa).
+
 ### v1.6.3
 - **Library: Reuse Settings** — a video that didn't come out right no longer means hunting down the source image, copying the prompt by hand, and reselecting every LoRA/seed/step. Selecting a video with a linked history entry enables a new "🔁 Reuse Settings" button that switches to the tab it was made on (Image → Video or Video → Extend), reloads that workflow, prompt, LoRAs, seed, steps, megapixels and length — leaving you to tweak the prompt and press Create/Extend yourself.
   - **Image → Video runs never re-hunt for the original source image.** The image an I2V run started from is often a temp/staged upload that's long gone by the time you review the result, so its recorded filename is never trustworthy. Instead, the finished video's own first frame is extracted via ffmpeg into a temp cache and used as the starting image — guaranteed to exist and guaranteed to match. The extracted frame is shown as a small preview thumbnail next to the source label (new for any image selection, not just reuse) so you can see exactly what's about to run. The temp frame is named with the same `_base_stem()` stripping the Extend chain already uses (peels off the prior run's `_<workflow>_<timestamp>`), so the retry's output name comes back clean instead of doubling up.

@@ -52,6 +52,7 @@ def main():
         "--name", APP_NAME,
         "--icon", str(ROOT / "app_icon.ico"),
         "--add-data", f"{ROOT / 'app_icon.ico'};.",
+        "--add-data", f"{ROOT / 'ui' / 'icons' / 'chevron_down.png'};ui/icons",
         "--collect-all", "PyQt6",
         "--hidden-import", "requests",
         "--hidden-import", "websocket",
