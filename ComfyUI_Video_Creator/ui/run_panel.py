@@ -26,7 +26,7 @@ from ui.prompt_history import (
     make_entry,
 )
 from ui.styles import COLORS
-from ui.widgets import ElidedLabel, FilterComboBox
+from ui.widgets import ElidedLabel, FilterComboBox, NoScrollComboBox
 from workflow_tools import (
     Analysis, LoraSlot, WorkflowError, analyze, apply_inputs, apply_megapixels, apply_steps,
     apply_value, list_loras, list_workflows, load_workflow, save_workflow,
@@ -136,6 +136,8 @@ class RunPanel(QWidget):
         self._prompt_edits: list[tuple[object, QTextEdit]] = []        # (PromptField, editor)
         self._lora_rows: list[tuple[LoraSlot, QComboBox, dict[str, QDoubleSpinBox]]] = []
         self._lora_thread: _LoraFetchThread | None = None
+        self._lora_folder_info = ""
+        self._lora_server_info = ""
         self._rewrite_thread: _RewriteThread | None = None
         self._lm_check_thread: _LMStudioCheckThread | None = None
         self._run_started = 0.0
@@ -265,7 +267,7 @@ class RunPanel(QWidget):
         og.setSpacing(5)
         seed_row = QHBoxLayout()
         seed_row.addWidget(QLabel("Seed:"))
-        self._seed_mode = QComboBox()
+        self._seed_mode = NoScrollComboBox()
         self._seed_mode.addItems(["Random", "Fixed"])
         self._seed_mode.setFixedWidth(96)
         self._seed_mode.setToolTip("Random: a new seed every run. Fixed: use the seed on the right.")
@@ -339,7 +341,7 @@ class RunPanel(QWidget):
         if kind == "video":
             mode_row = QHBoxLayout()
             mode_row.addWidget(QLabel("Video input:"))
-            self._input_mode = QComboBox()
+            self._input_mode = NoScrollComboBox()
             for key, label in VIDEO_INPUT_MODES:
                 self._input_mode.addItem(label, key)
             current = config.get("video_input_mode", "auto")
@@ -1023,25 +1025,33 @@ class RunPanel(QWidget):
     def _lora_names(self) -> list[str]:
         return _LORA_LIST.get("names", [])
 
+    def _refresh_lora_status_label(self):
+        parts = [p for p in (self._lora_folder_info, self._lora_server_info) if p]
+        self._lora_status.setText("   ·   ".join(parts))
+
     def reload_loras_from_folder(self, quiet: bool = False):
         folder = Path((self._cfg.get("loras_dir", "") or "").strip())
         sep = "/" if self._cfg.get("mode", "local") == "runpod" else "\\"
         names = list_loras(folder, sep) if str(folder) else []
         _LORA_LIST["names"] = names
         _LORA_LIST["source"] = f"folder ({len(names)})" if names else "none"
-        if not quiet or names:
-            self._lora_status.setText(
-                f"{len(names)} from folder" if names else "No LoRAs folder set (Settings > Folders > LoRAs)")
+        if names:
+            self._lora_folder_info = f"{len(names)} from folder"
+        elif not quiet:
+            self._lora_folder_info = "No LoRAs folder set (Settings > Folders > LoRAs)"
+        self._refresh_lora_status_label()
         self._refill_lora_combos()
 
     def _fetch_loras_from_server(self):
         url = self._cfg.server_url()
         if not url:
-            self._lora_status.setText("No server URL for the selected mode — see Settings")
+            self._lora_server_info = "No server URL for the selected mode — see Settings"
+            self._refresh_lora_status_label()
             return
         if self._lora_thread is not None and self._lora_thread.isRunning():
             return
-        self._lora_status.setText(f"Asking {url} …")
+        self._lora_server_info = f"Asking {url} …"
+        self._refresh_lora_status_label()
         self._server_btn.setEnabled(False)
         self._lora_thread = _LoraFetchThread(url)
         self._lora_thread.done.connect(self._on_server_loras)
@@ -1050,11 +1060,13 @@ class RunPanel(QWidget):
     def _on_server_loras(self, names: list, error: str):
         self._server_btn.setEnabled(True)
         if error:
-            self._lora_status.setText(f"Server list failed: {error}")
+            self._lora_server_info = f"Server list failed: {error}"
+            self._refresh_lora_status_label()
             return
         _LORA_LIST["names"] = sorted(names, key=str.lower)
         _LORA_LIST["source"] = f"server ({len(names)})"
-        self._lora_status.setText(f"{len(names)} from server")
+        self._lora_server_info = f"{len(names)} from server"
+        self._refresh_lora_status_label()
         self._refill_lora_combos()
 
     def _rebuild_loras(self):

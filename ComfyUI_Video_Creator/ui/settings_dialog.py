@@ -2,12 +2,13 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QGroupBox, QHBoxLayout,
+    QButtonGroup, QDialog, QDialogButtonBox, QFileDialog, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from config import ConfigManager
 from ui.styles import COLORS
+from ui.widgets import NoScrollComboBox
 
 
 class SettingsDialog(QDialog):
@@ -139,7 +140,7 @@ class SettingsDialog(QDialog):
                                             "http://127.0.0.1:1234/v1")
         model_row = QHBoxLayout()
         model_row.addWidget(self._label("Model:"))
-        self._rewriter_model = QComboBox()
+        self._rewriter_model = NoScrollComboBox()
         self._rewriter_model.setEditable(True)
         saved_model = config.get("rewriter_model", "")
         if saved_model:

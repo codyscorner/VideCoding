@@ -126,6 +126,48 @@ class FilterComboBox(QComboBox):
         else:
             self.setEditText(self.itemText(self.currentIndex()))
 
+    def wheelEvent(self, event):
+        # Sitting in a scrollable panel, this box would otherwise steal the
+        # scroll wheel and silently change the selected LoRA/workflow
+        # whenever the cursor happens to pass over it — including right
+        # after you clicked into it once, since it then keeps focus
+        # indefinitely. A combo box should only change by opening its
+        # dropdown (click, or Enter/F4) and picking or typing, never by
+        # scrolling over it, so the wheel always passes through untouched.
+        event.ignore()
+
+    def keyPressEvent(self, event):
+        # Same reasoning as wheelEvent: Up/Down shouldn't silently change
+        # the value just because this box happens to have focus. Only let
+        # them through once a popup — this combo's own, or the filter
+        # completer's — is actually open to navigate.
+        if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down) and not _combo_popup_open(self):
+            event.ignore()
+            return
+        super().keyPressEvent(event)
+
+
+def _combo_popup_open(combo: QComboBox) -> bool:
+    if combo.view().isVisible():
+        return True
+    completer = combo.completer()
+    return bool(completer and completer.popup() and completer.popup().isVisible())
+
+
+class NoScrollComboBox(QComboBox):
+    """Plain (non-editable) combo box with the same wheel/arrow-key guard
+    as FilterComboBox — see its wheelEvent for why. Use this instead of a
+    bare QComboBox anywhere it can sit in a scrollable panel or list."""
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down) and not _combo_popup_open(self):
+            event.ignore()
+            return
+        super().keyPressEvent(event)
+
 
 class ThumbnailGrid(QListWidget):
     def __init__(self, parent=None):
@@ -425,7 +467,7 @@ class MediaBrowser(QWidget):
 
         row2 = QHBoxLayout()
         row2.addWidget(QLabel("Sort:"))
-        self._sort_combo = QComboBox()
+        self._sort_combo = NoScrollComboBox()
         self._sort_combo.addItems(SORT_OPTIONS)
         if sort_option in SORT_OPTIONS:
             self._sort_combo.setCurrentText(sort_option)

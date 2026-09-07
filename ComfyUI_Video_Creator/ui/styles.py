@@ -1,5 +1,20 @@
 """Dark red theme."""
 
+import sys
+from pathlib import Path
+
+
+def _icon_path(name: str) -> str:
+    # The spec bundles ui/icons/ verbatim into the frozen extraction root
+    # (see the spec's `datas` entry); running from source it's just the
+    # sibling icons/ folder next to this file.
+    if getattr(sys, "frozen", False):
+        base = Path(sys._MEIPASS) / "ui" / "icons"
+    else:
+        base = Path(__file__).parent / "icons"
+    return str(base / name).replace("\\", "/")
+
+
 COLORS = {
     'bg_dark':      '#140505',
     'bg_medium':    '#200909',
@@ -136,6 +151,12 @@ QComboBox:focus {{
 QComboBox::drop-down {{
     border: none;
     width: 24px;
+}}
+QComboBox::down-arrow {{
+    image: url({_icon_path('chevron_down.png')});
+    width: 12px;
+    height: 8px;
+    margin-right: 8px;
 }}
 QComboBox QAbstractItemView {{
     background-color: {COLORS['bg_medium']};

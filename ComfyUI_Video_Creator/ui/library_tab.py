@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QComboBox, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
+    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
     QSplitter, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -19,7 +19,7 @@ from file_ops import archive_paths, delete_paths, thumbnail_caches
 from media_tools import probe
 from ui.prompt_history import find_entry_for_result, format_entry
 from ui.styles import COLORS
-from ui.widgets import MediaBrowser
+from ui.widgets import MediaBrowser, NoScrollComboBox
 
 
 def _fmt_size(n: int) -> str:
@@ -79,13 +79,13 @@ class LibraryTab(QWidget):
         self._search.textChanged.connect(self._apply_filter)
         filt_row.addWidget(self._search, stretch=1)
         filt_row.addWidget(QLabel("Date:"))
-        self._date_mode = QComboBox()
+        self._date_mode = NoScrollComboBox()
         for key, label in self.DATE_MODES:
             self._date_mode.addItem(label, key)
         self._date_mode.setFixedWidth(100)
         self._date_mode.currentIndexChanged.connect(self._on_date_mode_changed)
         filt_row.addWidget(self._date_mode)
-        self._date_value = QComboBox()
+        self._date_value = NoScrollComboBox()
         self._date_value.setMinimumWidth(160)
         self._date_value.setEnabled(False)
         self._date_value.addItem("—", "")

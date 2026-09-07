@@ -16,11 +16,12 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMessageBox, QPushButton, QSplitter, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from ui.styles import COLORS
+from ui.widgets import NoScrollComboBox
 
 HISTORY_SUFFIX = ".prompt_history.json"
 APP_TAG = "ComfyUI Video Creator"
@@ -304,7 +305,7 @@ class PromptHistoryDialog(QDialog):
 
         wrow = QHBoxLayout()
         wrow.addWidget(QLabel("Workflow:"))
-        self._wf_combo = QComboBox()
+        self._wf_combo = NoScrollComboBox()
         counts: dict[str, int] = {}
         for rel, _p, _e in self._rows:
             counts[rel] = counts.get(rel, 0) + 1
@@ -320,13 +321,13 @@ class PromptHistoryDialog(QDialog):
 
         frow = QHBoxLayout()
         frow.addWidget(QLabel("Date:"))
-        self._date_mode = QComboBox()
+        self._date_mode = NoScrollComboBox()
         for key, label in self.DATE_MODES:
             self._date_mode.addItem(label, key)
         self._date_mode.setFixedWidth(110)
         self._date_mode.currentIndexChanged.connect(self._on_filter_source_changed)
         frow.addWidget(self._date_mode)
-        self._date_value = QComboBox()
+        self._date_value = NoScrollComboBox()
         self._date_value.setMinimumWidth(190)
         self._date_value.currentIndexChanged.connect(lambda _i: self._populate())
         frow.addWidget(self._date_value)

@@ -6,11 +6,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel,
+    QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QLabel,
     QLineEdit, QVBoxLayout,
 )
 
 from ui.styles import COLORS
+from ui.widgets import NoScrollComboBox
 from workflow_tools import (
     check_workflow_name, list_workflow_folders, unique_workflow_path, workflow_stem,
 )
@@ -51,7 +52,7 @@ class CloneWorkflowDialog(QDialog):
         self._name.textChanged.connect(self._validate)
         form.addRow("New name:", self._name)
 
-        self._folder = QComboBox()
+        self._folder = NoScrollComboBox()
         folders = list_workflow_folders(workflow_dir)
         src_folder = src.parent.as_posix()
         if src_folder == ".":
