@@ -11,10 +11,10 @@ import time
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QGridLayout, QGroupBox, QHBoxLayout,
-    QLabel, QListWidget, QListWidgetItem, QMessageBox, QProgressBar, QPushButton,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressBar, QPushButton,
     QScrollArea, QSizePolicy, QSpinBox, QSplitter, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -68,9 +68,47 @@ class _LoraFetchThread(QThread):
             self.done.emit([], f"{type(e).__name__}: {e}")
 
 
+class _RewriteThread(QThread):
+    done = pyqtSignal(str, str)   # rewritten text, error
+
+    def __init__(self, base_url: str, model: str, mode: str, prompt: str,
+                 resolution: str, duration: float, references: str):
+        super().__init__()
+        self._args = (base_url, model, mode, prompt, resolution, duration, references)
+
+    def run(self):
+        import prompt_rewriter as pr
+        try:
+            text = pr.rewrite(*self._args)
+            self.done.emit(text, "")
+        except pr.RewriterError as e:
+            self.done.emit("", str(e))
+        except Exception as e:  # noqa: BLE001
+            self.done.emit("", f"{type(e).__name__}: {e}")
+
+
+class _LMStudioCheckThread(QThread):
+    done = pyqtSignal(bool, str)   # reachable, error
+
+    def __init__(self, base_url: str):
+        super().__init__()
+        self._base_url = base_url
+
+    def run(self):
+        import prompt_rewriter as pr
+        try:
+            pr.list_models(self._base_url)
+            self.done.emit(True, "")
+        except pr.RewriterError as e:
+            self.done.emit(False, str(e))
+        except Exception as e:  # noqa: BLE001
+            self.done.emit(False, f"{type(e).__name__}: {e}")
+
+
 class RunPanel(QWidget):
     run_requested = pyqtSignal(object)      # RunRequest
     cancel_requested = pyqtSignal()
+    clear_queue_requested = pyqtSignal()
     play_requested = pyqtSignal(str)
     workflows_changed = pyqtSignal()        # a workflow file was added — other tabs rescan
 
@@ -81,12 +119,25 @@ class RunPanel(QWidget):
         self._source: Path | None = None
         self._workflow_path: Path | None = None
         self._workflow_rel = ""
+        # Set by load_reused_entry() (Library → Reuse Settings) so a retry
+        # with a tweaked prompt doesn't pile "eighty variations of one
+        # attempt" into this workflow's history — the video itself already
+        # carries the prompt it was made with. Cleared the moment prompt
+        # history is used normally again (the History dialog, or picking a
+        # workflow by hand), so a later ordinary run still gets recorded.
+        self._history_recording_suppressed = False
+        self._loading_reused = False
+        # Set by load_reused_entry() so a retry made from Reuse Settings
+        # lands back in the Library folder its video came from — someone
+        # juggling several Library folders would otherwise have every retry
+        # dumped into whichever one is the global Output folder right now.
+        self._reused_output_dir: Path | None = None
         self._analysis: Analysis | None = None
         self._prompt_edits: list[tuple[object, QTextEdit]] = []        # (PromptField, editor)
         self._lora_rows: list[tuple[LoraSlot, QComboBox, dict[str, QDoubleSpinBox]]] = []
         self._lora_thread: _LoraFetchThread | None = None
-        self._history_index: int | None = None
-        self._running = False
+        self._rewrite_thread: _RewriteThread | None = None
+        self._lm_check_thread: _LMStudioCheckThread | None = None
         self._run_started = 0.0
         # progress bookkeeping
         self._sampler_total = 0
@@ -146,6 +197,32 @@ class RunPanel(QWidget):
         self._prompt_box = QVBoxLayout()
         self._prompt_box.setSpacing(3)
         pg.addLayout(self._prompt_box, stretch=1)
+
+        # AI Prompt Rewriter — off by default, and hidden entirely unless the
+        # loaded workflow is recognized MiniMax H3 (workflow_tools.analyze()
+        # sets Analysis.minimax_mode). Type a rough idea, hit Rewrite, review
+        # the result in the same box before running — never auto-fires.
+        rewrite_row = QHBoxLayout()
+        rewrite_row.setSpacing(6)
+        self._rewriter_chk = QCheckBox("🪄 AI Rewriter")
+        self._rewriter_chk.setToolTip(
+            "Turn a rough scene idea into a full MiniMax H3 prompt using a local "
+            "LM Studio model (configure the URL and model in Settings first)")
+        self._rewriter_chk.toggled.connect(self._on_rewriter_toggled)
+        rewrite_row.addWidget(self._rewriter_chk)
+        self._rewriter_ref = QLineEdit()
+        self._rewriter_ref.setPlaceholderText(
+            "Describe the reference image, e.g. Picture 1: young woman, dark hair, blue jacket")
+        self._rewriter_ref.setVisible(False)
+        rewrite_row.addWidget(self._rewriter_ref, stretch=1)
+        self._rewrite_btn = QPushButton("✨ Rewrite")
+        self._rewrite_btn.setObjectName("secondary_btn")
+        self._rewrite_btn.setVisible(False)
+        self._rewrite_btn.clicked.connect(self._on_rewrite_clicked)
+        rewrite_row.addWidget(self._rewrite_btn)
+        pg.addLayout(rewrite_row)
+        self._rewriter_chk.setVisible(False)
+
         prow = QHBoxLayout()
         prow.addWidget(QLabel("Text size:"))
         self._font_spin = QSpinBox()
@@ -240,6 +317,23 @@ class RunPanel(QWidget):
         self._length_spin.valueChanged.connect(lambda _v: self._update_summary())
         size_row.addWidget(self._length_spin)
         og.addLayout(size_row)
+
+        turbo_row = QHBoxLayout()
+        self._turbo_chk = QCheckBox("⚡ Turbo LoRA + Sampler")
+        self._turbo_chk.setToolTip(
+            "Turbo LoRAs trade quality for speed at a very low step count. Turning this off runs "
+            "the standard sampler instead — needs a much higher step count to look clean, but no "
+            "turbo shortcut artifacts.")
+        self._turbo_chk.toggled.connect(lambda _v: self._update_turbo_warning())
+        turbo_row.addWidget(self._turbo_chk)
+        self._turbo_warn = QLabel("⚠ Turbo is off and steps is below 15 — quality will likely be poor")
+        self._turbo_warn.setStyleSheet(f"color: {COLORS['warning']};")
+        self._turbo_warn.setVisible(False)
+        turbo_row.addWidget(self._turbo_warn)
+        turbo_row.addStretch()
+        og.addLayout(turbo_row)
+        self._steps_spin.valueChanged.connect(lambda _v: self._update_turbo_warning())
+
         self._on_seed_mode()
 
         if kind == "video":
@@ -308,6 +402,13 @@ class RunPanel(QWidget):
 
         # ── Run controls ────────────────────────────────────────────────
         run_row = QHBoxLayout()
+        self._source_thumb = QLabel()
+        self._source_thumb.setFixedSize(48, 48)
+        self._source_thumb.setStyleSheet(
+            f"border: 1px solid {COLORS['border']}; background: {COLORS['bg_light']};")
+        self._source_thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._source_thumb.setVisible(False)
+        run_row.addWidget(self._source_thumb)
         self._source_lbl = QLabel("No image selected" if kind == "image" else "No video selected")
         self._source_lbl.setObjectName("status_dim")
         self._source_lbl.setWordWrap(True)
@@ -322,6 +423,23 @@ class RunPanel(QWidget):
         self._cancel_btn.clicked.connect(self.cancel_requested.emit)
         run_row.addWidget(self._cancel_btn)
         root.addLayout(run_row)
+
+        # Shown only while requests are waiting behind the current run —
+        # right under the button being clicked, not tucked in the header,
+        # since that's where a queued-up click actually needs to be seen.
+        queue_row = QHBoxLayout()
+        queue_row.setSpacing(8)
+        self._queue_lbl = QLabel("")
+        self._queue_lbl.setStyleSheet(f"color: {COLORS['warning']}; font-weight: bold;")
+        queue_row.addWidget(self._queue_lbl)
+        self._clear_queue_btn = QPushButton("✕ Clear Queue")
+        self._clear_queue_btn.setObjectName("secondary_btn")
+        self._clear_queue_btn.clicked.connect(self.clear_queue_requested.emit)
+        queue_row.addWidget(self._clear_queue_btn)
+        queue_row.addStretch()
+        root.addLayout(queue_row)
+        self._queue_lbl.setVisible(False)
+        self._clear_queue_btn.setVisible(False)
 
         prog_row = QHBoxLayout()
         prog_row.setSpacing(8)
@@ -463,6 +581,9 @@ class RunPanel(QWidget):
         rel = self._wf_combo.currentData()
         if not rel:
             return
+        if not self._loading_reused:
+            self._history_recording_suppressed = False
+            self._reused_output_dir = None
         self._workflow_rel = rel
         self._cfg.set(self._config_key(), rel)
         self._workflow_path = Path(self._cfg.get("workflow_dir", "")) / rel
@@ -542,6 +663,7 @@ class RunPanel(QWidget):
             if all(pf.negative for pf in a.prompts):
                 self._prompt_box.addStretch()
         self._apply_font_size(self._font_spin.value())
+        self._update_rewriter_visibility()
 
         fld = a.length_field if a is not None else None
         visible = fld is not None
@@ -573,6 +695,14 @@ class RunPanel(QWidget):
                 f"Sampler steps applied to {len(steps)} node{'s' if len(steps) != 1 else ''}: {names}. "
                 "WAN hi/lo pairs keep their split point proportional.")
 
+        turbo = a.turbo if a is not None else None
+        self._turbo_chk.setVisible(turbo is not None)
+        if turbo is not None:
+            self._turbo_chk.blockSignals(True)
+            self._turbo_chk.setChecked(turbo.currently_on)
+            self._turbo_chk.blockSignals(False)
+        self._update_turbo_warning()
+
         mps = a.mp_fields if a is not None else []
         self._mp_lbl.setVisible(bool(mps))
         self._mp_spin.setVisible(bool(mps))
@@ -583,6 +713,86 @@ class RunPanel(QWidget):
             names = ", ".join(f"{f.label} ({f.value:g})" for f in mps)
             self._mp_spin.setToolTip(f"Megapixels applied to {len(mps)} node{'s' if len(mps) != 1 else ''}: {names}")
         self._update_summary()
+
+    # ------------------------------------------------------------------ #
+    # AI Prompt Rewriter
+    # ------------------------------------------------------------------ #
+
+    def _update_rewriter_visibility(self):
+        mode = self._analysis.minimax_mode if self._analysis is not None else None
+        self._rewriter_chk.setVisible(mode is not None)
+        if mode is None:
+            self._rewriter_chk.setChecked(False)
+        self._on_rewriter_toggled(self._rewriter_chk.isChecked())
+
+    def _on_rewriter_toggled(self, checked: bool):
+        mode = self._analysis.minimax_mode if self._analysis is not None else None
+        self._rewrite_btn.setVisible(checked and mode is not None)
+        self._rewriter_ref.setVisible(checked and mode == "Ref2VA")
+        if checked and mode is not None:
+            self.refresh_rewriter_status()
+
+    def refresh_rewriter_status(self):
+        """Re-checks LM Studio and enables/grays the Rewrite button accordingly.
+        Never a hard requirement to use the app - just off until it's reachable."""
+        if not self._rewrite_btn.isVisible():
+            return
+        base_url = self._cfg.get("rewriter_base_url", "").strip()
+        model = self._cfg.get("rewriter_model", "").strip()
+        if not base_url or not model:
+            self._rewrite_btn.setEnabled(False)
+            self._rewrite_btn.setToolTip("Set the LM Studio URL and pick a model in Settings → AI Prompt Rewriter first.")
+            return
+        self._rewrite_btn.setEnabled(False)
+        self._rewrite_btn.setToolTip(f"Checking {base_url} …")
+        self._lm_check_thread = _LMStudioCheckThread(base_url)
+        self._lm_check_thread.done.connect(self._on_lm_check_done)
+        self._lm_check_thread.start()
+
+    def _on_lm_check_done(self, reachable: bool, error: str):
+        self._rewrite_btn.setEnabled(reachable)
+        self._rewrite_btn.setToolTip(
+            "" if reachable else f"LM Studio isn't reachable — the app works fine without it.\n{error}")
+
+    def _first_positive_edit(self) -> QTextEdit | None:
+        for pf, edit in self._prompt_edits:
+            if not pf.negative:
+                return edit
+        return None
+
+    def _on_rewrite_clicked(self):
+        mode = self._analysis.minimax_mode if self._analysis is not None else None
+        if mode is None:
+            return
+        edit = self._first_positive_edit()
+        if edit is None:
+            return
+        rough = edit.toPlainText().strip()
+        if not rough:
+            QMessageBox.information(self, "Nothing to rewrite", "Type a rough scene idea in the prompt box first.")
+            return
+        base_url = self._cfg.get("rewriter_base_url", "")
+        model = self._cfg.get("rewriter_model", "")
+        if not base_url.strip() or not model.strip():
+            QMessageBox.warning(self, "Not configured",
+                                 "Set the LM Studio URL and pick a model in Settings → AI Prompt Rewriter first.")
+            return
+        duration = float(self._length_spin.value()) if self._analysis.length_field is not None else 10.0
+        resolution = self._analysis.aspect_ratio
+        references = self._rewriter_ref.text().strip()
+        self._rewrite_btn.setEnabled(False)
+        self._rewrite_btn.setText("Rewriting…")
+        self._rewrite_thread = _RewriteThread(base_url, model, mode, rough, resolution, duration, references)
+        self._rewrite_thread.done.connect(lambda text, err, edit=edit: self._on_rewrite_done(edit, text, err))
+        self._rewrite_thread.start()
+
+    def _on_rewrite_done(self, edit: QTextEdit, text: str, error: str):
+        self._rewrite_btn.setEnabled(True)
+        self._rewrite_btn.setText("✨ Rewrite")
+        if error:
+            QMessageBox.warning(self, "Rewrite failed", error)
+            return
+        edit.setPlainText(text)
 
     def _hidden_editor(self, pf) -> QTextEdit:
         """The real editor every prompt keeps — overrides, history, save to
@@ -735,7 +945,29 @@ class RunPanel(QWidget):
         dlg.use_all.connect(lambda e: self._apply_history(e, with_settings=True))
         dlg.exec()
 
-    def _apply_history(self, entry: dict, with_settings: bool):
+    def load_reused_entry(self, workflow_rel: str, entry: dict, output_dir: Path | None = None) -> bool:
+        """Library → Reuse Settings: select `workflow_rel` if it's still on
+        disk, then apply the entry's prompt + settings on top of it. Runs
+        made from here don't get logged to history until a workflow is
+        picked normally again — see _history_recording_suppressed — and are
+        saved back into `output_dir` (the Library folder the video came
+        from) instead of whatever the global Output folder is right now."""
+        self._loading_reused = True
+        try:
+            idx = self._wf_combo.findData(workflow_rel)
+            if idx < 0:
+                self.reload_workflows()
+                idx = self._wf_combo.findData(workflow_rel)
+            if idx >= 0 and idx != self._wf_combo.currentIndex():
+                self._wf_combo.setCurrentIndex(idx)
+        finally:
+            self._loading_reused = False
+        self._apply_history(entry, with_settings=True, record=False)
+        self._reused_output_dir = output_dir
+        return idx >= 0
+
+    def _apply_history(self, entry: dict, with_settings: bool, record: bool = True):
+        self._history_recording_suppressed = not record
         prompts = entry.get("prompts") or {}
         used_pos = used_neg = False
         for pf, edit in self._prompt_edits:
@@ -931,6 +1163,13 @@ class RunPanel(QWidget):
         self._cfg.set("seed_value", int(v))
         self._update_summary()
 
+    def _update_turbo_warning(self):
+        low_quality_risk = (
+            self._turbo_chk.isVisible() and not self._turbo_chk.isChecked()
+            and self._steps_spin.isVisible() and self._steps_spin.value() < 15
+        )
+        self._turbo_warn.setVisible(low_quality_risk)
+
     def _collect_settings(self) -> dict:
         fld = self._analysis.length_field if self._analysis is not None else None
         return {
@@ -975,12 +1214,22 @@ class RunPanel(QWidget):
         self._source = path
         if path is None:
             self._source_lbl.setText("No image selected" if self.kind == "image" else "No video selected")
+            self._source_thumb.setVisible(False)
         else:
             self._source_lbl.setText(f"Selected: {path.name}")
+            pix = QPixmap(str(path)) if self.kind == "image" else QPixmap()
+            if not pix.isNull():
+                self._source_thumb.setPixmap(pix.scaled(
+                    48, 48, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                self._source_thumb.setVisible(True)
+            else:
+                self._source_thumb.setVisible(False)
         self._update_run_enabled()
 
     def _update_run_enabled(self):
-        ok = (not self._running and self._source is not None
+        # Stays enabled while a job is running — clicking it then just adds
+        # another request to the shared queue (ComfyUI runs one at a time).
+        ok = (self._source is not None
               and self._workflow_path is not None and self._analysis is not None)
         if ok and self.kind == "image":
             ok = self._analysis.accepts_image
@@ -996,13 +1245,19 @@ class RunPanel(QWidget):
         seed = int(self._seed_spin.value()) if self._seed_mode.currentIndex() == 1 else None
         fld = self._analysis.length_field
         # Record what this run uses before it starts; the result file name is
-        # attached to the same entry when the run finishes.
-        try:
-            self._history_index = append_entry(
-                self._workflow_path,
-                make_entry(self._prompt_tuples(), self._collect_settings(), self._source.name))
-        except Exception:  # noqa: BLE001
-            self._history_index = None
+        # attached to the same entry when the run finishes. Stored on the
+        # request itself (not on self) so queuing several runs in a row -
+        # each with its own workflow/prompt snapshot - can't cross-attach
+        # one run's results to another's history entry.
+        if self._history_recording_suppressed:
+            history_index = None
+        else:
+            try:
+                history_index = append_entry(
+                    self._workflow_path,
+                    make_entry(self._prompt_tuples(), self._collect_settings(), self._source.name))
+            except Exception:  # noqa: BLE001
+                history_index = None
         req = RunRequest(
             workflow_path=self._workflow_path,
             workflow_label=label,
@@ -1017,16 +1272,27 @@ class RunPanel(QWidget):
             megapixels=float(self._mp_spin.value()) if self._analysis.mp_fields else None,
             video_input_mode=self._input_mode.currentData() if self._input_mode is not None else "auto",
             extend_stitch=bool(self._stitch_chk.isChecked()) if self._stitch_chk is not None else False,
+            history_index=history_index,
+            turbo_enabled=bool(self._turbo_chk.isChecked()) if self._analysis.turbo is not None else None,
+            output_dir_override=self._reused_output_dir,
         )
         self.run_requested.emit(req)
 
+    def set_queue_status(self, count: int, tooltip: str = ""):
+        """Reflects the app-wide queue (shared across both tabs — ComfyUI
+        only runs one prompt at a time regardless of which tab queued it)."""
+        self._queue_lbl.setVisible(count > 0)
+        self._clear_queue_btn.setVisible(count > 0)
+        if count:
+            self._queue_lbl.setText(f"⏳ {count} queued behind this run")
+            self._queue_lbl.setToolTip(tooltip)
+
     def set_running(self, running: bool, active: bool = True):
         """running: a job is in progress somewhere; active: this panel owns it."""
-        self._running = running
         self._cancel_btn.setEnabled(running and active)
-        self._update_run_enabled()
         if running and active:
             self._log.clear()
+            self._progress.setStyleSheet("")   # clear the "DONE" yellow from a previous run
             self._progress.setRange(0, 0)
             self._progress.setFormat("")
             self._progress_lbl.setText("Starting…")
@@ -1103,11 +1369,20 @@ class RunPanel(QWidget):
         self._advance(self._sampler_total + self._phases_seen - 1)
         self._progress_lbl.setText(f"{label} · {self._elapsed()}")
 
-    def on_done(self, paths: list[str]):
+    def on_done(self, paths: list[str], req: RunRequest | None = None):
         self._progress.setRange(0, 1)
         self._progress.setValue(1)
-        self._progress.setFormat("Done")
+        self._progress.setFormat("DONE")
+        self._progress.setStyleSheet(
+            f"QProgressBar {{ color: {COLORS['bg_dark']}; font-weight: bold; }}"
+            f"QProgressBar::chunk {{ background-color: {COLORS['warning']}; }}"
+        )
         self._progress_lbl.setText(f"Finished in {self._elapsed()}")
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONASTERISK)
+        except Exception:  # noqa: BLE001 — never let a notification sound break a finished run
+            pass
         for p in paths:
             item = QListWidgetItem(Path(p).name)
             item.setData(Qt.ItemDataRole.UserRole, p)
@@ -1115,8 +1390,11 @@ class RunPanel(QWidget):
             self._results_list.addItem(item)
         if paths:
             self._results_list.setCurrentRow(self._results_list.count() - 1)
-        if self._history_index is not None and self._workflow_path is not None:
-            add_results(self._workflow_path, self._history_index, [Path(p).name for p in paths])
+        # Use the request's own workflow/history snapshot, not the panel's
+        # CURRENT selection - by the time this run finishes, the user may
+        # have already switched workflows to queue a different one.
+        if req is not None and req.history_index is not None:
+            add_results(req.workflow_path, req.history_index, [Path(p).name for p in paths])
 
     def on_failed(self, message: str):
         self._progress.setRange(0, 1)

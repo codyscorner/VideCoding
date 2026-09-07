@@ -18,7 +18,7 @@ from comfy_client import ComfyClient
 from media_tools import concat_videos, extract_last_frame, probe, resolve_ffmpeg
 from workflow_tools import (
     ValueField, analyze, apply_inputs, apply_megapixels, apply_output_format, apply_seed,
-    apply_steps, apply_value, list_workflows, load_workflow, match_format_value, output_formats,
+    apply_steps, apply_turbo_toggle, apply_value, list_workflows, load_workflow, match_format_value, output_formats,
     set_output_prefix,
 )
 
@@ -44,6 +44,9 @@ class RunRequest:
     megapixels: float | None = None
     video_input_mode: str = "auto"                # auto | last_frame | upload_video
     extend_stitch: bool = False
+    history_index: int | None = None              # this run's own prompt-history entry
+    turbo_enabled: bool | None = None              # None = leave the workflow's turbo wiring as-is
+    output_dir_override: Path | None = None        # Library → Reuse Settings: save back into that video's own folder
 
 
 class RunWorker(QThread):
@@ -127,6 +130,9 @@ class RunWorker(QThread):
             if req.steps is not None and info.steps_fields:
                 n_steps = apply_steps(workflow, info.steps_fields, req.steps)
                 self._log(f"Steps: {req.steps} ({n_steps} sampler node{'s' if n_steps != 1 else ''})")
+            if req.turbo_enabled is not None and info.turbo is not None:
+                apply_turbo_toggle(workflow, info.turbo, req.turbo_enabled)
+                self._log(f"Turbo LoRA + Sampler: {'on' if req.turbo_enabled else 'off'}")
             src = probe(self._ffmpeg, req.source_path) if req.source_kind == "video" else None
             if src is not None and src.width:
                 self._log(
@@ -332,7 +338,8 @@ class RunWorker(QThread):
                 "ComfyUI finished but reported no output file. Make sure the workflow ends in a "
                 "SaveVideo or VHS_VideoCombine node (Preview nodes don't write files)."
             )
-        out_dir = Path((self._cfg.get("output_dir", "") or "").strip() or (self._base_dir / "output"))
+        out_dir = req.output_dir_override or Path(
+            (self._cfg.get("output_dir", "") or "").strip() or (self._base_dir / "output"))
         out_dir.mkdir(parents=True, exist_ok=True)
         stem = self._output_stem(req)
         label = _safe(req.workflow_label)

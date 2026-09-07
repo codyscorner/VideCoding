@@ -149,6 +149,7 @@ class ComfyClient:
         start = time.time()
         last_minute = 0
         logged_node = None
+        started = False
         try:
             while not cancelled():
                 try:
@@ -189,6 +190,9 @@ class ComfyClient:
                     node_id = data.get("node")
                     if node_id is None:
                         return  # prompt finished
+                    if not started:
+                        started = True
+                        self._log("ComfyUI started processing")
                     if node_id != logged_node:
                         logged_node = node_id
                         ct = (workflow.get(node_id) or {}).get("class_type", "")

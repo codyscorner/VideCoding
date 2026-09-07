@@ -1,6 +1,6 @@
 # ComfyUI Video Creator
 
-Version: 1.4.1
+Version: 1.5.0
 
 Single-shot ComfyUI API workflow runner with a dark red theme. Pick an image (or a video to extend), pick a workflow JSON, press Run, and the finished video lands in a local folder — from a local ComfyUI or a RunPod pod.
 
@@ -22,7 +22,7 @@ This is a **separate app from the ComfyUI Workflow Chain Automator**. It shares 
 - **Prompt history with settings** — every run appends prompts + seed + length + LoRAs/strengths + mode + source to the workflow's `<name>.prompt_history.json` (shared with the Chain Automator) and attaches the result file name when done. 📜 History searches entries and reloads the prompt alone or prompt + settings
 - **Seed** random-per-run or fixed; **Steps** applied to every sampler node (WAN hi/lo splits rescaled proportionally); **Megapixels** applied to every `megapixels` input (`ImageScaleToTotalPixels` etc.); **Length / Duration** control when the workflow exposes one
 - Extend-tab thumbnails show each video's **last frame**, the extension's starting point
-- **Library tab** — finished videos (Output folder by default): sort, multi-select, Play (playlist), Delete, Open Folder, **Send to Extend**, and a *Produced by* pane with the prompt/LoRAs/seed/length behind the selected video (from the prompt history)
+- **Library tab** — finished videos (Output folder by default): sort, multi-select, Play (playlist), Delete, **Archive** (move to a separate folder for later, cleans up its cached thumbnail), Open Folder, **Send to Extend**, **🔁 Reuse Settings** (when a video didn't turn out: switches to the tab it was made on and reloads its workflow/prompt/LoRAs/seed/steps so you can tweak and retry — for Image → Video the starting image is pulled from the video's own first frame via ffmpeg rather than the original upload, which is rarely still on disk, and shown as a small preview; for Video → Extend the recorded source video is reselected, or the Video folder is rescanned if it's moved. The retry itself isn't logged to history, since the video already carries the prompt it ran with), filename search + Year/Month/Day date-created filter, and a *Produced by* pane with the prompt/LoRAs/seed/length behind the selected video (from the prompt history)
 - **Local or RunPod** server with separate URLs, "Test connection", and automatic download of the result to the Output folder
 - Live step progress over the ComfyUI websocket (polling fallback), Cancel that interrupts the server, built-in video player, run log
 
@@ -61,6 +61,7 @@ pip install PyQt6 requests websocket-client pillow pyinstaller
 | `output_dir` | Where finished videos are downloaded |
 | `loras_dir` | ComfyUI `models/loras` folder that fills the LoRA dropdowns |
 | `library_dir` | Folder shown on the Library tab (blank = the Output folder) |
+| `archive_dir` | Where the Library's Archive button moves videos to |
 | `staging_dir_local` | Local folder for staging an image for folder-loader workflows (blank = app `temp`) |
 | `runpod_input_dir` | Absolute path of ComfyUI's `input` folder on the pod (folder-loader workflows) |
 | `ffmpeg_path` | Optional explicit ffmpeg path |
