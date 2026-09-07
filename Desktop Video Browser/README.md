@@ -10,9 +10,11 @@ Split-pane interface: a file list panel on the left shows video files from a sel
 
 - Explorer-style folder tree for navigating drives and folders, alongside the file list
 - Browse video files in any folder
+- Sort file list by name, date modified, or size (ascending/descending), remembered across restarts
 - Click to play — video loads immediately in the right panel
 - Play / Pause / Stop controls
 - Drag-and-drop folder loading
+- Click the folder path label to copy it; right-click a file for Copy Full Path / Copy File Name / Show in Explorer / Delete (with confirmation)
 - Dark gray theme with blue accents
 - Settings persistence (last folder, window geometry)
 - Packaged as a standalone Windows EXE

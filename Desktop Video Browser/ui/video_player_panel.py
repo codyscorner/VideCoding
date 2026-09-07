@@ -128,6 +128,7 @@ class VideoPlayerPanel(QWidget):
         self.player.durationChanged.connect(self._on_duration_changed)
 
         self._duration_ms = 0
+        self.current_path: str | None = None
 
         # --- Keyboard shortcuts ---
         QShortcut(QKeySequence(Qt.Key_Space), self, self.toggle_play_pause)
@@ -143,6 +144,7 @@ class VideoPlayerPanel(QWidget):
     def release(self) -> None:
         self.player.stop()
         self.player.setSource(QUrl())
+        self.current_path = None
         self._duration_ms = 0
         self.seek_slider.setRange(0, 0)
         self.time_label.setText("0:00 / 0:00")
@@ -150,6 +152,7 @@ class VideoPlayerPanel(QWidget):
     def load_video(self, path: str) -> None:
         self.error_label.setVisible(False)
         self.player.stop()
+        self.current_path = path
         self.player.setSource(QUrl.fromLocalFile(path))
         self.player.play()
 

@@ -29,6 +29,8 @@ class MainWindow(QMainWindow):
         self.folder_tree_panel.folderSelected.connect(self._on_tree_folder_selected)
         self.file_list_panel.fileSelected.connect(self.video_player_panel.load_video)
         self.file_list_panel.folderOpened.connect(self._on_folder_opened)
+        self.file_list_panel.sortModeChanged.connect(self._on_sort_mode_changed)
+        self.file_list_panel.fileAboutToBeDeleted.connect(self._on_file_about_to_be_deleted)
         self.video_player_panel.navigateRequested.connect(self.file_list_panel.navigate)
 
         self.splitter = QSplitter(Qt.Horizontal)
@@ -46,6 +48,9 @@ class MainWindow(QMainWindow):
         if self.settings.geometry:
             self.restoreGeometry(base64.b64decode(self.settings.geometry))
 
+        if self.settings.sort_mode:
+            self.file_list_panel.set_sort_mode(self.settings.sort_mode)
+
         if self.settings.last_opened_folder and os.path.isdir(self.settings.last_opened_folder):
             self.file_list_panel.load_folder(self.settings.last_opened_folder)
             self.folder_tree_panel.set_current_folder(self.settings.last_opened_folder)
@@ -58,6 +63,13 @@ class MainWindow(QMainWindow):
         self.video_player_panel.release()
         self.settings.last_opened_folder = folder
         self.folder_tree_panel.set_current_folder(folder)
+
+    def _on_sort_mode_changed(self, mode: str) -> None:
+        self.settings.sort_mode = mode
+
+    def _on_file_about_to_be_deleted(self, path: str) -> None:
+        if self.video_player_panel.current_path == path:
+            self.video_player_panel.release()
 
     def closeEvent(self, event):
         self.settings.geometry = base64.b64encode(self.saveGeometry().data()).decode("ascii")
