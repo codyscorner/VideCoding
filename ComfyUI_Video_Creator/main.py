@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import QApplication
 from config import CONFIG_NAME, ConfigManager, app_dir
 from ui.main_window import MainWindow
 
-VERSION = "1.4.1"
+VERSION = "1.6.3"
 
 # Windows taskbar icon fix — must run before QApplication is created
 try:
@@ -25,6 +25,25 @@ try:
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ComfyUI.VideoCreator.1")
 except Exception:
     pass
+
+
+def _force_foreground(window):
+    """raise_()/activateWindow() alone often get silently ignored - Windows
+    blocks a background process from stealing focus unless it looks like the
+    user just pressed a key. A harmless Alt tap satisfies that check so a
+    Stream-Deck-launched (or otherwise unfocused-parent) start actually comes
+    to the front instead of just flashing in the taskbar."""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        hwnd = int(window.winId())
+        user32.keybd_event(0x12, 0, 0, 0)   # VK_MENU (Alt) down
+        user32.keybd_event(0x12, 0, 2, 0)   # VK_MENU up (KEYEVENTF_KEYUP)
+        user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+    window.raise_()
+    window.activateWindow()
 
 
 def _find_icon() -> Path | None:
@@ -52,9 +71,8 @@ def main():
 
     window = MainWindow(config, VERSION)
     window.show()
-    window.raise_()
-    window.activateWindow()
-    QTimer.singleShot(200, lambda: (window.raise_(), window.activateWindow()))
+    _force_foreground(window)
+    QTimer.singleShot(200, lambda: _force_foreground(window))
     sys.exit(app.exec())
 
 

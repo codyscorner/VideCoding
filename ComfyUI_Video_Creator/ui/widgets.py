@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PIL import Image, ImageOps
@@ -26,8 +27,11 @@ from media_tools import IMAGE_EXTS, VIDEO_EXTS, extract_last_frame, extract_thum
 from ui.styles import COLORS
 
 THUMB_SIZE = 200
+THUMBNAIL_WORKERS = 6   # 16c/32t host — plenty of headroom to spare
 
 SORT_OPTIONS = ["Name A→Z", "Name Z→A", "Newest First", "Oldest First"]
+
+_MISSING = object()   # sentinel: file vanished mid-scan, decrement total
 
 
 def sort_params(option: str):
@@ -194,6 +198,42 @@ class ImageLoaderThread(QThread):
         rel = str(img_path.relative_to(self._folder))
         return f"{img_path.stem}_{zlib.crc32(rel.lower().encode()):08x}.jpg"
 
+    def _process_image(self, img_path: Path, thumb_dir: Path | None):
+        """Decode/cache one thumbnail. Runs on a pool worker — must not touch Qt widgets."""
+        if not img_path.exists():   # deleted while this scan was running
+            return _MISSING
+        img = QImage()
+        thumb_path = thumb_dir / self._thumb_name(img_path) if thumb_dir else None
+        try:
+            if (thumb_path and thumb_path.exists()
+                    and thumb_path.stat().st_mtime >= img_path.stat().st_mtime):
+                img = QImage(str(thumb_path))
+        except OSError:
+            pass
+        if img.isNull():
+            try:
+                pil_img = Image.open(img_path)
+                pil_img = ImageOps.exif_transpose(pil_img)
+                pil_img.thumbnail((THUMB_SIZE, THUMB_SIZE), Image.LANCZOS)
+                pil_img = pil_img.convert("RGB")
+                if thumb_path:
+                    try:
+                        pil_img.save(thumb_path, "JPEG", quality=88)
+                    except OSError:
+                        pass
+                data = pil_img.convert("RGBA").tobytes("raw", "RGBA")
+                img = QImage(data, pil_img.width, pil_img.height, QImage.Format.Format_RGBA8888).copy()
+            except Exception:
+                img = QImage(str(img_path))
+                if not img.isNull():
+                    img = img.scaled(THUMB_SIZE, THUMB_SIZE, Qt.AspectRatioMode.KeepAspectRatio,
+                                     Qt.TransformationMode.SmoothTransformation)
+        if img.isNull():
+            return None
+        rel = img_path.relative_to(self._folder)
+        label = str(rel) if rel.parent != Path(".") else img_path.name
+        return img, str(img_path), label
+
     def run(self):
         thumb_dir = self._folder / "thumbnails"
         try:
@@ -213,45 +253,23 @@ class ImageLoaderThread(QThread):
 
         total = len(images)
         loaded = 0
-        for img_path in images:
-            if self._cancelled:
-                return
-            if not img_path.exists():   # deleted while this scan was running
-                total -= 1
-                continue
-            img = QImage()
-            thumb_path = thumb_dir / self._thumb_name(img_path) if thumb_dir else None
-            try:
-                if (thumb_path and thumb_path.exists()
-                        and thumb_path.stat().st_mtime >= img_path.stat().st_mtime):
-                    img = QImage(str(thumb_path))
-            except OSError:
-                pass
-            if img.isNull():
-                try:
-                    pil_img = Image.open(img_path)
-                    pil_img = ImageOps.exif_transpose(pil_img)
-                    pil_img.thumbnail((THUMB_SIZE, THUMB_SIZE), Image.LANCZOS)
-                    pil_img = pil_img.convert("RGB")
-                    if thumb_path:
-                        try:
-                            pil_img.save(thumb_path, "JPEG", quality=88)
-                        except OSError:
-                            pass
-                    data = pil_img.convert("RGBA").tobytes("raw", "RGBA")
-                    img = QImage(data, pil_img.width, pil_img.height, QImage.Format.Format_RGBA8888).copy()
-                except Exception:
-                    img = QImage(str(img_path))
-                    if not img.isNull():
-                        img = img.scaled(THUMB_SIZE, THUMB_SIZE, Qt.AspectRatioMode.KeepAspectRatio,
-                                         Qt.TransformationMode.SmoothTransformation)
-            if img.isNull():
-                continue
-            rel = img_path.relative_to(self._folder)
-            label = str(rel) if rel.parent != Path(".") else img_path.name
-            self.item_ready.emit(img, str(img_path), label)
-            loaded += 1
-            self.progress.emit(loaded, total)
+        # executor.map keeps results in input order while decoding/resizing
+        # `THUMBNAIL_WORKERS` files at once — emission below still happens
+        # only on this thread, in order, so the grid fills the same as before.
+        with ThreadPoolExecutor(max_workers=THUMBNAIL_WORKERS) as executor:
+            for result in executor.map(lambda p: self._process_image(p, thumb_dir), images):
+                if self._cancelled:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    return
+                if result is _MISSING:
+                    total -= 1
+                    continue
+                if result is None:
+                    continue
+                img, path_str, label = result
+                loaded += 1
+                self.item_ready.emit(img, path_str, label)
+                self.progress.emit(loaded, total)
         self.finished_loading.emit(loaded)
 
 
@@ -271,6 +289,37 @@ class VideoLoaderThread(QThread):
     def cancel(self):
         self._cancelled = True
 
+    def _process_video(self, vid: Path, thumb_dir: Path):
+        """Extract/cache one thumbnail frame. Runs on a pool worker — must not touch Qt widgets."""
+        if not vid.exists():        # deleted while this scan was running
+            return _MISSING
+        # The Extend tab shows each video's LAST frame — that's the
+        # starting point of the extension. Cached under its own name so
+        # it never collides with the Chain Automator's first-frame cache.
+        thumb = thumb_dir / (vid.stem + ("_last.jpg" if self._last_frame else ".jpg"))
+        try:
+            stale = thumb.exists() and thumb.stat().st_mtime < vid.stat().st_mtime
+        except OSError:
+            stale = False
+        if not thumb.exists() or stale:
+            if self._last_frame:
+                try:
+                    extract_last_frame(self._ffmpeg, vid, thumb)
+                except Exception:
+                    extract_thumbnail(self._ffmpeg, vid, thumb)
+            else:
+                extract_thumbnail(self._ffmpeg, vid, thumb)
+        if not vid.exists():
+            return _MISSING
+        img = QImage(str(thumb)) if thumb.exists() else QImage()
+        if img.isNull():
+            img = QImage(THUMB_SIZE, THUMB_SIZE, QImage.Format.Format_RGB32)
+            img.fill(QColor(COLORS['bg_light']))
+        else:
+            img = img.scaled(THUMB_SIZE, THUMB_SIZE, Qt.AspectRatioMode.KeepAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation)
+        return img, str(vid), vid.name
+
     def run(self):
         thumb_dir = self._folder / "thumbnails"
         try:
@@ -287,43 +336,22 @@ class VideoLoaderThread(QThread):
 
         total = len(videos)
         loaded = 0
-        for vid in videos:
-            if self._cancelled:
-                return
-            if not vid.exists():        # deleted while this scan was running
-                total -= 1
-                continue
-            # The Extend tab shows each video's LAST frame — that's the
-            # starting point of the extension. Cached under its own name so
-            # it never collides with the Chain Automator's first-frame cache.
-            thumb = thumb_dir / (vid.stem + ("_last.jpg" if self._last_frame else ".jpg"))
-            try:
-                stale = thumb.exists() and thumb.stat().st_mtime < vid.stat().st_mtime
-            except OSError:
-                stale = False
-            if not thumb.exists() or stale:
-                if self._last_frame:
-                    try:
-                        extract_last_frame(self._ffmpeg, vid, thumb)
-                    except Exception:
-                        extract_thumbnail(self._ffmpeg, vid, thumb)
-                else:
-                    extract_thumbnail(self._ffmpeg, vid, thumb)
-            if self._cancelled:         # extraction is slow; check again after it
-                return
-            if not vid.exists():
-                total -= 1
-                continue
-            img = QImage(str(thumb)) if thumb.exists() else QImage()
-            if img.isNull():
-                img = QImage(THUMB_SIZE, THUMB_SIZE, QImage.Format.Format_RGB32)
-                img.fill(QColor(COLORS['bg_light']))
-            else:
-                img = img.scaled(THUMB_SIZE, THUMB_SIZE, Qt.AspectRatioMode.KeepAspectRatio,
-                                 Qt.TransformationMode.SmoothTransformation)
-            self.item_ready.emit(img, str(vid), vid.name)
-            loaded += 1
-            self.progress.emit(loaded, total)
+        # Each frame extraction shells out to ffmpeg — running several at
+        # once overlaps those external processes instead of waiting on them
+        # one at a time. executor.map keeps results in the original sorted
+        # order; emission still happens only here, so the grid fills the same.
+        with ThreadPoolExecutor(max_workers=THUMBNAIL_WORKERS) as executor:
+            for result in executor.map(lambda v: self._process_video(v, thumb_dir), videos):
+                if self._cancelled:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    return
+                if result is _MISSING:
+                    total -= 1
+                    continue
+                img, path_str, label = result
+                loaded += 1
+                self.item_ready.emit(img, path_str, label)
+                self.progress.emit(loaded, total)
         self.finished_loading.emit(loaded)
 
 
@@ -339,6 +367,7 @@ class MediaBrowser(QWidget):
     sort_changed = pyqtSignal(str)
     deleting = pyqtSignal(list)              # list[Path] about to be deleted (close players!)
     deleted = pyqtSignal(list)               # list[Path] removed from the folder
+    loaded = pyqtSignal(int)                 # a refresh() scan finished, n items in the grid
 
     def __init__(self, kind: str, folder: str, sort_option: str, ffmpeg_getter, parent=None,
                  multi: bool = False, last_frame: bool = True, title: str | None = None, hint: str = "",
@@ -564,6 +593,7 @@ class MediaBrowser(QWidget):
         self._status.setText(f"{n} {noun}{'s' if n != 1 else ''}")
         if previous:
             self.grid.select_key(previous)
+        self.loaded.emit(n)
 
     def remove_paths(self, paths: list[Path]):
         """Drop rows for files another view just deleted, without a rescan."""

@@ -1,5 +1,50 @@
 # Changelog — ComfyUI Video Creator
 
+### v1.6.3
+- **Library: Reuse Settings** — a video that didn't come out right no longer means hunting down the source image, copying the prompt by hand, and reselecting every LoRA/seed/step. Selecting a video with a linked history entry enables a new "🔁 Reuse Settings" button that switches to the tab it was made on (Image → Video or Video → Extend), reloads that workflow, prompt, LoRAs, seed, steps, megapixels and length — leaving you to tweak the prompt and press Create/Extend yourself.
+  - **Image → Video runs never re-hunt for the original source image.** The image an I2V run started from is often a temp/staged upload that's long gone by the time you review the result, so its recorded filename is never trustworthy. Instead, the finished video's own first frame is extracted via ffmpeg into a temp cache and used as the starting image — guaranteed to exist and guaranteed to match. The extracted frame is shown as a small preview thumbnail next to the source label (new for any image selection, not just reuse) so you can see exactly what's about to run. The temp frame is named with the same `_base_stem()` stripping the Extend chain already uses (peels off the prior run's `_<workflow>_<timestamp>`), so the retry's output name comes back clean instead of doubling up.
+  - **Video → Extend runs** still need the real source video (a single frame can't stand in for it), so its recorded filename is looked up in the current Video folder; if it was moved or deleted outside the app, that folder is automatically rescanned so the grid reflects what's actually there instead of erroring out, and the log says so.
+  - **Saves back into the Library folder it came from**, not whichever folder happens to be the global Output folder right now — useful once you're juggling several Library folders for different projects/scenes, so a retry lands next to the video it's replacing instead of somewhere else you then have to go find it. The log names the destination folder for the run.
+  - Runs started this way are **not** added to prompt history — the finished video already carries the prompt it was generated with, and logging every retry-with-a-tweak would flood the workflow's history with near-duplicates of a prompt that mostly works. History logging resumes automatically the next time a workflow is picked normally or the History dialog is used.
+
+### v1.6.2
+- **Turbo LoRA + Sampler toggle** — a new "⚡ Turbo LoRA + Sampler" checkbox appears in Options for any MiniMax H3 workflow that has one (detected automatically, whichever way the workflow file currently has it wired). Uncheck it to bypass the Turbo LoRA and swap in the standard sampler for a real, un-shortcut quality read — no more manually rewiring the graph in ComfyUI's editor to compare. A warning appears when Turbo is off and steps is set below 15, since standard sampling at a turbo-tuned step count looks worse than either option alone.
+
+### v1.6.1
+- **The Rewrite button is grayed out until LM Studio is actually reachable** — turning on the AI Rewriter toggle now pings LM Studio's `/v1/models` in the background and enables/disables the button accordingly, with a tooltip explaining why if it's off (not configured, or the server isn't running). LM Studio was never meant to be a requirement to use the app; re-checks automatically whenever you toggle it on, switch workflows, or close Settings.
+
+### v1.6.0
+- **AI Prompt Rewriter** — a new "🪄 AI Rewriter" toggle appears on the Prompts pane for any recognized MiniMax H3 workflow (T2VA/I2VA/FL2VA/L2VA/Ref2VA, auto-detected from the workflow's nodes). Turn it on, type a rough scene idea into the same prompt box you already use, hit "✨ Rewrite", and it's replaced with a correctly-formatted production prompt — right down to `<Subject N>`/`<Picture N>` labels and the six-section Ref2VA structure where that applies. For Ref2VA workflows a second field appears asking for a one-line description of the reference image(s), since the writer works from text, not pixels.
+  - Runs entirely against a local LM Studio server (Settings → AI Prompt Rewriter: URL + a "Fetch models" button that lists whatever's loaded) — nothing leaves the machine. Off by default; nothing changes for anyone who doesn't turn it on.
+  - The system prompt embeds MiniMax's own writing guide in full (reimplemented from the pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI node pack's "guide" approach), so it works with *any* instruction-following model already in LM Studio — no task-specific LoRA required.
+  - Guards against two real local-model failure modes found while building this: a "thinking" model burning its whole response budget on chain-of-thought and never writing the actual prompt (now flagged with a clear error instead of silently returning nothing), and a weak model copying the guide's own worked example verbatim instead of writing a new one (explicit anti-copy instruction added).
+  - Default model is `openai/gpt-oss-20b` — in testing, this MoE model finished a full Ref2VA rewrite in ~7 seconds with clean, well-structured output, versus a dense 27B model that didn't finish even at a 600-second timeout for the same prompt.
+
+### v1.5.6
+- **Fixed: the window opened behind other windows on launch.** `raise_()`/`activateWindow()` alone can get silently ignored — Windows blocks a background process from stealing focus unless it looks like the user just pressed a key, which is exactly what happens starting the app from a Stream Deck shortcut. Startup now simulates a harmless Alt key tap immediately before `SetForegroundWindow`, which satisfies that check, so the window actually comes to the front on launch instead of just flashing in the taskbar.
+
+### v1.5.5
+- **Moved the queue counter where you're actually looking** — v1.5.4 put it in the top header bar next to Settings, which is easy to miss. It's now its own row directly under the Create Video / Extend Video / Cancel buttons on each tab ("⏳ N queued behind this run" + a Clear Queue button), hidden entirely when nothing's queued. Since the queue is shared between tabs, both tabs' counters stay in sync.
+
+### v1.5.4
+- **Run queue** — clicking Create Video/Extend Video while a job is already running no longer pops a "Busy" dialog; it queues the request instead, and the next one auto-starts the moment the current run finishes. ComfyUI only processes one prompt at a time, so Image and Extend tabs share a single queue. A header badge ("N queued", hover for the list) plus a Clear Queue button show what's waiting; each queued job keeps its own prompt/workflow/settings snapshot from the moment it was clicked, so changing the workflow or prompt to queue up the next one doesn't affect jobs already waiting, and results/history attach to the right entry even if the panel's selection has since moved on.
+- Create Video/Extend Video buttons now stay enabled while a run is in progress (that's what makes queuing possible) instead of disabling until the active job finishes.
+
+### v1.5.3
+- **Finished-run indicator you can catch from across the room** — the progress bar turns amber and reads "DONE" (dark bold text for contrast) when a run completes, plus a system notification sound plays, so you don't need a popup window to tell a run finished while walking by. Starting a new run clears the amber back to the normal red bar.
+
+### v1.5.2
+- **Fixed misleading run log** — after queuing, the log kept showing "Queued (...) — waiting for ComfyUI" even once the run was already executing and the progress bar was moving (step/percent updates come from a separate websocket message and never touched that line). ComfyUI's first "executing" event for the run now logs "ComfyUI started processing" so the log matches what the progress bar is showing
+
+### v1.5.1
+- **Faster thumbnail loading** — the Library/Extend/Image browser grids now decode/resize (or extract video frames via ffmpeg) across a 6-worker thread pool instead of one file at a time. Biggest win is on a cold cache (first time pointing at a folder, or after files change) since it overlaps several ffmpeg processes / Pillow decodes at once; results still land in the grid in the same sorted order as before
+
+### v1.5.0
+- **Library: Archive button** — move the selected video(s) out to a separate Archive folder (set in Settings → Folders → Archive) instead of keeping every generation in the main Library. Meant for clips you want to keep but don't need front-and-center — watch them later in the standalone Desktop Video Browser
+  - closes any player currently holding one of the files *before* the move, and deletes the file's cached thumbnail(s) from the Library's `thumbnails/` folder — otherwise a stale tile would linger in the grid and clicking it would try to play a file that's no longer there
+  - a name clash in the archive folder is resolved with a `_2`, `_3`, … suffix rather than overwriting
+- **Library: filename search + date-created filter.** With hundreds of videos piling up, the grid can now be narrowed by typing part of a filename, and/or by Year / Month / Day of the file's creation date (same two-dropdown pattern as the History dialog's date filter) — both combine, and a "N of M shown" label tracks the current filter
+
 ### v1.4.1
 - **Fixed: a video you had played could not be deleted until the app was restarted** (`WinError 32 ... being used by another process`). Closing the player only called `stop()`, and on Windows that does not release the file - the media backend keeps the handle until the source is cleared or the player destroyed. Worse, the player window was never destroyed at all: it was parented to the main window and merely hidden on close, so every clip ever opened stayed locked, and starting another video just added a second hidden player on top
   - closing the player now clears its source, detaches the outputs and destroys the player and the window (`WA_DeleteOnClose`); the main window drops its reference the moment it closes

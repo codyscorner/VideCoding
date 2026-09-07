@@ -8,6 +8,7 @@ fallback for when the shell call can't do it (a network share, a full Bin).
 from __future__ import annotations
 
 import ctypes
+import shutil
 import time
 import zlib
 from ctypes import wintypes
@@ -84,6 +85,28 @@ def delete_paths(paths: list[Path]) -> tuple[int, list[str], bool]:
         time.sleep(LOCK_WAIT)
     deleted = sum(1 for p in paths if not p.exists())
     return deleted, errors, recycled and not errors
+
+
+def archive_paths(paths: list[Path], archive_dir: Path) -> tuple[list[Path], list[str]]:
+    """Move files into archive_dir, keeping names unique on a clash.
+
+    Returns (moved dest paths, errors)."""
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    moved: list[Path] = []
+    errors: list[str] = []
+    for p in paths:
+        dest = archive_dir / p.name
+        if dest.exists() and dest != p:
+            n = 2
+            while (archive_dir / f"{p.stem}_{n}{p.suffix}").exists():
+                n += 1
+            dest = archive_dir / f"{p.stem}_{n}{p.suffix}"
+        try:
+            shutil.move(str(p), str(dest))
+            moved.append(dest)
+        except OSError as e:
+            errors.append(f"{p.name}: {e}")
+    return moved, errors
 
 
 def thumbnail_caches(path: Path, root: Path | None = None) -> list[Path]:

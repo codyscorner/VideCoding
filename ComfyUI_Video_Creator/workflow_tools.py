@@ -92,6 +92,22 @@ class StepsField:
 
 
 @dataclass
+class TurboToggle:
+    """A MiniMax H3 Turbo LoRA + Turbo Sampler pair detected in the graph,
+    alongside the standard (non-turbo) model link / KSamplerSelect node they
+    can be swapped for. Detected structurally so it works regardless of
+    whether the workflow file currently has turbo wired in or bypassed —
+    see `_detect_turbo_toggle`."""
+    lora_id: str
+    sampler_id: str
+    standard_sampler_id: str
+    base_model_link: list                       # the turbo LoRA's own `model` input, i.e. the bypass target
+    lora_consumers: list[tuple[str, str]]        # (node_id, input_key) whose `model` input toggles
+    sampler_consumers: list[tuple[str, str]]     # (node_id, input_key) whose `sampler` input toggles
+    currently_on: bool
+
+
+@dataclass
 class Analysis:
     image_nodes: list[tuple[str, str]] = field(default_factory=list)          # (id, title)
     list_loaders: list[tuple[str, str]] = field(default_factory=list)         # (id, title)
@@ -106,6 +122,9 @@ class Analysis:
     image_output_nodes: list[str] = field(default_factory=list)
     sampler_steps: list[int] = field(default_factory=list)
     post_phases: int = 0
+    minimax_mode: str | None = None     # "T2VA" | "I2VA" | "FL2VA" | "L2VA" | "Ref2VA"
+    aspect_ratio: str = "16:9"          # best-effort, read from a ResolutionSelector node
+    turbo: TurboToggle | None = None
 
     @property
     def accepts_image(self) -> bool:
@@ -293,6 +312,27 @@ def analyze(workflow: dict) -> Analysis:
             neg = "neg" in title.lower()
             (negatives if neg else positives).append(PromptField(nid, "value", title or "Text", neg, inp["value"]))
 
+        # MiniMax H3 mode, for the optional AI prompt rewriter ----------
+        if ct == "MiniMaxH3ReferenceToVideo":
+            a.minimax_mode = "Ref2VA"
+        elif ct == "MiniMaxH3ImageToVideo":
+            has_first = inp.get("first_frame") is not None
+            has_last = inp.get("last_frame") is not None
+            if has_first and has_last:
+                a.minimax_mode = "FL2VA"
+            elif has_first:
+                a.minimax_mode = "I2VA"
+            elif has_last:
+                a.minimax_mode = "L2VA"
+            else:
+                a.minimax_mode = "T2VA"
+
+        # Aspect ratio, best-effort (feeds the rewriter's resolution field)
+        if ct == "ResolutionSelector" and isinstance(inp.get("aspect_ratio"), str):
+            m = re.match(r"\s*(\d+:\d+)", inp["aspect_ratio"])
+            if m:
+                a.aspect_ratio = m.group(1)
+
         # LoRAs --------------------------------------------------------
         if "lora" in ct.lower():
             for key, val in inp.items():
@@ -352,7 +392,68 @@ def analyze(workflow: dict) -> Analysis:
 
     a.prompts = positives + negatives
     a.length_field = duration or length_int
+    a.turbo = _detect_turbo_toggle(workflow)
     return a
+
+
+def _detect_turbo_toggle(workflow: dict) -> TurboToggle | None:
+    """Finds a MiniMax H3 Turbo LoRA + Turbo Sampler pair and the standard
+    (non-turbo) alternatives they can be swapped for, by structure rather
+    than by current wiring — so this works whether the file currently has
+    turbo on or bypassed. Returns None unless every piece needed to safely
+    toggle both directions is present."""
+    lora_id = sampler_id = standard_sampler_id = None
+    for nid, node in workflow.items():
+        if not isinstance(node, dict):
+            continue
+        ct = node.get("class_type", "")
+        if ct == "MiniMaxH3TurboLoRA":
+            lora_id = nid
+        elif ct == "MiniMaxH3TurboSampler":
+            sampler_id = nid
+        elif ct == "KSamplerSelect":
+            standard_sampler_id = nid
+    if lora_id is None or sampler_id is None or standard_sampler_id is None:
+        return None
+    base_model_link = workflow[lora_id].get("inputs", {}).get("model")
+    if not (isinstance(base_model_link, list) and len(base_model_link) == 2):
+        return None
+
+    lora_consumers: list[tuple[str, str]] = []
+    sampler_consumers: list[tuple[str, str]] = []
+    lora_on = sampler_on = False
+    for nid, node in workflow.items():
+        if nid == lora_id or not isinstance(node, dict):
+            continue
+        for key, val in node.get("inputs", {}).items():
+            if not (isinstance(val, list) and len(val) == 2):
+                continue
+            if val == [lora_id, 0]:
+                lora_consumers.append((nid, key))
+                lora_on = True
+            elif val == base_model_link:
+                lora_consumers.append((nid, key))
+            elif val == [sampler_id, 0]:
+                sampler_consumers.append((nid, key))
+                sampler_on = True
+            elif val == [standard_sampler_id, 0]:
+                sampler_consumers.append((nid, key))
+    if not lora_consumers or not sampler_consumers:
+        return None
+    return TurboToggle(
+        lora_id=lora_id, sampler_id=sampler_id, standard_sampler_id=standard_sampler_id,
+        base_model_link=base_model_link, lora_consumers=lora_consumers,
+        sampler_consumers=sampler_consumers, currently_on=(lora_on and sampler_on),
+    )
+
+
+def apply_turbo_toggle(workflow: dict, turbo: TurboToggle, enabled: bool) -> None:
+    model_target = [turbo.lora_id, 0] if enabled else list(turbo.base_model_link)
+    sampler_target = [turbo.sampler_id, 0] if enabled else [turbo.standard_sampler_id, 0]
+    for nid, key in turbo.lora_consumers:
+        workflow[nid]["inputs"][key] = list(model_target)
+    for nid, key in turbo.sampler_consumers:
+        workflow[nid]["inputs"][key] = list(sampler_target)
 
 
 # --------------------------------------------------------------------- #

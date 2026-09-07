@@ -2,7 +2,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QButtonGroup, QDialog, QDialogButtonBox, QFileDialog, QGroupBox, QHBoxLayout,
+    QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
@@ -84,6 +84,8 @@ class SettingsDialog(QDialog):
                                            "ComfyUI models/loras folder — fills the LoRA dropdowns…")
         self._library_dir = self._folder_row(fl, "Library:", config.get("library_dir", ""),
                                              "Folder shown on the Library tab (blank = the Output folder)…")
+        self._archive_dir = self._folder_row(fl, "Archive:", config.get("archive_dir", ""),
+                                             "Where archived videos are moved to (watch later in Desktop Video Browser)…")
         left.addWidget(folders_group)
 
         # ── Staging ──────────────────────────────────────────────────────
@@ -123,6 +125,36 @@ class SettingsDialog(QDialog):
         edl.addWidget(self._font_spin)
         edl.addStretch()
         right.addWidget(ed_group)
+
+        # ── AI Prompt Rewriter ──────────────────────────────────────────
+        rw_group = QGroupBox("AI Prompt Rewriter (local LM Studio)")
+        rwl = QVBoxLayout(rw_group)
+        rwl.setSpacing(10)
+        rw_note = QLabel("Turns a rough scene idea into a correctly-formatted MiniMax H3 prompt "
+                          "using any model already loaded in LM Studio - nothing is uploaded anywhere.")
+        rw_note.setWordWrap(True)
+        rw_note.setObjectName("status_dim")
+        rwl.addWidget(rw_note)
+        self._rewriter_url = self._text_row(rwl, "LM Studio URL:", config.get("rewriter_base_url", ""),
+                                            "http://127.0.0.1:1234/v1")
+        model_row = QHBoxLayout()
+        model_row.addWidget(self._label("Model:"))
+        self._rewriter_model = QComboBox()
+        self._rewriter_model.setEditable(True)
+        saved_model = config.get("rewriter_model", "")
+        if saved_model:
+            self._rewriter_model.addItem(saved_model)
+        model_row.addWidget(self._rewriter_model, stretch=1)
+        fetch_btn = QPushButton("Fetch models")
+        fetch_btn.setObjectName("secondary_btn")
+        fetch_btn.clicked.connect(self._fetch_rewriter_models)
+        model_row.addWidget(fetch_btn)
+        rwl.addLayout(model_row)
+        self._rewriter_status = QLabel("")
+        self._rewriter_status.setWordWrap(True)
+        self._rewriter_status.setObjectName("status_dim")
+        rwl.addWidget(self._rewriter_status)
+        right.addWidget(rw_group)
 
         left.addStretch()
         right.addStretch()
@@ -189,6 +221,32 @@ class SettingsDialog(QDialog):
         if path:
             edit.setText(path)
 
+    def _fetch_rewriter_models(self):
+        import prompt_rewriter as pr
+        url = self._rewriter_url.text().strip()
+        if not url:
+            self._rewriter_status.setText("Enter the LM Studio URL first.")
+            return
+        self._rewriter_status.setText(f"Fetching models from {url} …")
+        self._rewriter_status.repaint()
+        try:
+            models = pr.list_models(url)
+        except pr.RewriterError as e:
+            self._rewriter_status.setText(str(e))
+            self._rewriter_status.setStyleSheet(f"color: {COLORS['error']};")
+            return
+        current = self._rewriter_model.currentText().strip()
+        self._rewriter_model.clear()
+        self._rewriter_model.addItems(models)
+        if current:
+            idx = self._rewriter_model.findText(current)
+            if idx >= 0:
+                self._rewriter_model.setCurrentIndex(idx)
+            else:
+                self._rewriter_model.setEditText(current)
+        self._rewriter_status.setText(f"Found {len(models)} model(s).")
+        self._rewriter_status.setStyleSheet(f"color: {COLORS['success']};")
+
     def _test_connection(self):
         from comfy_client import ComfyClient
         url = (self._runpod_url if self._runpod_radio.isChecked() else self._local_url).text().strip()
@@ -222,9 +280,12 @@ class SettingsDialog(QDialog):
         c.set("output_dir", self._output_dir.text().strip())
         c.set("loras_dir", self._loras_dir.text().strip())
         c.set("library_dir", self._library_dir.text().strip())
+        c.set("archive_dir", self._archive_dir.text().strip())
         c.set("staging_dir_local", self._staging_dir.text().strip())
         c.set("runpod_input_dir", self._runpod_input.text().strip())
         c.set("ffmpeg_path", self._ffmpeg.text().strip())
         c.set("prompt_font_size", int(self._font_spin.value()))
+        c.set("rewriter_base_url", self._rewriter_url.text().strip())
+        c.set("rewriter_model", self._rewriter_model.currentText().strip())
         c.save()
         self.accept()

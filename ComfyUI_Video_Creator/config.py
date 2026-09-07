@@ -31,6 +31,7 @@ class ConfigManager:
         "workflow_dir": "P:/AI/ComfyLocal/ComfyUI_windows_portable/Workflow_API",
         "output_dir": "",
         "library_dir": "",                     # blank = output_dir
+        "archive_dir": "",                     # where the Library's Archive button moves videos to
         "library_sort": "Newest First",
         "loras_dir": "P:/AI/ComfyLocal/ComfyUI_windows_portable/ComfyUI/models/loras",
         # Staging for workflows that read a whole folder (LoadImageListFromDir)
@@ -50,6 +51,9 @@ class ConfigManager:
         "prompt_font_size": 10,
         "panel_split_image": [],
         "panel_split_video": [],
+        # AI prompt rewriter (local LLM via LM Studio's OpenAI-compatible API)
+        "rewriter_base_url": "http://127.0.0.1:1970/v1",
+        "rewriter_model": "openai/gpt-oss-20b",
     }
 
     def __init__(self, config_path: Path):

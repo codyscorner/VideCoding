@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer
@@ -7,8 +8,8 @@ from PyQt6.QtWidgets import (
 )
 
 from config import ConfigManager
-from media_tools import resolve_ffmpeg
-from run_worker import RunRequest, RunWorker
+from media_tools import extract_thumbnail, resolve_ffmpeg
+from run_worker import RunRequest, RunWorker, _base_stem, _workflow_labels
 from ui.library_tab import LibraryTab
 from ui.run_panel import RunPanel
 from ui.settings_dialog import SettingsDialog
@@ -28,6 +29,8 @@ class MainWindow(QMainWindow):
         self.version = version
         self._worker: RunWorker | None = None
         self._active_panel: RunPanel | None = None
+        self._active_req: RunRequest | None = None
+        self._queue: list[RunRequest] = []
         self._player: VideoPlayerDialog | None = None
         self._tab_splitters: list[QSplitter] = []
         self._splits_initialised = False
@@ -90,6 +93,7 @@ class MainWindow(QMainWindow):
         self._library.browser.deleted.connect(self._on_files_deleted)
         self._library.play_requested.connect(self._play_list)
         self._library.send_to_extend.connect(self._send_to_extend)
+        self._library.reuse_requested.connect(self._reuse_settings)
         self._tabs.addTab(self._library, "📚  Library")
         root.addWidget(self._tabs, stretch=1)
 
@@ -141,6 +145,7 @@ class MainWindow(QMainWindow):
         browser.sort_changed.connect(lambda s: (self.config.set(sort_key, s), self.config.save()))
         panel.run_requested.connect(self._start)
         panel.cancel_requested.connect(self._cancel)
+        panel.clear_queue_requested.connect(self._clear_queue)
         panel.play_requested.connect(self._play)
 
     def _update_mode_label(self):
@@ -173,15 +178,13 @@ class MainWindow(QMainWindow):
             panel._font_spin.setValue(int(self.config.get("prompt_font_size", 10) or 10))
             if self.config.get("loras_dir") != before["loras_dir"]:
                 panel.reload_loras_from_folder()
+            panel.refresh_rewriter_status()
 
     # ------------------------------------------------------------------ #
     # Running
     # ------------------------------------------------------------------ #
 
     def _start(self, req: RunRequest):
-        if self._worker is not None and self._worker.isRunning():
-            QMessageBox.information(self, "Busy", "A generation is already running. Wait for it to finish or cancel it.")
-            return
         if not self.config.server_url():
             QMessageBox.warning(self, "No server", "Set the ComfyUI URL for the selected mode in Settings first.")
             return
@@ -189,10 +192,21 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No output folder", "Set the Output folder in Settings first.")
             return
         self.config.save()
+        if self._worker is not None and self._worker.isRunning():
+            # ComfyUI only works one prompt at a time - hold this one and run
+            # it automatically once whatever's running now finishes.
+            self._queue.append(req)
+            panel = self._image_panel if req.source_kind == "image" else self._video_panel
+            panel.append_log(f"Queued — {len(self._queue)} waiting behind the current run")
+            self._update_queue_label()
+            return
+        self._launch(req)
+
+    def _launch(self, req: RunRequest):
         panel = self._image_panel if req.source_kind == "image" else self._video_panel
         self._active_panel = panel
-        for p in (self._image_panel, self._video_panel):
-            p.set_running(True, active=(p is panel))
+        self._active_req = req
+        panel.set_running(True, active=True)
 
         cfg = self.config.get_all()
         self._worker = RunWorker(cfg, req)
@@ -205,6 +219,19 @@ class MainWindow(QMainWindow):
         self._worker.finished.connect(self._on_worker_finished)
         self._worker.start()
 
+    def _update_queue_label(self):
+        n = len(self._queue)
+        tooltip = "\n".join(f"{r.source_path.name} — {r.workflow_label}" for r in self._queue)
+        for p in (self._image_panel, self._video_panel):
+            p.set_queue_status(n, tooltip)
+
+    def _clear_queue(self):
+        for req in self._queue:
+            panel = self._image_panel if req.source_kind == "image" else self._video_panel
+            panel.append_log(f"Removed from queue: {req.source_path.name} ({req.workflow_label})")
+        self._queue.clear()
+        self._update_queue_label()
+
     def _cancel(self):
         if self._worker is not None and self._worker.isRunning():
             self._worker.cancel()
@@ -213,7 +240,7 @@ class MainWindow(QMainWindow):
 
     def _on_done(self, paths: list):
         if self._active_panel is not None:
-            self._active_panel.on_done(list(paths))
+            self._active_panel.on_done(list(paths), self._active_req)
         self._library.refresh()
         # New files may have landed in the folder the Video tab is showing
         out_dir = Path((self.config.get("output_dir", "") or "").strip() or ".")
@@ -228,10 +255,14 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Generation failed", message)
 
     def _on_worker_finished(self):
-        for p in (self._image_panel, self._video_panel):
-            p.set_running(False)
+        if self._active_panel is not None:
+            self._active_panel.set_running(False)
         self._worker = None
         self._active_panel = None
+        self._active_req = None
+        if self._queue:
+            self._launch(self._queue.pop(0))
+            self._update_queue_label()
 
     # ------------------------------------------------------------------ #
     # Player
@@ -309,6 +340,74 @@ class MainWindow(QMainWindow):
             self._pending_select = str(path)
             self._video_browser.grid.model().rowsInserted.connect(self._try_pending_select)
         self._video_panel.append_log(f"Source from Library: {path.name}")
+
+    def _reuse_settings(self, video_path: Path, wf_path: Path, entry: dict):
+        """Library → Reuse Settings: switch to the tab this run was made on,
+        reload its prompt/LoRAs/seed/steps/source, and let the user tweak
+        before pressing Create/Extend themselves — nothing is queued here."""
+        settings = entry.get("settings") or {}
+        # Only the video (Extend) panel ever writes a video_input_mode.
+        kind = "video" if settings.get("video_input_mode") else "image"
+        panel = self._video_panel if kind == "video" else self._image_panel
+        browser = self._video_browser if kind == "video" else self._image_browser
+        self._tabs.setCurrentIndex(1 if kind == "video" else 0)
+
+        wf_dir = Path((self.config.get("workflow_dir", "") or "").strip())
+        rel = settings.get("workflow")
+        if not rel:
+            try:
+                rel = wf_path.relative_to(wf_dir).as_posix() if str(wf_dir) else wf_path.name
+            except ValueError:
+                rel = wf_path.name
+        if not panel.load_reused_entry(rel, entry, output_dir=video_path.parent):
+            panel.append_log(f"⚠ Workflow '{rel}' is no longer on disk — pick one manually; "
+                              "the prompt/settings were applied wherever they still matched.")
+        panel.append_log(f"This run will save back to {video_path.parent}")
+
+        if kind == "image":
+            self._reuse_image_source(panel, video_path)
+        else:
+            self._reuse_video_source(browser, panel, entry.get("source") or "")
+
+    def _reuse_image_source(self, panel: RunPanel, video_path: Path):
+        """The image an I2V run started from is often a temp/staged upload
+        that's long gone by the time someone reviews the result — the
+        finished video is always right there, so its first frame is pulled
+        as a stand-in starting image instead of hunting for the original."""
+        try:
+            cache_dir = Path(tempfile.gettempdir()) / "ComfyUI_Video_Creator_reuse"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            # Strip whatever the run that made this video appended (its own
+            # workflow label + timestamp) so the new run's own label+stamp
+            # doesn't get bolted on top of a copy that's already there.
+            labels = _workflow_labels(self.config.get("workflow_dir", ""))
+            base = _base_stem(video_path.stem, labels)
+            frame_path = cache_dir / f"{base}.png"
+            ok = extract_thumbnail(self._ffmpeg(), video_path, frame_path)
+        except OSError as e:
+            ok = False
+            panel.append_log(f"⚠ Could not extract a starting frame from {video_path.name}: {e}")
+        if ok:
+            panel.set_source(frame_path)
+            panel.append_log(f"Reused settings — starting image is {video_path.name}'s first frame")
+        else:
+            panel.append_log(
+                f"⚠ Couldn't extract a starting frame from {video_path.name} — pick a source image, then Create.")
+
+    def _reuse_video_source(self, browser: MediaBrowser, panel: RunPanel, source_name: str):
+        candidate = Path(browser.folder) / source_name if (browser.folder and source_name) else None
+        if candidate is not None and candidate.exists():
+            if not browser.grid.select_key(str(candidate)):
+                panel.set_source(candidate)
+            panel.append_log(f"Reused settings from Library — source: {source_name}")
+        elif source_name:
+            # Moved or deleted outside the app — rescan so the grid matches
+            # what's actually on disk instead of leaving a stale/missing pick.
+            browser.refresh()
+            panel.append_log(f"⚠ Source '{source_name}' wasn't found in {browser.folder or '(no folder set)'} "
+                              "— rescanned that folder. Pick a replacement video, then Extend.")
+        else:
+            panel.append_log("Reused settings from Library (no source recorded for this run — pick one, then Extend).")
 
     def _try_pending_select(self, *_):
         key = getattr(self, "_pending_select", None)
