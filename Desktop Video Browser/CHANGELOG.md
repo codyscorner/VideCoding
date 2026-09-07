@@ -1,5 +1,17 @@
 # Changelog — Desktop Video Browser
 
+## [1.3.1] — 2026-09-07
+
+### Added
+- "Delete" added to the file list's right-click context menu. Prompts with a confirmation dialog ("This action cannot be undone") before removing the file from disk. If the file being deleted is the one currently loaded in the player, the player releases it first so Windows doesn't block the delete with a file-lock error.
+
+## [1.3.0] — 2026-09-07
+
+### Added
+- Sort dropdown above the file list: Name (A-Z/Z-A), Date Modified (Newest/Oldest), Size (Largest/Smallest). Selected sort mode persists across restarts.
+- Click the folder path label at the bottom of the file list to copy the current folder path to the clipboard (brief "Copied!" confirmation); right-click it for a "Copy Folder Path" menu item too.
+- Right-click a file in the list for a context menu: Copy Full Path, Copy File Name, Show in Explorer (selects the file in a Windows Explorer window).
+
 ## [1.2.0] — 2026-09-05
 
 ### Added
