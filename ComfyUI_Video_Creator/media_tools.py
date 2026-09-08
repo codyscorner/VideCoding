@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from dataclasses import dataclass
@@ -91,6 +92,44 @@ def probe(ffmpeg: str, path: Path) -> VideoProps:
         p.vcodec = m.group(1).lower()
     p.has_audio = "Audio:" in text
     return p
+
+
+def extract_embedded_prompt(path: Path) -> dict | None:
+    """Read the ComfyUI API-format prompt VHS_VideoCombine bakes into every
+    mp4 it writes (a `{"prompt": ...}` JSON blob sitting in the container,
+    same place the VHS Metadata Parser app reads it from). Returns the raw
+    node-id -> node dict (link structure intact, literal values as run), or
+    None if the file has none (not ComfyUI output, or not mp4)."""
+    if path.suffix.lower() != ".mp4":
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    idx = data.find(b'{"prompt"')
+    if idx == -1:
+        return None
+    chunk = bytearray()
+    depth = 0
+    for b in data[idx:]:
+        if b >= 128:
+            continue
+        ch = chr(b)
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        chunk.append(b)
+        if depth == 0:
+            break
+    try:
+        outer = json.loads(chunk.decode("utf-8"))
+        prompt = outer.get("prompt")
+        if isinstance(prompt, str):
+            prompt = json.loads(prompt)
+        return prompt if isinstance(prompt, dict) else None
+    except (ValueError, UnicodeDecodeError, AttributeError):
+        return None
 
 
 AUDIO_RATE = 48000

@@ -14,12 +14,51 @@ from PyQt6.QtWidgets import (
     QSplitter, QTextEdit, QVBoxLayout, QWidget,
 )
 
+import workflow_tools
 from config import ConfigManager
 from file_ops import archive_paths, delete_paths, thumbnail_caches
-from media_tools import probe
+from media_tools import extract_embedded_prompt, probe
 from ui.prompt_history import find_entry_for_result, format_entry
 from ui.styles import COLORS
 from ui.widgets import MediaBrowser, NoScrollComboBox
+
+
+def _entry_from_embedded(prompt_data: dict) -> dict:
+    """Build a history-entry-shaped dict (same shape `format_entry` expects)
+    out of the API prompt VHS_VideoCombine embedded in the mp4 itself, for
+    files with no matching history entry — a reused-settings retry (history
+    is deliberately skipped for those) or a video made/renamed elsewhere."""
+    a = workflow_tools.analyze(prompt_data)
+    positive = negative = ""
+    for pf in a.prompts:
+        if pf.negative:
+            negative = negative or pf.text
+        else:
+            positive = positive or pf.text
+    seed = None
+    if a.seed_fields:
+        nid, key = a.seed_fields[0]
+        try:
+            seed = int(prompt_data[nid]["inputs"][key])
+        except (KeyError, TypeError, ValueError):
+            seed = None
+    loras = [
+        {"node": slot.node_id, "key": slot.name_key, "label": slot.label,
+         "name": slot.name, "strengths": slot.strengths}
+        for slot in a.loras if slot.name and slot.name.lower() != "none"
+    ]
+    settings = {
+        "workflow": "(read from this file's embedded metadata)",
+        "mode": "?",
+        "seed": seed,
+        "length": {"label": a.length_field.label, "value": a.length_field.value} if a.length_field else None,
+        "steps": a.sampler_steps[0] if a.sampler_steps else None,
+        "megapixels": a.mp_fields[0].value if a.mp_fields else None,
+        "loras": loras,
+        "video_input_mode": None,
+        "extend_stitch": None,
+    }
+    return {"positive": positive, "negative": negative or None, "settings": settings}
 
 
 def _fmt_size(n: int) -> str:
@@ -395,8 +434,17 @@ class LibraryTab(QWidget):
         self._detail_hit = hit
         self._reuse_btn.setEnabled(hit is not None)
         if hit is None:
-            self._made_lbl.setText("No history entry names this file (older run, renamed, or made elsewhere).")
-            self._details.setPlainText("")
+            prompt_data = extract_embedded_prompt(p)
+            if prompt_data:
+                self._made_lbl.setText(
+                    "No history entry — showing the prompt embedded in this video's own metadata.")
+                self._details.setPlainText(format_entry(_entry_from_embedded(prompt_data)))
+                self._details.setStyleSheet(f"color: {COLORS['fg_primary']};")
+            else:
+                self._made_lbl.setText(
+                    "No history entry names this file, and no ComfyUI metadata found in it "
+                    "(older run, renamed, or made elsewhere).")
+                self._details.setPlainText("")
             return
         wf_path, entry = hit
         try:
