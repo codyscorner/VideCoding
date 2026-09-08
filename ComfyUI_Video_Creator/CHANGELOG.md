@@ -1,5 +1,8 @@
 # Changelog — ComfyUI Video Creator
 
+### v1.6.5
+- **Library "Produced by" now falls back to the video's own embedded metadata** when no history entry names the file — which is always true for a video made via Reuse Settings, since those retries deliberately skip history logging. VHS_VideoCombine bakes the exact ComfyUI API prompt it ran into the mp4 itself; the Library now reads that directly out of the file (no ffmpeg/ffprobe needed) and runs it through the same workflow analyzer used to build the run panels, so you get the positive prompt, seed, steps, megapixels, length, and LoRAs (name + strength) even with no history entry at all.
+
 ### v1.6.4
 - **LoRA picker dropdowns no longer eat the panel's scroll wheel.** Scrolling over a LoRA dropdown while it wasn't focused used to silently change the selected LoRA instead of scrolling the Options + LoRAs panel underneath it. The scroll wheel now only changes the value when you've actually clicked into the box first.
 - **Restored the dropdown arrow** on every combo box — a themed `QComboBox::drop-down` with no `down-arrow` rule was rendering with no visible arrow at all, so it didn't read as a dropdown. Added the small CSS-triangle arrow already used in other apps in the repo (e.g. File Rename Mover).
