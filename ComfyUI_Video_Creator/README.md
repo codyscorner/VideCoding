@@ -1,6 +1,6 @@
 # ComfyUI Video Creator
 
-Version: 1.6.5
+Version: 1.6.8
 
 Single-shot ComfyUI API workflow runner with a dark red theme. Pick an image (or a video to extend), pick a workflow JSON, press Run, and the finished video lands in a local folder — from a local ComfyUI or a RunPod pod.
 
@@ -24,7 +24,9 @@ This is a **separate app from the ComfyUI Workflow Chain Automator**. It shares 
 - **Seed** random-per-run or fixed; **Steps** applied to every sampler node (WAN hi/lo splits rescaled proportionally); **Megapixels** applied to every `megapixels` input (`ImageScaleToTotalPixels` etc.); **Length / Duration** control when the workflow exposes one
 - Extend-tab thumbnails show each video's **last frame**, the extension's starting point
 - **Library tab** — finished videos (Output folder by default): sort, multi-select, Play (playlist), Delete, **Archive** (move to a separate folder for later, cleans up its cached thumbnail), Open Folder, **Send to Extend**, **🔁 Reuse Settings** (when a video didn't turn out: switches to the tab it was made on and reloads its workflow/prompt/LoRAs/seed/steps so you can tweak and retry — for Image → Video the starting image is pulled from the video's own first frame via ffmpeg rather than the original upload, which is rarely still on disk, and shown as a small preview; for Video → Extend the recorded source video is reselected, or the Video folder is rescanned if it's moved. The retry itself isn't logged to history, since the video already carries the prompt it ran with), filename search + Year/Month/Day date-created filter, and a *Produced by* pane with the prompt/LoRAs/seed/length behind the selected video (from the prompt history)
+- **Run queue you can actually see** — both tabs share one queue (ComfyUI runs a single prompt at a time), so pressing Create/Extend while something's running lines the new run up behind it. **📋 View Queue** opens a live list of what's running and what's waiting — **the frame each run starts from** (the source image, or the source video's last frame) plus tab, workflow, source file and a wrapped three-line prompt per row (settings and the full prompt on hover) — and lets you reorder rows, drop one, or clear the lot. Queueing a run that repeats one already running or waiting (same workflow, source, prompt, LoRAs, seed, steps, megapixels and length) asks first instead of quietly spending the render time twice
 - **Local or RunPod** server with separate URLs, "Test connection", and automatic download of the result to the Output folder
+- **RunPod pod control** — start and stop your pods from the app instead of the RunPod console. On launch it offers to bring a pod up, tries your pods **in priority order** and uses the first that actually works, then writes the proxy URL into the config itself. Only existing pods are started; nothing is ever created or terminated. Crucially it rejects a pod that resumes **with no GPU attached** — RunPod pins a stopped pod to one physical machine and, if that machine's card has been rented out meanwhile, starts it GPU-less (HTTP 200, RUNNING, ComfyUI answering, billing, everything on CPU) — stopping it and moving to the next candidate. If every pod is busy you're offered a switch to Local. The header shows **live spend** (`2h 17m  |  $4.80`) with an optional **session limit** that warns at 80%, then blocks new runs, lets the current one finish and stops the pod. The pod the app started is stopped on exit, and recorded next to the EXE so a crash is caught and cleaned up on the next launch
 - Live step progress over the ComfyUI websocket (polling fallback), Cancel that interrupts the server, built-in video player, run log
 
 ## Requirements
@@ -68,6 +70,12 @@ pip install PyQt6 requests websocket-client pillow pyinstaller
 | `ffmpeg_path` | Optional explicit ffmpeg path |
 | `video_input_mode` | `auto`, `last_frame` or `upload_video` |
 | `extend_stitch` | Append the new clip to the source video |
+| `runpod_pod_order` | Pod IDs in priority order (blank = whatever the account lists) |
+| `runpod_auto_prompt` | Offer to start a pod when the app launches |
+| `runpod_auto_stop_on_exit` | Stop the pod this app started when quitting |
+| `runpod_spend_limit` | USD per pod run before new runs are blocked (0 = off) |
+
+The RunPod **API key** is not in this file — it lives in `api_keys.json` next to the app (key `runpod_api_key`), or in the `RUNPOD_API_KEY` environment variable, which takes precedence. `video_creator_config.json` is preserved and copied on every deploy, so a secret in it would travel with the build.
 
 Workflows must be **API exports** (Workflow > Export (API) in ComfyUI); the normal UI save format is rejected with a message.
 
@@ -94,7 +102,7 @@ Builds with the repo `.venv`, deploys `ComfyUI_Video_Creator.exe`, `app_icon.ico
 | `run_worker.py` | Background thread for one run: feed source → queue → wait → download → optional stitch |
 | `media_tools.py` | ffmpeg discovery, last frame, thumbnails, probe, concat |
 | `file_ops.py` | Recycle-Bin delete (shell `SHFileOperation`) + thumbnail-cache cleanup |
-| `ui/` | Dark red theme, thumbnail browsers, run panel, clone dialog, settings dialog, video player, main window |
+| `ui/` | Dark red theme, thumbnail browsers, run panel, queue view, clone dialog, settings dialog, video player, main window |
 
 ## Changelog
 

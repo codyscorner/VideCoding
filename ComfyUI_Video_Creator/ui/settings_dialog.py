@@ -2,8 +2,9 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QButtonGroup, QDialog, QDialogButtonBox, QFileDialog, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QWidget,
+    QButtonGroup, QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from config import ConfigManager
@@ -157,6 +158,86 @@ class SettingsDialog(QDialog):
         rwl.addWidget(self._rewriter_status)
         right.addWidget(rw_group)
 
+        # ── RunPod pod control ───────────────────────────────────────────
+        pod_group = QGroupBox("RunPod pod control")
+        pl = QVBoxLayout(pod_group)
+        pl.setSpacing(10)
+
+        list_row = QHBoxLayout()
+        self._pod_list = QListWidget()
+        # Fixed, not minimum: QListWidget asks for 256px by default, which
+        # over-commits the column and makes Qt overlap the rows below it.
+        self._pod_list.setFixedHeight(92)
+        self._pod_list.setToolTip("Tried top to bottom; the first available pod is used.\n"
+                                  "Existing pods only — never created or terminated.\n"
+                                  "Double-click a pod to point the RunPod URL at it.")
+        self._pod_list.itemDoubleClicked.connect(self._use_pod)
+        list_row.addWidget(self._pod_list, stretch=1)
+        btn_col = QVBoxLayout()
+        for text, slot in (("▲", lambda: self._move_pod(-1)), ("▼", lambda: self._move_pod(1))):
+            b = QPushButton(text)
+            b.setObjectName("small_btn")
+            b.setFixedWidth(40)
+            b.clicked.connect(slot)
+            btn_col.addWidget(b)
+        refresh_btn = QPushButton("↻")
+        refresh_btn.setObjectName("small_btn")
+        refresh_btn.setFixedWidth(40)
+        refresh_btn.setToolTip("Fetch the pod list from RunPod")
+        refresh_btn.clicked.connect(self._refresh_pods)
+        btn_col.addWidget(refresh_btn)
+        btn_col.addStretch()
+        list_row.addLayout(btn_col)
+        pl.addLayout(list_row)
+
+        limit_row = QHBoxLayout()
+        limit_row.addWidget(self._label("Spend limit:"))
+        self._spend_limit = QDoubleSpinBox()
+        self._spend_limit.setRange(0.0, 10000.0)
+        self._spend_limit.setDecimals(2)
+        self._spend_limit.setPrefix("$ ")
+        self._spend_limit.setSpecialValueText("off")
+        self._spend_limit.setValue(float(config.get("runpod_spend_limit", 0) or 0))
+        limit_row.addWidget(self._spend_limit)
+        limit_row.addWidget(QLabel("per pod run — 0 = off"))
+        limit_row.addStretch()
+        pl.addLayout(limit_row)
+
+        # As a tooltip rather than a label: the right column is full at 1080p,
+        # and a wrapped note here pushes the group past its allocation.
+        self._spend_limit.setToolTip(
+            "Compute only — storage bills separately.\n"
+            "A safety net, not a hard cap: it can only act while the app is running, "
+            "so a crash or reboot leaves the pod up.")
+
+        self._pod_prompt = QCheckBox("Ask on launch")
+        self._pod_prompt.setToolTip("Offer to start a pod each time the app opens")
+        self._pod_prompt.setChecked(bool(config.get("runpod_auto_prompt", True)))
+        self._pod_autostop = QCheckBox("Stop pod on exit")
+        self._pod_autostop.setToolTip("Stop the pod this app started when quitting")
+        self._pod_autostop.setChecked(bool(config.get("runpod_auto_stop_on_exit", True)))
+        checks = QHBoxLayout()
+        checks.addWidget(self._pod_prompt)
+        checks.addWidget(self._pod_autostop)
+        checks.addStretch()
+        pl.addLayout(checks)
+
+        pod_test_row = QHBoxLayout()
+        pod_test_row.addStretch()
+        pod_test_btn = QPushButton("Test API key")
+        pod_test_btn.setObjectName("secondary_btn")
+        pod_test_btn.clicked.connect(self._test_runpod_api)
+        pod_test_row.addWidget(pod_test_btn)
+        pl.addLayout(pod_test_row)
+        self._pod_status = QLabel("")
+        self._pod_status.setWordWrap(True)
+        self._pod_status.setObjectName("status_dim")
+        pl.addWidget(self._pod_status)
+        # Left column: Server + Folders leave ~440px free there, while the
+        # right column already runs to the bottom of the dialog.
+        left.addWidget(pod_group)
+        self._load_pod_order()
+
         left.addStretch()
         right.addStretch()
 
@@ -248,6 +329,82 @@ class SettingsDialog(QDialog):
         self._rewriter_status.setText(f"Found {len(models)} model(s).")
         self._rewriter_status.setStyleSheet(f"color: {COLORS['success']};")
 
+    # ── RunPod pod control ───────────────────────────────────────────────
+
+    def _load_pod_order(self):
+        """Show the saved order straight away; names arrive with Refresh."""
+        self._pod_list.clear()
+        for pod_id in (self._config.get("runpod_pod_order", []) or []):
+            item = QListWidgetItem(pod_id)
+            item.setData(Qt.ItemDataRole.UserRole, pod_id)
+            self._pod_list.addItem(item)
+
+    def _use_pod(self, item):
+        """Double-click: point the connection at this pod.
+
+        The proxy URL is derived from the pod id and is stable for the life of
+        the pod, so this needs no network call — it just fills in the RunPod URL
+        and switches the mode across. Whether the pod is actually running is a
+        separate question; Test connection answers that.
+        """
+        import runpod_api
+        pod_id = item.data(Qt.ItemDataRole.UserRole)
+        if not pod_id:
+            return
+        url = runpod_api.proxy_url(pod_id)
+        self._runpod_url.setText(url)
+        self._runpod_radio.setChecked(True)
+        self._pod_status.setText(f"RunPod URL set to {pod_id}. Save to apply.")
+        self._pod_status.setStyleSheet(f"color: {COLORS['success']};")
+
+    def _move_pod(self, delta: int):
+        row = self._pod_list.currentRow()
+        new = row + delta
+        if row < 0 or not (0 <= new < self._pod_list.count()):
+            return
+        self._pod_list.insertItem(new, self._pod_list.takeItem(row))
+        self._pod_list.setCurrentRow(new)
+
+    def _refresh_pods(self):
+        """Fetch the account's pods, keeping whatever order is already set and
+        appending anything new at the bottom."""
+        import runpod_api
+        self._pod_status.setText("Fetching pods…")
+        self._pod_status.setStyleSheet(f"color: {COLORS['fg_dim']};")
+        self._pod_status.repaint()
+        try:
+            pods = {p.get("id"): p for p in runpod_api.list_pods()}
+        except runpod_api.RunPodError as e:
+            self._pod_status.setText(str(e))
+            self._pod_status.setStyleSheet(f"color: {COLORS['error']};")
+            return
+        except Exception as e:  # noqa: BLE001
+            self._pod_status.setText(f"{type(e).__name__}: {e}")
+            self._pod_status.setStyleSheet(f"color: {COLORS['error']};")
+            return
+
+        existing = [self._pod_list.item(i).data(Qt.ItemDataRole.UserRole)
+                    for i in range(self._pod_list.count())]
+        ordered = [pid for pid in existing if pid in pods]
+        ordered += [pid for pid in pods if pid not in ordered]
+
+        self._pod_list.clear()
+        for pid in ordered:
+            item = QListWidgetItem(runpod_api.describe(pods[pid]))
+            item.setData(Qt.ItemDataRole.UserRole, pid)
+            self._pod_list.addItem(item)
+        self._pod_status.setText(f"{len(ordered)} pod(s). Order them best first.")
+        self._pod_status.setStyleSheet(f"color: {COLORS['success']};")
+
+    def _test_runpod_api(self):
+        import runpod_api
+        self._pod_status.setText("Checking RunPod…")
+        self._pod_status.setStyleSheet(f"color: {COLORS['fg_dim']};")
+        self._pod_status.repaint()
+        ok, msg = runpod_api.test_connection()
+        self._pod_status.setText(msg)
+        self._pod_status.setStyleSheet(f"color: {COLORS['success' if ok else 'error']};")
+
     def _test_connection(self):
         from comfy_client import ComfyClient
         url = (self._runpod_url if self._runpod_radio.isChecked() else self._local_url).text().strip()
@@ -288,5 +445,10 @@ class SettingsDialog(QDialog):
         c.set("prompt_font_size", int(self._font_spin.value()))
         c.set("rewriter_base_url", self._rewriter_url.text().strip())
         c.set("rewriter_model", self._rewriter_model.currentText().strip())
+        c.set("runpod_pod_order", [self._pod_list.item(i).data(Qt.ItemDataRole.UserRole)
+                                   for i in range(self._pod_list.count())])
+        c.set("runpod_spend_limit", float(self._spend_limit.value()))
+        c.set("runpod_auto_prompt", bool(self._pod_prompt.isChecked()))
+        c.set("runpod_auto_stop_on_exit", bool(self._pod_autostop.isChecked()))
         c.save()
         self.accept()

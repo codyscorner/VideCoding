@@ -11,6 +11,8 @@ from config import ConfigManager
 from media_tools import extract_thumbnail, resolve_ffmpeg
 from run_worker import RunRequest, RunWorker, _base_stem, _workflow_labels
 from ui.library_tab import LibraryTab
+from ui.pod_control import PodControl
+from ui.queue_dialog import QueueDialog
 from ui.run_panel import RunPanel
 from ui.settings_dialog import SettingsDialog
 from ui.styles import COLORS, STYLESHEET
@@ -31,6 +33,7 @@ class MainWindow(QMainWindow):
         self._active_panel: RunPanel | None = None
         self._active_req: RunRequest | None = None
         self._queue: list[RunRequest] = []
+        self._queue_dlg: QueueDialog | None = None
         self._player: VideoPlayerDialog | None = None
         self._tab_splitters: list[QSplitter] = []
         self._splits_initialised = False
@@ -67,6 +70,10 @@ class MainWindow(QMainWindow):
         self._mode_lbl = QLabel("")
         self._mode_lbl.setObjectName("subtitle")
         header.addWidget(self._mode_lbl)
+        self._pod = PodControl(self.config, self._generation_running, self)
+        self._pod.server_changed.connect(self._update_mode_label)
+        self._pod.log.connect(self._log_everywhere)
+        header.addWidget(self._pod)
         settings_btn = QPushButton("⚙ Settings")
         settings_btn.setObjectName("secondary_btn")
         settings_btn.clicked.connect(self._open_settings)
@@ -132,6 +139,17 @@ class MainWindow(QMainWindow):
         if not self._splits_initialised:
             self._splits_initialised = True
             QTimer.singleShot(0, self._init_tab_splits)
+            # After the window is actually on screen, so the prompt has a
+            # parent to centre on rather than appearing behind it.
+            QTimer.singleShot(200, self._pod.check_on_launch)
+
+    def _generation_running(self) -> bool:
+        return self._worker is not None and self._worker.isRunning()
+
+    def _log_everywhere(self, msg: str):
+        """Pod progress isn't tied to either tab, so it goes to both logs."""
+        for panel in (self._image_panel, self._video_panel):
+            panel.append_log(msg)
 
     def _init_tab_splits(self):
         for split in self._tab_splitters:
@@ -146,6 +164,8 @@ class MainWindow(QMainWindow):
         panel.run_requested.connect(self._start)
         panel.cancel_requested.connect(self._cancel)
         panel.clear_queue_requested.connect(self._clear_queue)
+        panel.show_queue_requested.connect(self._show_queue)
+        panel.set_queue_probe(self._queued_duplicate)
         panel.play_requested.connect(self._play)
 
     def _update_mode_label(self):
@@ -188,6 +208,14 @@ class MainWindow(QMainWindow):
         if not self.config.server_url():
             QMessageBox.warning(self, "No server", "Set the ComfyUI URL for the selected mode in Settings first.")
             return
+        if self._pod.over_limit():
+            limit = float(self.config.get("runpod_spend_limit", 0) or 0)
+            QMessageBox.warning(
+                self, "Spend limit reached",
+                f"This pod has hit the ${limit:.2f} session limit, so no new runs are "
+                "being started. It will stop once the current run finishes.\n\n"
+                "Raise the limit in Settings to keep going.")
+            return
         if not (self.config.get("output_dir", "") or "").strip():
             QMessageBox.warning(self, "No output folder", "Set the Output folder in Settings first.")
             return
@@ -197,7 +225,7 @@ class MainWindow(QMainWindow):
             # it automatically once whatever's running now finishes.
             self._queue.append(req)
             panel = self._image_panel if req.source_kind == "image" else self._video_panel
-            panel.append_log(f"Queued — {len(self._queue)} waiting behind the current run")
+            panel.append_log(f"Queued #{len(self._queue)} — {req.describe()}")
             self._update_queue_label()
             return
         self._launch(req)
@@ -218,17 +246,64 @@ class MainWindow(QMainWindow):
         self._worker.failed.connect(self._on_failed)
         self._worker.finished.connect(self._on_worker_finished)
         self._worker.start()
+        self._update_queue_label()
 
     def _update_queue_label(self):
         n = len(self._queue)
-        tooltip = "\n".join(f"{r.source_path.name} — {r.workflow_label}" for r in self._queue)
+        tooltip = "\n".join(f"{i + 1}. {r.describe()}" for i, r in enumerate(self._queue))
+        next_up = f"{self._queue[0].source_path.name} ({self._queue[0].workflow_label})" if self._queue else ""
         for p in (self._image_panel, self._video_panel):
-            p.set_queue_status(n, tooltip)
+            p.set_queue_status(n, tooltip, next_up)
+        if self._queue_dlg is not None:
+            self._queue_dlg.set_items(self._active_req, list(self._queue))
+
+    def _panel_for(self, req: RunRequest) -> RunPanel:
+        return self._image_panel if req.source_kind == "image" else self._video_panel
+
+    def _show_queue(self):
+        """Opens (or raises) the queue view — what's running plus everything
+        waiting, with enough detail to spot a run that's already lined up."""
+        if self._queue_dlg is None:
+            dlg = QueueDialog(self)
+            dlg.remove_requested.connect(self._remove_queued)
+            dlg.move_requested.connect(self._move_queued)
+            dlg.clear_requested.connect(self._clear_queue)
+            self._queue_dlg = dlg
+        self._queue_dlg.set_items(self._active_req, list(self._queue))
+        self._queue_dlg.show()
+        self._queue_dlg.raise_()
+        self._queue_dlg.activateWindow()
+
+    def _queued_duplicate(self, req: RunRequest) -> str:
+        """Called by a run panel before it queues anything: names the run
+        already running or waiting that this one repeats, or "" if it's new."""
+        fp = req.fingerprint()
+        if self._active_req is not None and self._active_req.fingerprint() == fp:
+            return "the run going on right now"
+        for i, queued in enumerate(self._queue):
+            if queued.fingerprint() == fp:
+                return f"queue position {i + 1}"
+        return ""
+
+    def _remove_queued(self, index: int):
+        if not 0 <= index < len(self._queue):
+            return
+        req = self._queue.pop(index)
+        self._panel_for(req).append_log(f"Removed from queue: {req.describe()}")
+        self._update_queue_label()
+
+    def _move_queued(self, index: int, delta: int):
+        target = index + delta
+        if not (0 <= index < len(self._queue) and 0 <= target < len(self._queue)):
+            return
+        self._queue[index], self._queue[target] = self._queue[target], self._queue[index]
+        self._update_queue_label()
+        if self._queue_dlg is not None:
+            self._queue_dlg.select_position(target)
 
     def _clear_queue(self):
         for req in self._queue:
-            panel = self._image_panel if req.source_kind == "image" else self._video_panel
-            panel.append_log(f"Removed from queue: {req.source_path.name} ({req.workflow_label})")
+            self._panel_for(req).append_log(f"Removed from queue: {req.describe()}")
         self._queue.clear()
         self._update_queue_label()
 
@@ -260,9 +335,12 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._active_panel = None
         self._active_req = None
-        if self._queue:
+        if self._queue and not self._pod.over_limit():
             self._launch(self._queue.pop(0))
-            self._update_queue_label()
+        self._update_queue_label()
+        # A deferred "stop when the spend limit is hit" lands here, once the
+        # run it was waiting for has actually finished.
+        self._pod.run_finished()
 
     # ------------------------------------------------------------------ #
     # Player
@@ -432,7 +510,23 @@ class MainWindow(QMainWindow):
                 return
             self._worker.cancel()
             self._worker.wait(5000)
+        if self._pod.pod_id and self.config.get("runpod_auto_stop_on_exit", True):
+            ans = QMessageBox.question(
+                self, "Stop the pod?",
+                f"Stop RunPod pod {self._pod.pod_id} before quitting?\n\n"
+                "Leaving it running keeps billing until you stop it in the console.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+            if ans == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            if ans == QMessageBox.StandardButton.Yes:
+                self._pod.shutdown()
         self._close_player()
+        if self._queue_dlg is not None:
+            self._queue_dlg.close()
         self._image_browser.shutdown()
         self._video_browser.shutdown()
         self._library.shutdown()
