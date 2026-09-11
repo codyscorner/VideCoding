@@ -47,6 +47,40 @@ class RunRequest:
     history_index: int | None = None              # this run's own prompt-history entry
     turbo_enabled: bool | None = None              # None = leave the workflow's turbo wiring as-is
     output_dir_override: Path | None = None        # Library → Reuse Settings: save back into that video's own folder
+    prompt_preview: str = ""                       # positive prompt text — queue view only
+    settings_summary: str = ""                     # "Seed: random | Steps: 6 | ..." — queue view only
+    thumb_path: Path | None = None                 # the frame this run starts from — queue view only
+
+    @property
+    def tab_label(self) -> str:
+        return "Image → Video" if self.source_kind == "image" else "Video → Extend"
+
+    def fingerprint(self) -> tuple:
+        """Everything that decides what comes out the other end. Two requests
+        with the same fingerprint generate the same video (bar a random seed),
+        so queueing both just spends the GPU time twice."""
+        return (
+            str(self.workflow_path).lower(),
+            str(self.source_path).lower(),
+            self.source_kind,
+            tuple(sorted((k, v) for k, v in self.prompts.items())),
+            tuple(sorted((k, repr(v)) for k, v in self.lora_edits.items())),
+            self.seed,
+            self.length_value,
+            self.steps,
+            self.megapixels,
+            self.video_input_mode,
+            self.extend_stitch,
+            self.turbo_enabled,
+            str(self.output_dir_override or ""),
+        )
+
+    def describe(self) -> str:
+        """One line for logs and the duplicate warning."""
+        bits = [self.tab_label, self.workflow_label, self.source_path.name]
+        if self.settings_summary:
+            bits.append(self.settings_summary)
+        return "  |  ".join(bits)
 
 
 class RunWorker(QThread):

@@ -49,6 +49,9 @@ batch_run_log.txt
 # API keys — never commit
 api_keys.json
 **/api_keys.json
+
+# RunPod pod-control runtime state (which pod this app started)
+**/runpod_session.json
 **/*credentials*.txt
 **/*credentials*.json
 

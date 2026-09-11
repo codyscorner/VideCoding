@@ -39,6 +39,11 @@ VIDEO_INPUT_MODES = [
 ]
 
 MAX_LOG_LINES = 600
+
+# Shown when a run about to be queued repeats one that's already queued or
+# running (see _confirm_not_a_repeat).
+RANDOM_SEED_NOTE = """The seed is random, so the result won't be identical — but every setting you picked is the same."""
+FIXED_SEED_NOTE = """The seed is fixed at the same value, so this would render the very same video."""
 # Progress-bar sub-units per plan unit (one sampler step or one
 # post-sampling node), so a node's own progress fills its slice.
 PROGRESS_SUBUNITS = 100
@@ -109,6 +114,7 @@ class RunPanel(QWidget):
     run_requested = pyqtSignal(object)      # RunRequest
     cancel_requested = pyqtSignal()
     clear_queue_requested = pyqtSignal()
+    show_queue_requested = pyqtSignal()
     play_requested = pyqtSignal(str)
     workflows_changed = pyqtSignal()        # a workflow file was added — other tabs rescan
 
@@ -116,6 +122,9 @@ class RunPanel(QWidget):
         super().__init__(parent)
         self.kind = kind                    # "image" | "video"
         self._cfg = config
+        # Set by MainWindow: given a RunRequest, returns a description of the
+        # matching run already queued/running, or "" when it's not a repeat.
+        self._queue_probe = None
         self._source: Path | None = None
         self._workflow_path: Path | None = None
         self._workflow_rel = ""
@@ -434,6 +443,11 @@ class RunPanel(QWidget):
         self._queue_lbl = QLabel("")
         self._queue_lbl.setStyleSheet(f"color: {COLORS['warning']}; font-weight: bold;")
         queue_row.addWidget(self._queue_lbl)
+        self._view_queue_btn = QPushButton("📋 View Queue…")
+        self._view_queue_btn.setObjectName("secondary_btn")
+        self._view_queue_btn.setToolTip("See every run waiting its turn — workflow, source, prompt and settings")
+        self._view_queue_btn.clicked.connect(self.show_queue_requested.emit)
+        queue_row.addWidget(self._view_queue_btn)
         self._clear_queue_btn = QPushButton("✕ Clear Queue")
         self._clear_queue_btn.setObjectName("secondary_btn")
         self._clear_queue_btn.clicked.connect(self.clear_queue_requested.emit)
@@ -441,6 +455,7 @@ class RunPanel(QWidget):
         queue_row.addStretch()
         root.addLayout(queue_row)
         self._queue_lbl.setVisible(False)
+        self._view_queue_btn.setVisible(False)
         self._clear_queue_btn.setVisible(False)
 
         prog_row = QHBoxLayout()
@@ -1197,6 +1212,12 @@ class RunPanel(QWidget):
         }
 
     def _update_summary(self):
+        bits = self._summary_bits()
+        self._summary.setFullText("Next run → " + "   |   ".join(bits) if bits else "")
+
+    def _summary_bits(self) -> list[str]:
+        """The settings that decide what this run produces, as short bits —
+        shown under the panel and again in the queue view."""
         bits = []
         loras = [(slot, combo, spins) for slot, combo, spins in self._lora_rows
                  if combo.currentText().strip() and combo.currentText().strip() != "None"]
@@ -1216,7 +1237,31 @@ class RunPanel(QWidget):
                 bits.append(f"MP: {self._mp_spin.value():g}")
         if self._length_spin.isVisible() or (self._analysis and self._analysis.length_field):
             bits.append(f"{self._length_lbl.text().rstrip(':')}: {self._length_spin.value():g}")
-        self._summary.setFullText("Next run → " + "   |   ".join(bits) if bits else "")
+        return bits
+
+    def _start_frame_path(self) -> Path | None:
+        """The frame this run actually starts from, for the queue view. An
+        image source is that frame; a video source starts from its LAST frame,
+        which the Extend grid has already extracted and cached for the tile
+        it's showing — reused here rather than shelling out to ffmpeg on a
+        button click. Missing cache just means no preview, never a stall."""
+        if self._source is None:
+            return None
+        if self.kind == "image":
+            return self._source if self._source.exists() else None
+        cached = self._source.parent / "thumbnails" / (self._source.stem + "_last.jpg")
+        return cached if cached.exists() else None
+
+    def _positive_prompt_preview(self) -> str:
+        """First non-empty positive prompt — enough to tell two queued runs
+        on the same source/workflow apart in the queue view."""
+        for pf, edit in self._prompt_edits:
+            if pf.negative:
+                continue
+            text = edit.toPlainText().strip()
+            if text:
+                return text
+        return ""
 
     # ------------------------------------------------------------------ #
     # Source / run
@@ -1256,20 +1301,6 @@ class RunPanel(QWidget):
         label = rel.parts[0] if len(rel.parts) > 1 else rel.stem
         seed = int(self._seed_spin.value()) if self._seed_mode.currentIndex() == 1 else None
         fld = self._analysis.length_field
-        # Record what this run uses before it starts; the result file name is
-        # attached to the same entry when the run finishes. Stored on the
-        # request itself (not on self) so queuing several runs in a row -
-        # each with its own workflow/prompt snapshot - can't cross-attach
-        # one run's results to another's history entry.
-        if self._history_recording_suppressed:
-            history_index = None
-        else:
-            try:
-                history_index = append_entry(
-                    self._workflow_path,
-                    make_entry(self._prompt_tuples(), self._collect_settings(), self._source.name))
-            except Exception:  # noqa: BLE001
-                history_index = None
         req = RunRequest(
             workflow_path=self._workflow_path,
             workflow_label=label,
@@ -1284,19 +1315,66 @@ class RunPanel(QWidget):
             megapixels=float(self._mp_spin.value()) if self._analysis.mp_fields else None,
             video_input_mode=self._input_mode.currentData() if self._input_mode is not None else "auto",
             extend_stitch=bool(self._stitch_chk.isChecked()) if self._stitch_chk is not None else False,
-            history_index=history_index,
             turbo_enabled=bool(self._turbo_chk.isChecked()) if self._analysis.turbo is not None else None,
             output_dir_override=self._reused_output_dir,
+            prompt_preview=self._positive_prompt_preview(),
+            settings_summary="   |   ".join(self._summary_bits()),
+            thumb_path=self._start_frame_path(),
         )
+        if not self._confirm_not_a_repeat(req):
+            return
+        # Record what this run uses before it starts; the result file name is
+        # attached to the same entry when the run finishes. Stored on the
+        # request itself (not on self) so queuing several runs in a row -
+        # each with its own workflow/prompt snapshot - can't cross-attach
+        # one run's results to another's history entry.
+        if not self._history_recording_suppressed:
+            try:
+                req.history_index = append_entry(
+                    self._workflow_path,
+                    make_entry(self._prompt_tuples(), self._collect_settings(), self._source.name))
+            except Exception:  # noqa: BLE001
+                req.history_index = None
         self.run_requested.emit(req)
 
-    def set_queue_status(self, count: int, tooltip: str = ""):
+    def _confirm_not_a_repeat(self, req: RunRequest) -> bool:
+        """Asks before queuing a run that matches one already queued or
+        running — generating the same video twice costs the full render
+        time (and RunPod minutes) for nothing. Checked before the history
+        entry is written so backing out leaves no trace."""
+        match = self._queue_probe(req) if self._queue_probe else ""
+        if not match:
+            return True
+        note = RANDOM_SEED_NOTE if req.seed is None else FIXED_SEED_NOTE
+        ans = QMessageBox.question(
+            self, "Already in the queue",
+            f"""This looks like a repeat of {match}
+
+{req.describe()}
+{note}
+
+Queue it anyway?""",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            self.append_log(f"Not queued — already a repeat of {match}")
+            return False
+        return True
+
+    def set_queue_probe(self, probe):
+        self._queue_probe = probe
+
+    def set_queue_status(self, count: int, tooltip: str = "", next_up: str = ""):
         """Reflects the app-wide queue (shared across both tabs — ComfyUI
         only runs one prompt at a time regardless of which tab queued it)."""
-        self._queue_lbl.setVisible(count > 0)
-        self._clear_queue_btn.setVisible(count > 0)
+        for w in (self._queue_lbl, self._view_queue_btn, self._clear_queue_btn):
+            w.setVisible(count > 0)
         if count:
-            self._queue_lbl.setText(f"⏳ {count} queued behind this run")
+            text = f"⏳ {count} queued behind this run"
+            if next_up:
+                text += f"  —  next: {next_up}"
+            self._queue_lbl.setText(text)
             self._queue_lbl.setToolTip(tooltip)
 
     def set_running(self, running: bool, active: bool = True):
