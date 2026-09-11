@@ -210,6 +210,42 @@ class SettingsDialog(QDialog):
             "A safety net, not a hard cap: it can only act while the app is running, "
             "so a crash or reboot leaves the pod up.")
 
+        retry_row = QHBoxLayout()
+        retry_row.addWidget(self._label("Keep trying:"))
+        self._retry_interval = QSpinBox()
+        self._retry_interval.setRange(1, 120)
+        self._retry_interval.setSuffix(" min")
+        self._retry_interval.setValue(int(config.get("runpod_retry_interval_min", 10) or 10))
+        self._retry_interval.setToolTip("How often to sweep the pod list when every pod is busy")
+        retry_row.addWidget(self._retry_interval)
+        retry_row.addWidget(QLabel("for"))
+        self._retry_window = QSpinBox()
+        self._retry_window.setRange(5, 1440)
+        self._retry_window.setSuffix(" min")
+        self._retry_window.setSingleStep(15)
+        self._retry_window.setValue(int(config.get("runpod_retry_window_min", 120) or 120))
+        self._retry_window.setToolTip("Give up after this long and stop looking")
+        retry_row.addWidget(self._retry_window)
+        retry_row.addStretch()
+        pl.addLayout(retry_row)
+
+        import alerts
+        self._alert_sound = self._file_row(
+            pl, "Alert sound:", config.get("alert_sound_path", ""),
+            "Played when a pod is found, and when giving up (.wav plays inline)…",
+            caption="Select an alert sound", filt=alerts.WAV_FILTER)
+        sound_row = QHBoxLayout()
+        self._alert_enabled = QCheckBox("Play alert sound")
+        self._alert_enabled.setChecked(bool(config.get("alert_sound_enabled", True)))
+        sound_row.addWidget(self._alert_enabled)
+        test_sound = QPushButton("Test")
+        test_sound.setObjectName("small_btn")
+        test_sound.setFixedWidth(60)
+        test_sound.clicked.connect(self._test_sound)
+        sound_row.addWidget(test_sound)
+        sound_row.addStretch()
+        pl.addLayout(sound_row)
+
         self._pod_prompt = QCheckBox("Ask on launch")
         self._pod_prompt.setToolTip("Offer to start a pod each time the app opens")
         self._pod_prompt.setChecked(bool(config.get("runpod_auto_prompt", True)))
@@ -276,7 +312,9 @@ class SettingsDialog(QDialog):
         parent.addLayout(row)
         return edit
 
-    def _file_row(self, parent, label, value, placeholder) -> QLineEdit:
+    def _file_row(self, parent, label, value, placeholder,
+                  caption: str = "Select ffmpeg.exe",
+                  filt: str = "Executables (*.exe);;All Files (*)") -> QLineEdit:
         row = QHBoxLayout()
         row.addWidget(self._label(label))
         edit = QLineEdit(value or "")
@@ -284,7 +322,7 @@ class SettingsDialog(QDialog):
         btn = QPushButton("…")
         btn.setObjectName("small_btn")
         btn.setFixedWidth(40)
-        btn.clicked.connect(lambda: self._browse_file(edit))
+        btn.clicked.connect(lambda: self._browse_file(edit, caption, filt))
         row.addWidget(edit, stretch=1)
         row.addWidget(btn)
         parent.addLayout(row)
@@ -296,10 +334,10 @@ class SettingsDialog(QDialog):
         if folder:
             edit.setText(folder)
 
-    def _browse_file(self, edit: QLineEdit):
+    def _browse_file(self, edit: QLineEdit, caption: str = "Select ffmpeg.exe",
+                     filt: str = "Executables (*.exe);;All Files (*)"):
         current = edit.text().strip()
-        path, _ = QFileDialog.getOpenFileName(self, "Select ffmpeg.exe", current or str(Path.home()),
-                                              "Executables (*.exe);;All Files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, caption, current or str(Path.home()), filt)
         if path:
             edit.setText(path)
 
@@ -338,6 +376,16 @@ class SettingsDialog(QDialog):
             item = QListWidgetItem(pod_id)
             item.setData(Qt.ItemDataRole.UserRole, pod_id)
             self._pod_list.addItem(item)
+
+    def _test_sound(self):
+        import alerts
+        path = self._alert_sound.text().strip()
+        if alerts.play(path):
+            self._pod_status.setText(f"Playing {Path(path).name}")
+            self._pod_status.setStyleSheet(f"color: {COLORS['success']};")
+        else:
+            self._pod_status.setText("Pick an existing sound file first.")
+            self._pod_status.setStyleSheet(f"color: {COLORS['error']};")
 
     def _use_pod(self, item):
         """Double-click: point the connection at this pod.
@@ -450,5 +498,9 @@ class SettingsDialog(QDialog):
         c.set("runpod_spend_limit", float(self._spend_limit.value()))
         c.set("runpod_auto_prompt", bool(self._pod_prompt.isChecked()))
         c.set("runpod_auto_stop_on_exit", bool(self._pod_autostop.isChecked()))
+        c.set("runpod_retry_interval_min", int(self._retry_interval.value()))
+        c.set("runpod_retry_window_min", int(self._retry_window.value()))
+        c.set("alert_sound_path", self._alert_sound.text().strip())
+        c.set("alert_sound_enabled", bool(self._alert_enabled.isChecked()))
         c.save()
         self.accept()

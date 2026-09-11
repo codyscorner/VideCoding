@@ -27,6 +27,7 @@ This is a **separate app from the ComfyUI Workflow Chain Automator**. It shares 
 - **Run queue you can actually see** — both tabs share one queue (ComfyUI runs a single prompt at a time), so pressing Create/Extend while something's running lines the new run up behind it. **📋 View Queue** opens a live list of what's running and what's waiting — **the frame each run starts from** (the source image, or the source video's last frame) plus tab, workflow, source file and a wrapped three-line prompt per row (settings and the full prompt on hover) — and lets you reorder rows, drop one, or clear the lot. Queueing a run that repeats one already running or waiting (same workflow, source, prompt, LoRAs, seed, steps, megapixels and length) asks first instead of quietly spending the render time twice
 - **Local or RunPod** server with separate URLs, "Test connection", and automatic download of the result to the Output folder
 - **RunPod pod control** — start and stop your pods from the app instead of the RunPod console. On launch it offers to bring a pod up, tries your pods **in priority order** and uses the first that actually works, then writes the proxy URL into the config itself. Only existing pods are started; nothing is ever created or terminated. Crucially it rejects a pod that resumes **with no GPU attached** — RunPod pins a stopped pod to one physical machine and, if that machine's card has been rented out meanwhile, starts it GPU-less (HTTP 200, RUNNING, ComfyUI answering, billing, everything on CPU) — stopping it and moving to the next candidate. If every pod is busy you're offered a switch to Local. The header shows **live spend** (`2h 17m  |  $4.80`) with an optional **session limit** that warns at 80%, then blocks new runs, lets the current one finish and stops the pod. The pod the app started is stopped on exit, and recorded next to the EXE so a crash is caught and cleaned up on the next launch
+- **Keep trying until a pod frees up** — because the pods are pinned to specific machines, all of them being busy is normal. Rather than giving up, the app can re-sweep the list every few minutes for a set window (default: every 10 minutes for 2 hours) and **play a sound of your choosing** the moment one comes up, raising the window since the pod starts billing then. The same sound plays if the window expires with nothing found, so you get an answer either way without watching the screen
 - Live step progress over the ComfyUI websocket (polling fallback), Cancel that interrupts the server, built-in video player, run log
 
 ## Requirements
@@ -74,6 +75,10 @@ pip install PyQt6 requests websocket-client pillow pyinstaller
 | `runpod_auto_prompt` | Offer to start a pod when the app launches |
 | `runpod_auto_stop_on_exit` | Stop the pod this app started when quitting |
 | `runpod_spend_limit` | USD per pod run before new runs are blocked (0 = off) |
+| `runpod_retry_interval_min` | Minutes between sweeps when every pod is busy |
+| `runpod_retry_window_min` | Give up looking after this long |
+| `alert_sound_path` | Sound played when a pod is found, and when giving up |
+| `alert_sound_enabled` | Play the alert sound |
 
 The RunPod **API key** is not in this file — it lives in `api_keys.json` next to the app (key `runpod_api_key`), or in the `RUNPOD_API_KEY` environment variable, which takes precedence. `video_creator_config.json` is preserved and copied on every deploy, so a secret in it would travel with the build.
 

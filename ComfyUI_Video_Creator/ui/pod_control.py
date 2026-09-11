@@ -11,6 +11,7 @@ zero-GPU check and the soft spend limit.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -19,6 +20,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QWidget,
 )
 
+import alerts
 import runpod_api
 from config import app_dir
 from ui.pod_worker import PodStartWorker, PodStopWorker
@@ -45,6 +47,11 @@ class PodControl(QWidget):
         self._progress: QProgressDialog | None = None
         self._stop_when_idle = False
         self._warned = False
+        self._quiet = False             # retry sweeps run without the modal dialog
+        self._retry_deadline = 0.0      # epoch seconds; 0 = not retrying
+        self._retry_timer = QTimer(self)
+        self._retry_timer.setSingleShot(True)
+        self._retry_timer.timeout.connect(self._retry_tick)
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -88,11 +95,17 @@ class PodControl(QWidget):
         except OSError:
             pass
 
+    def _retrying(self) -> bool:
+        return self._retry_deadline > 0
+
     def _refresh_button(self):
         running = bool(self._pod_id)
-        self._btn.setText("Stop Pod" if running else "Start Pod")
+        if self._retrying() and not running:
+            self._btn.setText("Stop Retrying")
+        else:
+            self._btn.setText("Stop Pod" if running else "Start Pod")
         self._btn.setEnabled(self._start_worker is None and self._stop_worker is None)
-        if not running:
+        if not running and not self._retrying():
             self._spend_lbl.setText("")
 
     # ------------------------------------------------------------------ #
@@ -155,22 +168,31 @@ class PodControl(QWidget):
     # ------------------------------------------------------------------ #
 
     def _on_button(self):
-        self.stop_pod() if self._pod_id else self.start_chain()
+        if self._pod_id:
+            self.stop_pod()
+        elif self._retrying():
+            self.cancel_retry("cancelled")
+        else:
+            self.start_chain()
 
-    def start_chain(self):
+    def start_chain(self, quiet: bool = False):
         if self._start_worker is not None:
             return
+        self._quiet = quiet
         if not runpod_api.have_key():
             QMessageBox.warning(self, "No API key",
                                 f"Add your RunPod key to {runpod_api.KEY_FILE_NAME} next to the app.")
             return
 
         order = list(self._config.get("runpod_pod_order", []) or [])
-        self._progress = QProgressDialog("Looking for an available pod…", "Cancel", 0, 0, self)
-        self._progress.setWindowTitle("Starting RunPod")
-        self._progress.setMinimumWidth(460)
-        self._progress.setMinimumDuration(0)
-        self._progress.canceled.connect(self._cancel_start)
+        if not quiet:
+            # A retry sweep every 10 minutes must not throw a modal dialog over
+            # whatever you're doing, so only the manual path gets one.
+            self._progress = QProgressDialog("Looking for an available pod…", "Cancel", 0, 0, self)
+            self._progress.setWindowTitle("Starting RunPod")
+            self._progress.setMinimumWidth(460)
+            self._progress.setMinimumDuration(0)
+            self._progress.canceled.connect(self._cancel_start)
 
         self._start_worker = PodStartWorker(order)
         self._start_worker.log.connect(self._on_progress)
@@ -213,31 +235,127 @@ class PodControl(QWidget):
         self._poll()
 
     def _on_ready(self, pod_id: str, url: str):
+        was_retrying = self._retrying()
+        self._retry_deadline = 0.0
+        self._retry_timer.stop()
         self._adopt(pod_id, url)
         self.log.emit(f"RunPod: {pod_id} ready at {url}")
+        if was_retrying:
+            # You walked away expecting this, so make some noise and come to
+            # the front — the pod is billing from now on.
+            self._alert()
+            win = self.window()
+            win.raise_()
+            win.activateWindow()
+
+    # ------------------------------------------------------------------ #
+    # Keep trying
+    # ------------------------------------------------------------------ #
+
+    def _alert(self):
+        if not self._config.get("alert_sound_enabled", True):
+            return
+        alerts.play(self._config.get("alert_sound_path", ""))
+
+    def begin_retry(self):
+        window_min = int(self._config.get("runpod_retry_window_min", 120) or 120)
+        self._retry_deadline = time.time() + window_min * 60
+        self.log.emit(f"RunPod: every pod busy — retrying every "
+                      f"{int(self._config.get('runpod_retry_interval_min', 10) or 10)} min "
+                      f"until {time.strftime('%H:%M', time.localtime(self._retry_deadline))}")
+        self._schedule_next()
+
+    def cancel_retry(self, why: str = ""):
+        if not self._retrying():
+            return
+        self._retry_deadline = 0.0
+        self._retry_timer.stop()
+        self.log.emit(f"RunPod: stopped retrying{f' ({why})' if why else ''}")
+        self._refresh_button()
+
+    def _schedule_next(self):
+        remaining = self._retry_deadline - time.time()
+        if remaining <= 0:
+            self._give_up()
+            return
+        interval = int(self._config.get("runpod_retry_interval_min", 10) or 10) * 60
+        # Don't overshoot the deadline by a whole interval.
+        wait = min(interval, remaining)
+        self._retry_timer.start(int(wait * 1000))
+        nxt = time.strftime("%H:%M", time.localtime(time.time() + wait))
+        until = time.strftime("%H:%M", time.localtime(self._retry_deadline))
+        self._spend_lbl.setText(
+            f"<span style='color:{COLORS['warning']}'>retrying — next {nxt}, until {until}</span>")
+        self._refresh_button()
+
+    def _retry_tick(self):
+        if not self._retrying():
+            return
+        if time.time() >= self._retry_deadline:
+            self._give_up()
+            return
+        self.start_chain(quiet=True)
+
+    def _give_up(self):
+        self._retry_deadline = 0.0
+        self._retry_timer.stop()
+        self.log.emit("RunPod: gave up — no pod became available in the retry window")
+        self._spend_lbl.setText("")
+        self._alert()
+        self._refresh_button()
 
     def _on_exhausted(self, summary: str):
         self._close_progress()
+
+        # Mid-retry this fires every sweep; asking again each time would defeat
+        # the point of walking away from the machine.
+        if self._retrying():
+            self.log.emit("RunPod: still nothing free")
+            self._schedule_next()
+            return
+
+        interval = int(self._config.get("runpod_retry_interval_min", 10) or 10)
+        window = int(self._config.get("runpod_retry_window_min", 120) or 120)
+        limit = float(self._config.get("runpod_spend_limit", 0) or 0)
+        guard = (f"If one frees up it will start and begin billing while you're away — "
+                 f"your ${limit:.2f} spend limit will stop it."
+                 if limit > 0 else
+                 "WARNING: no spend limit is set, so a pod found while you're away will "
+                 "run until you stop it. Set one in Settings first.")
+
         box = QMessageBox(self)
         box.setWindowTitle("No pods available")
         box.setIcon(QMessageBox.Icon.Question)
-        box.setText("None of your current pods are available to start.\n\n"
-                    "This usually means the machines they're pinned to have their "
-                    "GPUs rented out right now.\n\nSwitch to Local?")
+        box.setText(
+            "None of your current pods are available to start.\n\n"
+            "This usually means the machines they're pinned to have their GPUs "
+            "rented out right now.\n\n"
+            f"Keep trying every {interval} min for the next "
+            f"{window // 60}h {window % 60:02d}m, and alert you if one frees up?\n\n{guard}")
         if summary:
             # Per-pod reasons, so "nothing available" can be told apart from
             # "every attempt failed for the same unexpected reason".
             box.setDetailedText(summary)
-        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        box.setDefaultButton(QMessageBox.StandardButton.Yes)
-        ans = box.exec()
-        if ans == QMessageBox.StandardButton.Yes:
+        retry_btn = box.addButton("Keep Trying", QMessageBox.ButtonRole.AcceptRole)
+        local_btn = box.addButton("Switch to Local", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("Close", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(retry_btn)
+        box.exec()
+
+        if box.clickedButton() is retry_btn:
+            self.begin_retry()
+        elif box.clickedButton() is local_btn:
             self._config.set("mode", "local")
             self._config.save()
             self.server_changed.emit()
 
     def _on_failed(self, msg: str):
         self._close_progress()
+        # A Fatal is a key or rate-limit problem: every future sweep would fail
+        # the same way, so stop retrying rather than nagging every 10 minutes.
+        if self._retrying():
+            self.cancel_retry("RunPod returned an error")
+            self._alert()
         QMessageBox.warning(self, "RunPod", msg)
 
     def stop_pod(self, quiet: bool = False):
@@ -336,6 +454,8 @@ class PodControl(QWidget):
         """Stop the pod synchronously — the app is closing, so a QThread would
         be torn down before it ever sent the request."""
         self._timer.stop()
+        self._retry_timer.stop()
+        self._retry_deadline = 0.0
         if self._start_worker is not None:
             self._start_worker.cancel()
             self._start_worker.wait(3000)

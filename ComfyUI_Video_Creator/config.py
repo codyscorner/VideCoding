@@ -32,6 +32,11 @@ class ConfigManager:
         "runpod_auto_stop_on_exit": True,      # stop the pod this app started when quitting
         "runpod_spend_limit": 0.0,             # USD per pod run; 0 = no limit
         "runpod_spend_warn_fraction": 0.8,
+        # "Keep trying" when every pod is busy
+        "runpod_retry_interval_min": 10,       # minutes between sweeps of the pod list
+        "runpod_retry_window_min": 120,        # give up after this long
+        "alert_sound_path": "",                # played when a pod is found, and when giving up
+        "alert_sound_enabled": True,
         # Folders
         "image_dir": "",
         "video_dir": "",

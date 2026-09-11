@@ -1,5 +1,13 @@
 # Changelog — ComfyUI Video Creator
 
+### v1.7.1
+- **"Keep trying" when every pod is busy.** All five pods being unavailable is common — they're pinned to specific machines, so you're waiting for one particular card to free up rather than drawing from a pool. The "no pods available" dialog now offers **Keep Trying**, which re-sweeps the whole pod list on an interval until one comes up or the window expires (defaults: every **10 minutes** for **2 hours**, both configurable). The header shows `retrying — next 21:40, until 23:10` and the button becomes **Stop Retrying**.
+  - **Alert sound**, ported from the Chain Automator: pick any `.wav` (played inline via `winsound`) or other audio file (handed to the shell), with a Test button. It plays both when a pod is found and when the window expires, so you know the answer from the next room either way — the header and log say which.
+  - When a retry succeeds the window **raises and takes focus**, because the pod is billing from that moment.
+  - Retry sweeps are silent: no modal dialog every 10 minutes, and the "none available" prompt is not re-asked mid-retry.
+  - A key or rate-limit error **stops** the retry rather than repeating the same failure every interval.
+  - The retry prompt states what your spend limit will do, and **warns explicitly when no limit is set** — a pod found at 2am with no limit runs until you notice.
+
 ### v1.7.0
 - **Start and stop your RunPod pod from inside the app.** Previously the pod had to be woken by hand in the RunPod console before the app was any use in RunPod mode. Now the app talks to RunPod's control plane directly (REST v2, plain `requests` — no new dependency and no change to the build): on launch it offers to start a pod, tries your pods **in priority order**, and uses the first one that actually comes up, writing the proxy URL into the config itself. Only *existing* pods are ever started — nothing is created or terminated, since pods are built and approved by hand.
   - **A resume that "succeeds" isn't necessarily usable.** RunPod pins a stopped pod to the one physical machine it was created on. If that machine's GPU was rented out while the pod was stopped, RunPod starts the pod anyway **with no GPU at all** as a data-recovery mode: HTTP 200, status RUNNING, proxy URL up, ComfyUI answering — and billing the whole time while everything crawls on CPU. A pod is only accepted when `status == RUNNING` **and** `gpu.count >= 1` **and** `runtime.gpus` is non-empty; anything else is stopped immediately and the next candidate tried. This is the common failure, not an edge case.
