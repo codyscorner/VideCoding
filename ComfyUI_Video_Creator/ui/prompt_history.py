@@ -167,6 +167,8 @@ def describe_settings(settings: dict | None) -> str:
                     else f"{length.get('label', 'Length')}: {val}")
     if settings.get("video_input_mode"):
         bits.append(f"input {settings['video_input_mode']}")
+    if settings.get("text_to_video"):
+        bits.append("text → video")
     if settings.get("mode"):
         bits.append(settings["mode"])
     return "  |  ".join(bits)
@@ -207,6 +209,8 @@ def format_entry(e: dict) -> str:
             lines.append(f"LoRA {l.get('label', '')}: {l.get('name', 'None')}  {strengths}")
         if s.get("video_input_mode"):
             lines.append(f"Video input: {s['video_input_mode']}   Append to source: {s.get('extend_stitch')}")
+        if s.get("text_to_video"):
+            lines.append("Text → Video (no source image or video)")
         lines.append("")
     if e.get("results"):
         lines.append("── Results ──")

@@ -1,5 +1,6 @@
-"""Background thread that runs ONE workflow against ONE source (image or
-video) on the configured ComfyUI server and downloads the result."""
+"""Background thread that runs ONE workflow against ONE source (an image, a
+video, or nothing but the prompt for text-to-video) on the configured
+ComfyUI server and downloads the result."""
 
 from __future__ import annotations
 
@@ -33,8 +34,8 @@ RUN_DELIM = "=== New run started ==="
 class RunRequest:
     workflow_path: Path
     workflow_label: str
-    source_path: Path
-    source_kind: str                              # "image" | "video"
+    source_path: Path | None                      # None on the Text → Video tab
+    source_kind: str                              # "image" | "video" | "text"
     prompts: dict[tuple[str, str], str] = field(default_factory=dict)
     lora_edits: dict[tuple[str, str], object] = field(default_factory=dict)
     seed: int | None = None                       # None = random
@@ -50,10 +51,19 @@ class RunRequest:
     prompt_preview: str = ""                       # positive prompt text — queue view only
     settings_summary: str = ""                     # "Seed: random | Steps: 6 | ..." — queue view only
     thumb_path: Path | None = None                 # the frame this run starts from — queue view only
+    output_name: str = ""                          # Text → Video: what to name the file, since there is no source
 
     @property
     def tab_label(self) -> str:
-        return "Image → Video" if self.source_kind == "image" else "Video → Extend"
+        return TAB_LABELS.get(self.source_kind, self.source_kind)
+
+    @property
+    def source_name(self) -> str:
+        """What the queue view and logs call the source: the file name, or
+        the output name a text-to-video run will be saved under."""
+        if self.source_path is not None:
+            return self.source_path.name
+        return f"(prompt only → {_safe(self.output_name) if self.output_name.strip() else TEXT_STEM})"
 
     def fingerprint(self) -> tuple:
         """Everything that decides what comes out the other end. Two requests
@@ -61,7 +71,7 @@ class RunRequest:
         so queueing both just spends the GPU time twice."""
         return (
             str(self.workflow_path).lower(),
-            str(self.source_path).lower(),
+            str(self.source_path or "").lower(),
             self.source_kind,
             tuple(sorted((k, v) for k, v in self.prompts.items())),
             tuple(sorted((k, repr(v)) for k, v in self.lora_edits.items())),
@@ -73,11 +83,12 @@ class RunRequest:
             self.extend_stitch,
             self.turbo_enabled,
             str(self.output_dir_override or ""),
+            self.output_name.strip().lower(),
         )
 
     def describe(self) -> str:
         """One line for logs and the duplicate warning."""
-        bits = [self.tab_label, self.workflow_label, self.source_path.name]
+        bits = [self.tab_label, self.workflow_label, self.source_name]
         if self.settings_summary:
             bits.append(self.settings_summary)
         return "  |  ".join(bits)
@@ -140,7 +151,10 @@ class RunWorker(QThread):
             self._temp_dir.mkdir(exist_ok=True)
             self._log(f"Server: {self._client.url} ({'RunPod' if self._runpod else 'Local'})")
             self._log(f"Workflow: {req.workflow_label}")
-            self._log(f"Source {req.source_kind}: {req.source_path.name}")
+            if req.source_path is not None:
+                self._log(f"Source {req.source_kind}: {req.source_path.name}")
+            else:
+                self._log("Source: none — text to video, the prompt is the whole input")
 
             workflow = load_workflow(req.workflow_path)
             info = analyze(workflow)
@@ -167,7 +181,7 @@ class RunWorker(QThread):
             if req.turbo_enabled is not None and info.turbo is not None:
                 apply_turbo_toggle(workflow, info.turbo, req.turbo_enabled)
                 self._log(f"Turbo LoRA + Sampler: {'on' if req.turbo_enabled else 'off'}")
-            src = probe(self._ffmpeg, req.source_path) if req.source_kind == "video" else None
+            src = probe(self._ffmpeg, req.source_path) if req.source_kind == "video" and req.source_path else None
             if src is not None and src.width:
                 self._log(
                     f"Source: {src.width}x{src.height} {src.fps:g}fps {src.vcodec or 'unknown codec'}"
@@ -202,13 +216,28 @@ class RunWorker(QThread):
                         "Pick an image-to-video workflow for this tab."
                     )
                 self._feed_image(workflow, info, req.source_path)
-            else:
+            elif req.source_kind == "video":
                 self._feed_video(workflow, info, req.source_path)
+            else:
+                # Text → Video: nothing to upload. A workflow with an image or
+                # video loader would run against whatever file name is baked
+                # into that node — usually one the server doesn't have — and
+                # wouldn't be text-to-video anyway, so it's refused up front.
+                if info.accepts_image or info.accepts_video:
+                    raise RuntimeError(
+                        "This workflow takes an image or video input, so it isn't text-to-video. "
+                        "Pick a workflow with no LoadImage / LoadVideo node for this tab (the "
+                        "Image → Video and Video → Extend tabs run the ones that need a source)."
+                    )
+                if not info.prompts:
+                    raise RuntimeError(
+                        "This workflow exposes no prompt text — with no image either, there is "
+                        "nothing to generate from.")
             self._check_cancel()
 
             # Route outputs into a run-specific folder on the server so the
             # history lookup can't confuse them with older files.
-            stem = _safe(req.source_path.stem)
+            stem = self._output_stem(req)
             set_output_prefix(workflow, f"VideoCreator/{self._run_id}/{stem}")
 
             self.plan.emit(sum(info.sampler_steps), info.post_phases)
@@ -392,7 +421,11 @@ class RunWorker(QThread):
     def _output_stem(self, req: RunRequest) -> str:
         """What a result file is named after. Video sources shed the workflow
         and stamp a previous run appended, so a chain of extensions keeps one
-        stable base name instead of growing past what Windows allows."""
+        stable base name instead of growing past what Windows allows. A
+        text-to-video run has no source, so it takes the name typed on the
+        tab, or a plain marker when that's blank."""
+        if req.source_path is None:
+            return _safe(req.output_name) if req.output_name.strip() else TEXT_STEM
         if req.source_kind != "video":
             return _safe(req.source_path.stem)
         return _base_stem(req.source_path.stem, _workflow_labels(self._cfg.get("workflow_dir", "")))
@@ -417,6 +450,11 @@ MAX_PATH = 250
 
 # Marks a clip produced from a video source, i.e. an extension.
 EXT_MARK = "EXT"
+
+# Base name of a text-to-video clip when no output name was typed.
+TEXT_STEM = "T2V"
+
+TAB_LABELS = {"image": "Image → Video", "video": "Video → Extend", "text": "Text → Video"}
 
 
 def _workflow_labels(workflow_dir: str) -> list[str]:

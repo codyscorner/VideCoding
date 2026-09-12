@@ -57,6 +57,9 @@ def _entry_from_embedded(prompt_data: dict) -> dict:
         "loras": loras,
         "video_input_mode": None,
         "extend_stitch": None,
+        # A graph with no image or video loader can only have been a
+        # text-to-video run — the same test the Text → Video tab applies.
+        "text_to_video": not (a.accepts_image or a.accepts_video),
     }
     return {"positive": positive, "negative": negative or None, "settings": settings}
 

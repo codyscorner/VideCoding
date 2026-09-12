@@ -23,6 +23,9 @@ from ui.widgets import THUMB_SIZE, MediaBrowser
 # grid spacing, the list padding, the frame and a scrollbar.
 TWO_COLUMN_WIDTH = 2 * (THUMB_SIZE + 14) + 3 * 4 + 12 + 2 + 14
 
+# Tab positions. Library → Send to Extend and Reuse Settings jump by these.
+TAB_INDEX = {"image": 0, "video": 1, "text": 2, "library": 3}
+
 
 class MainWindow(QMainWindow):
     def __init__(self, config: ConfigManager, version: str):
@@ -37,6 +40,9 @@ class MainWindow(QMainWindow):
         self._player: VideoPlayerDialog | None = None
         self._tab_splitters: list[QSplitter] = []
         self._splits_initialised = False
+        # kind -> RunPanel, filled by _build_ui; the tab order is the
+        # TAB_INDEX order.
+        self._panels: dict[str, RunPanel] = {}
 
         self.setWindowTitle(f"ComfyUI Video Creator v{version}")
         self.setStyleSheet(STYLESHEET)
@@ -63,7 +69,8 @@ class MainWindow(QMainWindow):
         title = QLabel("ComfyUI Video Creator")
         title.setObjectName("header")
         header.addWidget(title)
-        sub = QLabel(f"v{self.version}  ·  single-shot ComfyUI API workflows: image → video, video → extension")
+        sub = QLabel(f"v{self.version}  ·  single-shot ComfyUI API workflows: "
+                     "image → video, video → extension, text → video")
         sub.setObjectName("subtitle")
         header.addWidget(sub)
         header.addStretch()
@@ -92,6 +99,16 @@ class MainWindow(QMainWindow):
         self._video_panel = RunPanel("video", self.config)
         self._tabs.addTab(self._make_tab(self._video_browser, self._video_panel), "🎬  Video → Extend")
 
+        # Text → Video has nothing to pick from, so no thumbnail browser: the
+        # run panel — and its prompt editor — gets the whole tab.
+        self._text_panel = RunPanel("text", self.config)
+        text_page = QWidget()
+        text_lay = QHBoxLayout(text_page)
+        text_lay.setContentsMargins(8, 8, 8, 8)
+        text_lay.addWidget(self._text_panel)
+        self._tabs.addTab(text_page, "✍  Text → Video")
+        self._panels = {"image": self._image_panel, "video": self._video_panel, "text": self._text_panel}
+
         for b in (self._video_browser, self._image_browser):
             b.deleting.connect(self._on_files_deleting)
             b.deleted.connect(self._on_files_deleted)
@@ -107,9 +124,12 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self._wire(self._image_browser, self._image_panel, "image_dir", "image_sort")
         self._wire(self._video_browser, self._video_panel, "video_dir", "video_sort")
-        # A clone made on one tab has to show up in the other tab's dropdown too.
-        self._image_panel.workflows_changed.connect(self._video_panel.refresh_workflow_list)
-        self._video_panel.workflows_changed.connect(self._image_panel.refresh_workflow_list)
+        self._wire_panel(self._text_panel)
+        # A clone made on one tab has to show up in the other tabs' dropdowns too.
+        for source in self._panels.values():
+            for other in self._panels.values():
+                if other is not source:
+                    source.workflows_changed.connect(other.refresh_workflow_list)
         self._video_browser.activated.connect(lambda p: self._play(str(p)))
         self._update_mode_label()
         # Initial scans run after the signals above are wired so the run
@@ -147,8 +167,8 @@ class MainWindow(QMainWindow):
         return self._worker is not None and self._worker.isRunning()
 
     def _log_everywhere(self, msg: str):
-        """Pod progress isn't tied to either tab, so it goes to both logs."""
-        for panel in (self._image_panel, self._video_panel):
+        """Pod progress isn't tied to any one tab, so it goes to every log."""
+        for panel in self._panels.values():
             panel.append_log(msg)
 
     def _init_tab_splits(self):
@@ -161,6 +181,9 @@ class MainWindow(QMainWindow):
         browser.selection_changed.connect(panel.set_source)
         browser.folder_changed.connect(lambda f: (self.config.set(dir_key, f), self.config.save()))
         browser.sort_changed.connect(lambda s: (self.config.set(sort_key, s), self.config.save()))
+        self._wire_panel(panel)
+
+    def _wire_panel(self, panel: RunPanel):
         panel.run_requested.connect(self._start)
         panel.cancel_requested.connect(self._cancel)
         panel.clear_queue_requested.connect(self._clear_queue)
@@ -194,7 +217,7 @@ class MainWindow(QMainWindow):
         if (self.config.get("output_dir") != before["output_dir"]
                 or self.config.get("library_dir") != before["library_dir"]):
             self._library.set_folder(self._library.effective_folder())
-        for panel in (self._image_panel, self._video_panel):
+        for panel in self._panels.values():
             panel._font_spin.setValue(int(self.config.get("prompt_font_size", 10) or 10))
             if self.config.get("loras_dir") != before["loras_dir"]:
                 panel.reload_loras_from_folder()
@@ -224,14 +247,14 @@ class MainWindow(QMainWindow):
             # ComfyUI only works one prompt at a time - hold this one and run
             # it automatically once whatever's running now finishes.
             self._queue.append(req)
-            panel = self._image_panel if req.source_kind == "image" else self._video_panel
+            panel = self._panel_for(req)
             panel.append_log(f"Queued #{len(self._queue)} — {req.describe()}")
             self._update_queue_label()
             return
         self._launch(req)
 
     def _launch(self, req: RunRequest):
-        panel = self._image_panel if req.source_kind == "image" else self._video_panel
+        panel = self._panel_for(req)
         self._active_panel = panel
         self._active_req = req
         panel.set_running(True, active=True)
@@ -251,14 +274,14 @@ class MainWindow(QMainWindow):
     def _update_queue_label(self):
         n = len(self._queue)
         tooltip = "\n".join(f"{i + 1}. {r.describe()}" for i, r in enumerate(self._queue))
-        next_up = f"{self._queue[0].source_path.name} ({self._queue[0].workflow_label})" if self._queue else ""
-        for p in (self._image_panel, self._video_panel):
+        next_up = f"{self._queue[0].source_name} ({self._queue[0].workflow_label})" if self._queue else ""
+        for p in self._panels.values():
             p.set_queue_status(n, tooltip, next_up)
         if self._queue_dlg is not None:
             self._queue_dlg.set_items(self._active_req, list(self._queue))
 
     def _panel_for(self, req: RunRequest) -> RunPanel:
-        return self._image_panel if req.source_kind == "image" else self._video_panel
+        return self._panels.get(req.source_kind, self._image_panel)
 
     def _show_queue(self):
         """Opens (or raises) the queue view — what's running plus everything
@@ -405,7 +428,7 @@ class MainWindow(QMainWindow):
         """Library → Extend: select the video in the Extend tab (switching the
         Extend folder to the library folder if it lives elsewhere)."""
         path = Path(path)
-        self._tabs.setCurrentIndex(1)
+        self._tabs.setCurrentIndex(TAB_INDEX["video"])
         folder = str(path.parent)
         if self._video_browser.folder and Path(self._video_browser.folder).resolve() == path.parent.resolve():
             if not self._video_browser.grid.select_key(str(path)):
@@ -424,11 +447,18 @@ class MainWindow(QMainWindow):
         reload its prompt/LoRAs/seed/steps/source, and let the user tweak
         before pressing Create/Extend themselves — nothing is queued here."""
         settings = entry.get("settings") or {}
-        # Only the video (Extend) panel ever writes a video_input_mode.
-        kind = "video" if settings.get("video_input_mode") else "image"
-        panel = self._video_panel if kind == "video" else self._image_panel
+        # Only the video (Extend) panel ever writes a video_input_mode, and
+        # only the Text → Video panel (or the embedded-metadata fallback, for
+        # a graph with no loader node) sets text_to_video.
+        if settings.get("video_input_mode"):
+            kind = "video"
+        elif settings.get("text_to_video"):
+            kind = "text"
+        else:
+            kind = "image"
+        panel = self._panels[kind]
         browser = self._video_browser if kind == "video" else self._image_browser
-        self._tabs.setCurrentIndex(1 if kind == "video" else 0)
+        self._tabs.setCurrentIndex(TAB_INDEX[kind])
 
         wf_dir = Path((self.config.get("workflow_dir", "") or "").strip())
         rel = settings.get("workflow")
@@ -444,8 +474,11 @@ class MainWindow(QMainWindow):
 
         if kind == "image":
             self._reuse_image_source(panel, video_path)
-        else:
+        elif kind == "video":
             self._reuse_video_source(browser, panel, entry.get("source") or "")
+        else:
+            panel.append_log("Reused settings from Library — text to video needs no source; "
+                             "tweak the prompt, then Create.")
 
     def _reuse_image_source(self, panel: RunPanel, video_path: Path):
         """The image an I2V run started from is often a temp/staged upload

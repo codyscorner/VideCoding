@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from config import ConfigManager
-from run_worker import RunRequest
+from run_worker import TEXT_STEM, RunRequest
 from ui.clone_dialog import CloneWorkflowDialog
 from ui.prompt_history import (
     PromptExpandDialog, PromptHistoryDialog, add_results, append_entry, history_path,
@@ -120,7 +120,7 @@ class RunPanel(QWidget):
 
     def __init__(self, kind: str, config: ConfigManager, parent=None):
         super().__init__(parent)
-        self.kind = kind                    # "image" | "video"
+        self.kind = kind                    # "image" | "video" | "text"
         self._cfg = config
         # Set by MainWindow: given a RunRequest, returns a description of the
         # matching run already queued/running, or "" when it's not a repeat.
@@ -424,7 +424,25 @@ class RunPanel(QWidget):
         self._source_lbl.setObjectName("status_dim")
         self._source_lbl.setWordWrap(True)
         run_row.addWidget(self._source_lbl, stretch=1)
-        self._run_btn = QPushButton("▶  Create Video" if kind == "image" else "▶  Extend Video")
+        if kind == "text":
+            # Nothing to select on this tab — the prompt is the whole input —
+            # so there's no source to name the file after. The box takes the
+            # source label's place; blank falls back to a plain marker.
+            self._source_thumb.setVisible(False)
+            self._source_lbl.setVisible(False)
+            run_row.addWidget(QLabel("Output name:"))
+            self._name_edit = QLineEdit()
+            self._name_edit.setPlaceholderText(
+                f"blank = {TEXT_STEM}   ·   e.g. rain_walk  →  rain_walk_<workflow>_<timestamp>.mp4")
+            self._name_edit.setToolTip(
+                "There's no source image to name the clip after, so type a name here.\n"
+                f"Saved as <name>_<workflow>_<timestamp>.mp4 in the Output folder; blank uses {TEXT_STEM}.")
+            self._name_edit.setText(str(config.get("text_output_name", "") or ""))
+            self._name_edit.textChanged.connect(lambda t: self._cfg.set("text_output_name", t.strip()))
+            run_row.addWidget(self._name_edit, stretch=1)
+        else:
+            self._name_edit = None
+        self._run_btn = QPushButton("▶  Extend Video" if kind == "video" else "▶  Create Video")
         self._run_btn.setObjectName("run_btn")
         self._run_btn.clicked.connect(self._on_run)
         run_row.addWidget(self._run_btn)
@@ -554,7 +572,7 @@ class RunPanel(QWidget):
     # ------------------------------------------------------------------ #
 
     def _config_key(self) -> str:
-        return "image_workflow" if self.kind == "image" else "video_workflow"
+        return {"image": "image_workflow", "video": "video_workflow", "text": "text_workflow"}[self.kind]
 
     def reload_workflows(self):
         wf_dir = Path((self._cfg.get("workflow_dir", "") or "").strip())
@@ -627,6 +645,12 @@ class RunPanel(QWidget):
             problems.append("no image input node (LoadImage) — pick an image-to-video workflow")
         if self.kind == "video" and not (a.accepts_image or a.accepts_video):
             problems.append("no video or image input node")
+        if self.kind == "text":
+            if a.accepts_image or a.accepts_video:
+                problems.append("takes an image/video input — this tab runs prompt-only workflows "
+                                "(no LoadImage / LoadVideo node); use Image → Video or Video → Extend for it")
+            elif not a.prompts:
+                problems.append("no prompt text to edit — nothing to generate from")
         if not a.output_nodes:
             problems.append("no SaveVideo / VHS_VideoCombine node — nothing will be downloaded")
         if problems:
@@ -1209,6 +1233,9 @@ class RunPanel(QWidget):
             "loras": self._lora_records(),
             "video_input_mode": self._input_mode.currentData() if self._input_mode is not None else None,
             "extend_stitch": bool(self._stitch_chk.isChecked()) if self._stitch_chk is not None else None,
+            # Library → Reuse Settings tells the tabs apart by these keys: a
+            # video_input_mode means Extend, text_to_video means this tab.
+            "text_to_video": self.kind == "text",
         }
 
     def _update_summary(self):
@@ -1286,8 +1313,11 @@ class RunPanel(QWidget):
     def _update_run_enabled(self):
         # Stays enabled while a job is running — clicking it then just adds
         # another request to the shared queue (ComfyUI runs one at a time).
-        ok = (self._source is not None
-              and self._workflow_path is not None and self._analysis is not None)
+        ok = self._workflow_path is not None and self._analysis is not None
+        if ok and self.kind == "text":
+            ok = bool(self._analysis.prompts) and not (self._analysis.accepts_image or self._analysis.accepts_video)
+        elif ok:
+            ok = self._source is not None
         if ok and self.kind == "image":
             ok = self._analysis.accepts_image
         if ok and self.kind == "video":
@@ -1295,7 +1325,9 @@ class RunPanel(QWidget):
         self._run_btn.setEnabled(bool(ok))
 
     def _on_run(self):
-        if self._source is None or self._workflow_path is None or self._analysis is None:
+        if self._workflow_path is None or self._analysis is None:
+            return
+        if self._source is None and self.kind != "text":
             return
         rel = Path(self._workflow_rel)
         label = rel.parts[0] if len(rel.parts) > 1 else rel.stem
@@ -1320,6 +1352,7 @@ class RunPanel(QWidget):
             prompt_preview=self._positive_prompt_preview(),
             settings_summary="   |   ".join(self._summary_bits()),
             thumb_path=self._start_frame_path(),
+            output_name=self._name_edit.text().strip() if self._name_edit is not None else "",
         )
         if not self._confirm_not_a_repeat(req):
             return
@@ -1332,7 +1365,8 @@ class RunPanel(QWidget):
             try:
                 req.history_index = append_entry(
                     self._workflow_path,
-                    make_entry(self._prompt_tuples(), self._collect_settings(), self._source.name))
+                    make_entry(self._prompt_tuples(), self._collect_settings(),
+                               self._source.name if self._source else ""))
             except Exception:  # noqa: BLE001
                 req.history_index = None
         self.run_requested.emit(req)

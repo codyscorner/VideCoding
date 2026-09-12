@@ -55,6 +55,8 @@ class ConfigManager:
         # Remembered UI state
         "image_workflow": "",
         "video_workflow": "",
+        "text_workflow": "",
+        "text_output_name": "",                # Text → Video: base name for the saved clip (blank = T2V)
         "image_sort": "Name A→Z",
         "video_sort": "Newest First",
         "video_input_mode": "auto",            # auto | last_frame | upload_video
@@ -64,6 +66,7 @@ class ConfigManager:
         "prompt_font_size": 10,
         "panel_split_image": [],
         "panel_split_video": [],
+        "panel_split_text": [],
         # AI prompt rewriter (local LLM via LM Studio's OpenAI-compatible API)
         "rewriter_base_url": "http://127.0.0.1:1970/v1",
         "rewriter_model": "openai/gpt-oss-20b",
