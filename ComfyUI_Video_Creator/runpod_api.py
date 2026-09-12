@@ -581,11 +581,24 @@ def wake_first_available(pod_ids: list[str],
     all_pods = list_pods(key)
     pods = {p.get("id"): p for p in all_pods}
 
-    # No saved order yet (first run) — try everything the account has, running
-    # pods first so an already-warm one is found without starting anything.
+    # Running pods first, so an already-warm one is found without starting
+    # anything; otherwise account order.
+    by_warmth = [p["id"] for p in sorted(
+        all_pods, key=lambda p: 0 if p.get("status") == "RUNNING" else 1) if p.get("id")]
+
     if not pod_ids:
-        pod_ids = [p["id"] for p in sorted(
-            all_pods, key=lambda p: 0 if p.get("status") == "RUNNING" else 1) if p.get("id")]
+        # No saved order yet (first run) — try everything.
+        pod_ids = by_warmth
+    else:
+        # The saved order is a PREFERENCE, not a whitelist. A pod created after
+        # the order was saved must still be tried, just last — otherwise a brand
+        # new pod is silently invisible to the chain until someone happens to
+        # press Refresh in Settings.
+        known = set(pod_ids)
+        extras = [pid for pid in by_warmth if pid not in known]
+        if extras:
+            log(f"{len(extras)} pod(s) not in your saved order — trying them last")
+        pod_ids = list(pod_ids) + extras
 
     # Already running and healthy? Use it. Only ever one pod at a time.
     for pod_id in pod_ids:

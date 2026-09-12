@@ -1,5 +1,8 @@
 # Changelog — ComfyUI Video Creator
 
+### v1.7.3
+- **Fixed: a pod created after the priority order was saved was never tried.** The saved order was acting as a whitelist — any pod not in it was skipped entirely, so a brand new pod stayed invisible to the chain until someone happened to press Refresh in Settings. The order is now a *preference*: pods missing from it are appended and tried last (running ones first), so nothing on the account is ever silently ignored. Reordering in Settings still works exactly as before.
+
 ### v1.7.2
 - **Fixed: a pod that was perfectly able to start got reported as unavailable.** RunPod accepts the start action *before* the pod leaves `EXITED`, so polling its status immediately read the old state — and `EXITED` was in the terminal-failure list. The chain abandoned the pod on its very first poll, while RunPod carried on booting it, which is why the same pod turned up running and "available" in the console moments later. A just-started pod is now given a 30-second grace period before an `EXITED` reading is believed. `ERROR`, `TERMINATED` and the zero-GPU check are unchanged and still reject immediately.
 - **Fixed: a pod could be left running and billing.** If a pod came up with its GPU but ComfyUI never answered within the readiness window, the chain moved to the next candidate without stopping it. It is now stopped before moving on.
