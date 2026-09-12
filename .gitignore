@@ -101,3 +101,6 @@ S3_Broswer/config.json
 
 # Local-only test fixtures
 Cumfy_Workflow_Editor/Test files/
+
+# RunPod pod-control chain log
+**/runpod_pod.log

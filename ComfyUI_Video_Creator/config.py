@@ -27,7 +27,8 @@ class ConfigManager:
         "runpod_url": "",
         # RunPod pod control (see RUNPOD_POD_CONTROL_PLAN.md). The API key is
         # NOT here — it lives in api_keys.json so this file stays safe to copy.
-        "runpod_pod_order": [],                # pod IDs, best first; [] = whatever the account lists
+        "runpod_gpu_order": [],                # GPU models, best first; outranks runpod_pod_order
+        "runpod_pod_order": [],                # pod IDs, best first within a GPU model
         "runpod_auto_prompt": True,            # offer to start a pod on launch
         "runpod_auto_stop_on_exit": True,      # stop the pod this app started when quitting
         "runpod_spend_limit": 0.0,             # USD per pod run; 0 = no limit

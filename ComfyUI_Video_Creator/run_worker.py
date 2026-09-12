@@ -474,7 +474,17 @@ def _fit_name(out_dir: Path, stem: str, tail: str) -> str:
 
 def _safe(name: str) -> str:
     keep = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in name.strip())
-    return keep.strip("_") or "video"
+    # Collapse runs of dots. ComfyUI's /view endpoint rejects ANY filename
+    # containing ".." with a 400 before it even looks for the file — its
+    # directory-traversal guard — so a source called "Married... with Children"
+    # generates fine on the server and is then impossible to download.
+    # Single dots are fine; only consecutive ones are refused.
+    keep = re.sub(r"\.{2,}", ".", keep)
+    # Leading/trailing dots go too: Windows silently drops a trailing dot when
+    # saving, which would leave the local name disagreeing with the one the pod
+    # reported, and a leading dot makes a hidden file.
+    keep = keep.strip("_.")
+    return keep or "video"
 
 
 def _fmt(seconds: float) -> str:

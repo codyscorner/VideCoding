@@ -510,7 +510,7 @@ class MainWindow(QMainWindow):
                 return
             self._worker.cancel()
             self._worker.wait(5000)
-        if self._pod.pod_id and self.config.get("runpod_auto_stop_on_exit", True):
+        if self._pod.pod_id and self._pod.owned and self.config.get("runpod_auto_stop_on_exit", True):
             ans = QMessageBox.question(
                 self, "Stop the pod?",
                 f"Stop RunPod pod {self._pod.pod_id} before quitting?\n\n"
