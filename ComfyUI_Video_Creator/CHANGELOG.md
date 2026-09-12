@@ -1,5 +1,10 @@
 # Changelog — ComfyUI Video Creator
 
+### v1.7.5
+- **Fixed: a source file with `..` in its name generated fine but could never be downloaded.** ComfyUI's `/view` endpoint refuses any filename containing `..` with a 400 — its directory-traversal guard — and rejects it *before* looking for the file. A starting image called `Married... with Children (TV Series 1987-1997).png` therefore produced a perfectly good video on the server that the app could not fetch, failing the run at the very last step after paying for the whole generation. Output names now collapse runs of dots to one (`Married._with_Children_…`); single dots like `v1.2.3_clip` are untouched, since only consecutive ones are refused.
+  - Leading and trailing dots are stripped too: Windows silently drops a trailing dot when saving, which would leave the downloaded file's name disagreeing with the one the server reported.
+  - Verified against a live pod: the offending name returns 400, the sanitized name returns 404 (accepted, file simply absent).
+
 ### v1.7.4
 - **The header now shows how much time you have left, not just what you've spent.** With a spend limit set it reads `2h 17m  |  $4.80 / $10.00  |  4h 41m left`, amber at 80% and red at the limit. Hovering gives the hourly rate, roughly what time the limit will be reached, and a reminder that storage bills separately and isn't counted.
 - **Spend now tracks the pod you're connected to, not only one the app started.** Previously a pod started by hand in the RunPod console showed no counter at all, because the header only followed pods the app had launched itself.
