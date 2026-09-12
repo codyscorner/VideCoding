@@ -266,6 +266,7 @@ class PodControl(QWidget):
             return
 
         order = list(self._config.get("runpod_pod_order", []) or [])
+        gpu_order = list(self._config.get("runpod_gpu_order", []) or [])
         if not quiet:
             # A retry sweep every 10 minutes must not throw a modal dialog over
             # whatever you're doing, so only the manual path gets one.
@@ -275,7 +276,7 @@ class PodControl(QWidget):
             self._progress.setMinimumDuration(0)
             self._progress.canceled.connect(self._cancel_start)
 
-        self._start_worker = PodStartWorker(order)
+        self._start_worker = PodStartWorker(order, gpu_order)
         self._start_worker.log.connect(self._on_progress)
         self._start_worker.ready.connect(self._on_ready)
         self._start_worker.exhausted.connect(self._on_exhausted)

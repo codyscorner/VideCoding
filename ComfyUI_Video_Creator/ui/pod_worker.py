@@ -24,9 +24,10 @@ class PodStartWorker(QThread):
     exhausted = pyqtSignal(str)        # no pod available; summary for the dialog
     failed = pyqtSignal(str)           # key/account problem — chain abandoned
 
-    def __init__(self, pod_ids: list[str]):
+    def __init__(self, pod_ids: list[str], gpu_order: list[str] | None = None):
         super().__init__()
         self._pod_ids = list(pod_ids)
+        self._gpu_order = list(gpu_order or [])
         self._cancelled = False
         self._misses: list[str] = []
 
@@ -42,6 +43,7 @@ class PodStartWorker(QThread):
                 log=self.log.emit,
                 should_cancel=lambda: self._cancelled,
                 misses_out=self._misses,
+                gpu_order=self._gpu_order,
             )
         except runpod_api.Fatal as e:
             self.failed.emit(str(e))
