@@ -30,6 +30,12 @@ from ui.styles import COLORS
 # and so auto-stop never touches a pod someone started in the console.
 SESSION_FILE = "runpod_session.json"
 
+# The chain's progress used to exist only in the on-screen log, which made an
+# intermittent "it said no but the pod was fine" impossible to investigate after
+# the fact. Every line is now also appended here, with a timestamp.
+POD_LOG = "runpod_pod.log"
+POD_LOG_MAX_LINES = 2000
+
 POLL_MS = 60_000        # spend moves by cents; once a minute is plenty
 
 
@@ -67,7 +73,20 @@ class PodControl(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._poll)
         self._timer.start(POLL_MS)
+        self.log.connect(self._write_log)
         self._refresh_button()
+
+    def _write_log(self, msg: str):
+        """Mirror every pod-chain line to a file next to the EXE."""
+        path = Path(self._config.get("_base_dir", str(app_dir()))) / POD_LOG
+        try:
+            if path.exists() and path.stat().st_size > 300_000:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+                path.write_text("\n".join(lines[-POD_LOG_MAX_LINES:]) + "\n", encoding="utf-8")
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {msg}\n")
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------ #
     # State

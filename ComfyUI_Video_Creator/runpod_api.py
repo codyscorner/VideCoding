@@ -48,6 +48,11 @@ ACTION_TIMEOUT = 60         # start/stop take a beat longer to be accepted
 RUNNING_TIMEOUT = 120
 RUNNING_INTERVAL = 3
 
+# How long a just-started pod may still report EXITED before that is believed.
+# RunPod accepts the start action before the pod leaves EXITED, so polling
+# immediately reads the old state.
+EXITED_GRACE = 30
+
 # ComfyUI itself then has to scan models and import custom nodes, which is the
 # slow part and varies a lot with how many nodes a pod has.
 COMFY_TIMEOUT = 300
@@ -488,7 +493,8 @@ def wait_running(pod_id: str, session: requests.Session,
     left billing in the background.
     """
     log = log or (lambda _m: None)
-    deadline = time.time() + timeout
+    started = time.time()
+    deadline = started + timeout
     last = ""
     while time.time() < deadline:
         if should_cancel and should_cancel():
@@ -504,6 +510,14 @@ def wait_running(pod_id: str, session: requests.Session,
                 return pod
             stop_pod(pod_id, session=session)
             raise Unavailable("started with no GPU attached — that machine's card is taken")
+        # A pod that has just been told to start still reads EXITED for a few
+        # seconds: the accepted action hasn't moved it yet. Believing that first
+        # reading abandons a pod that is in fact coming up perfectly well — and
+        # since RunPod carries on booting it, it turns up "available" moments
+        # later, which is exactly the false negative this guard exists to stop.
+        if status == "EXITED" and time.time() - started < EXITED_GRACE:
+            time.sleep(RUNNING_INTERVAL)
+            continue
         if status in DEAD_STATES:
             raise Unavailable(f"fell back to {status}")
         time.sleep(RUNNING_INTERVAL)
@@ -608,7 +622,14 @@ def wake_first_available(pod_ids: list[str],
         try:
             start_pod(pod_id, session=session)
             wait_running(pod_id, session, log=log, should_cancel=should_cancel)
-            url = wait_comfy(pod_id, log=log, should_cancel=should_cancel)
+            try:
+                url = wait_comfy(pod_id, log=log, should_cancel=should_cancel)
+            except Unavailable:
+                # The pod is up with a GPU but ComfyUI never answered. Moving on
+                # without stopping it would leave it billing unnoticed.
+                log(f"  stopping {pod_id} — it is running but ComfyUI never came up")
+                stop_pod(pod_id, session=session)
+                raise
             log(f"{pod_id} is up at {url}")
             return pod_id, url
         except Unavailable as e:

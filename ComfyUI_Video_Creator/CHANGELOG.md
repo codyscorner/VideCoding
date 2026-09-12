@@ -1,5 +1,11 @@
 # Changelog — ComfyUI Video Creator
 
+### v1.7.2
+- **Fixed: a pod that was perfectly able to start got reported as unavailable.** RunPod accepts the start action *before* the pod leaves `EXITED`, so polling its status immediately read the old state — and `EXITED` was in the terminal-failure list. The chain abandoned the pod on its very first poll, while RunPod carried on booting it, which is why the same pod turned up running and "available" in the console moments later. A just-started pod is now given a 30-second grace period before an `EXITED` reading is believed. `ERROR`, `TERMINATED` and the zero-GPU check are unchanged and still reject immediately.
+- **Fixed: a pod could be left running and billing.** If a pod came up with its GPU but ComfyUI never answered within the readiness window, the chain moved to the next candidate without stopping it. It is now stopped before moving on.
+- **Pod chain progress is now written to `runpod_pod.log`** next to the app, timestamped and trimmed to the last 2000 lines. Previously it existed only in the on-screen log, so an intermittent failure left nothing to investigate afterwards.
+- Confirmed RunPod's real capacity wording for a pinned resume: `There are not enough free GPUs on the host machine to start this pod.` — which is classified as "try the next pod", not as an error.
+
 ### v1.7.1
 - **"Keep trying" when every pod is busy.** All five pods being unavailable is common — they're pinned to specific machines, so you're waiting for one particular card to free up rather than drawing from a pool. The "no pods available" dialog now offers **Keep Trying**, which re-sweeps the whole pod list on an interval until one comes up or the window expires (defaults: every **10 minutes** for **2 hours**, both configurable). The header shows `retrying — next 21:40, until 23:10` and the button becomes **Stop Retrying**.
   - **Alert sound**, ported from the Chain Automator: pick any `.wav` (played inline via `winsound`) or other audio file (handed to the shell), with a Test button. It plays both when a pod is found and when the window expires, so you know the answer from the next room either way — the header and log say which.
