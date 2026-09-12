@@ -475,7 +475,10 @@ class PodControl(QWidget):
             pod = runpod_api.get_pod(self._pod_id)
         except runpod_api.RunPodError:
             return                      # transient; try again next tick
-        if not runpod_api.is_healthy(pod):
+        state = runpod_api.gpu_state(pod)
+        if state == "pending":
+            return                      # RUNNING, GPU report not in yet - next tick
+        if state != "ok":
             # Stopped from the console, or lost its GPU underneath us.
             self.log.emit(f"RunPod: {self._pod_id} is no longer running")
             self._forget()

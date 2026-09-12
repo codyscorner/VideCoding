@@ -1,6 +1,6 @@
 # ComfyUI Video Creator
 
-Version: 2.1.0
+Version: 2.1.1
 
 Single-shot ComfyUI API workflow runner with a dark red theme. Pick an image, a video to extend, or nothing but a prompt (text → video), pick a workflow JSON, press Run, and the finished video lands in a local folder — from a local ComfyUI or a RunPod pod.
 
