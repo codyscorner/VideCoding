@@ -30,6 +30,8 @@ This is a **separate app from the ComfyUI Workflow Chain Automator**. It shares 
 - **Keep trying until a pod frees up** — because the pods are pinned to specific machines, all of them being busy is normal. Rather than giving up, the app can re-sweep the list every few minutes for a set window (default: every 10 minutes for 2 hours) and **play a sound of your choosing** the moment one comes up, raising the window since the pod starts billing then. The same sound plays if the window expires with nothing found, so you get an answer either way without watching the screen
 - Live step progress over the ComfyUI websocket (polling fallback), Cancel that interrupts the server, built-in video player, run log
 
+- **Prompt history you curate** — every run is recorded with the prompt, LoRAs, seed, steps and length it used, in `<workflow>.prompt_history.json` beside the workflow (the same sidecar the Chain Automator writes). The 📜 History window has four tabs — **★ Favorites / Recent / All / Hidden** — with a tick box on every row: untick to move an entry to Hidden, tick it there to bring it back. **Nothing is ever removed from the file** unless you press Delete. Favorites are per template (the workflow JSON), with an *All templates* view across the lot. Row previews skip the boilerplate preamble a template's runs all share, so the preview shows what actually differs between runs
+
 ## Requirements
 
 - Python 3.11+
