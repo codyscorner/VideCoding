@@ -1,5 +1,18 @@
 # Changelog — ComfyUI Video Creator
 
+### v2.0.0
+Two releases' worth of reorganisation — Settings moved to tabs in v1.8.0, and the prompt history becomes something you curate rather than scroll — so the major number moves.
+
+- **The prompt history is now a complete record you curate, not a list you scroll.** History was append-only and all-or-nothing: every run ever made showed in one list, and the only way to shorten it was Delete, which threw the record away. The 📜 History window gains four tabs — **★ Favorites / Recent / All / Hidden** — and two per-entry flags that live in the sidecar file alongside the prompt.
+  - **Every row has a tick box. Ticked means it shows; untick it and the entry moves to the Hidden tab.** Nothing leaves the file. The Hidden tab is the way back — tick it there and it returns. Delete still exists for genuinely unwanted entries and now says outright that Hide is the non-destructive option.
+  - **★ Favorite** stars a prompt. Favorites are per **template** (the workflow JSON), which is where history already lives — one sidecar per workflow — so starring needs no new concept and works on entries the Chain Automator wrote too. *All templates* in the dropdown gives the cross-template view.
+  - **Tab counts are live** (`★ Favorites (7) · Recent (100) · All (342) · Hidden (28)`) and respect the template, date and search filters, so they answer "how much is left after this filter" rather than just how big the file is.
+  - **All** puts starred entries at the top, since it's the browse-everything view. **Recent** stays strictly newest-first and capped at 100 — it answers "what did I just run", which floating favourites into it would defeat.
+  - The flags are plain `favorite` / `hidden` keys on the entry. The Chain Automator shares these files and ignores keys it doesn't know, and an entry without them reads as visible and unstarred — so nothing needs migrating and older entries just work.
+  - Toggling re-reads the file before writing, so a run recorded while the window sat open isn't clobbered by a tick box.
+- **The list preview now skips the boilerplate every run off a template shares.** An H3 prompt opens with a long fixed preamble — the reference clause, then the shot-1 framing — so all 58 rows of a template's history read *"For the target video, at 0.00 seconds…"* and the preview said nothing about which run it was. The dialog now works out the opener the rows on screen actually share and starts each preview after it. Measured on real history: 271 characters trimmed on `MiniMax_Fighting` (4 → 8 distinct previews) and 767 on `SexMissionary_after_MO_on_bed` (2 → 10). The prefix only has to be shared by a *majority*, so one hand-edited entry can't drag it back to nothing; rows that don't share it are left untrimmed.
+- The history window's workflow dropdown is now labelled **Template**, matching how these files are actually used.
+
 ### v1.8.0
 - **Pods are now tried by GPU model first: every RTX 6000 before any A100.** The chain used to walk a hand-dragged list of pod *ids*, which meant the preference died the moment a pod was rebuilt — a brand new RTX 6000 got appended to the bottom of the list, behind both A100s, because the order had never seen its id. Settings gains a **GPU priority** list above the pod list: rank the card models once and every pod on the better card is tried before any pod on the lesser one, no matter when it was created.
   - **The pod list below it is now the real chain order**, GPU priority already applied and numbered `1.` to `6.`, so what you see is exactly what the chain will do. Reordering the GPU list re-sorts it live.
