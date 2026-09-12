@@ -149,6 +149,20 @@ def _is_capacity(text: str) -> bool:
     return any(m in low for m in CAPACITY_MARKERS)
 
 
+def pod_id_from_url(url: str) -> str:
+    """Recover the pod id from a proxy URL, or "" if it isn't one.
+
+    Lets the app show spend for a pod someone started in the console, since the
+    configured server URL is the only record that it is the one in use.
+    """
+    url = (url or "").strip().rstrip("/")
+    if PROXY_HOST not in url:
+        return ""
+    host = url.split("//")[-1].split("/")[0]        # <id>-<port>.proxy.runpod.net
+    head = host.split(f".{PROXY_HOST}")[0]
+    return head.rsplit("-", 1)[0] if "-" in head else ""
+
+
 def proxy_url(pod_id: str, port: int = COMFY_PORT) -> str:
     """Deterministic, and stable for the life of the pod — only terminating a
     pod changes its ID, so this URL survives any number of stop/start cycles."""

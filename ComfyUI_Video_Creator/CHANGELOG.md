@@ -1,5 +1,11 @@
 # Changelog — ComfyUI Video Creator
 
+### v1.7.4
+- **The header now shows how much time you have left, not just what you've spent.** With a spend limit set it reads `2h 17m  |  $4.80 / $10.00  |  4h 41m left`, amber at 80% and red at the limit. Hovering gives the hourly rate, roughly what time the limit will be reached, and a reminder that storage bills separately and isn't counted.
+- **Spend now tracks the pod you're connected to, not only one the app started.** Previously a pod started by hand in the RunPod console showed no counter at all, because the header only followed pods the app had launched itself.
+- **A pod started outside the app is picked up on launch** — including switching the connection to it. If the configured URL points at a pod that's now stopped but another pod is running, the app finds it and repoints the RunPod URL, instead of asking to start a third one. Only one pod runs at a time, so the running one is unambiguously the one in use.
+- **Pods the app didn't start are never stopped automatically.** Adopting one records it as unowned: exit won't stop it, crash recovery won't offer to, and hitting the spend limit blocks new runs and warns rather than handing your machine back to the pool. The manual Stop Pod button still works — that's an explicit choice.
+
 ### v1.7.3
 - **Fixed: a pod created after the priority order was saved was never tried.** The saved order was acting as a whitelist — any pod not in it was skipped entirely, so a brand new pod stayed invisible to the chain until someone happened to press Refresh in Settings. The order is now a *preference*: pods missing from it are appended and tried last (running ones first), so nothing on the account is ever silently ignored. Reordering in Settings still works exactly as before.
 

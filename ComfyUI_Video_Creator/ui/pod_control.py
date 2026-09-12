@@ -47,7 +47,8 @@ class PodControl(QWidget):
         super().__init__(parent)
         self._config = config
         self._is_busy = is_busy
-        self._pod_id = ""              # the pod THIS app started
+        self._pod_id = ""              # the pod currently in use (shown in the header)
+        self._owned = False            # did THIS app start it? governs auto-stop only
         self._start_worker: PodStartWorker | None = None
         self._stop_worker: PodStopWorker | None = None
         self._progress: QProgressDialog | None = None
@@ -96,11 +97,22 @@ class PodControl(QWidget):
     def pod_id(self) -> str:
         return self._pod_id
 
+    @property
+    def owned(self) -> bool:
+        """True only when THIS app started the pod, so only then may it be
+        stopped automatically."""
+        return self._owned
+
     def _session_path(self) -> Path:
         return Path(self._config.get("_base_dir", str(app_dir()))) / SESSION_FILE
 
-    def _remember(self, pod_id: str):
+    def _remember(self, pod_id: str, owned: bool = True):
         self._pod_id = pod_id
+        self._owned = owned
+        if not owned:
+            # Not ours to clean up, so nothing goes in the session file — crash
+            # recovery must never offer to stop a pod someone else started.
+            return
         try:
             with open(self._session_path(), "w", encoding="utf-8") as f:
                 json.dump({"pod_id": pod_id}, f)
@@ -109,6 +121,7 @@ class PodControl(QWidget):
 
     def _forget(self):
         self._pod_id = ""
+        self._owned = False
         try:
             self._session_path().unlink(missing_ok=True)
         except OSError:
@@ -137,6 +150,8 @@ class PodControl(QWidget):
             return
         if self._recover_orphan():
             return
+        if self._adopt_configured_pod():
+            return
         if not self._config.get("runpod_auto_prompt", True):
             return
         ans = QMessageBox.question(
@@ -148,6 +163,53 @@ class PodControl(QWidget):
         )
         if ans == QMessageBox.StandardButton.Yes:
             self.start_chain()
+
+    def _adopt_configured_pod(self) -> bool:
+        """Show spend for a pod started outside the app.
+
+        The configured RunPod URL names the pod in use, so if it is up and
+        healthy there is no reason to ask about starting another — just track it
+        so the header shows uptime, spend and time left. It is NOT marked owned,
+        so quitting never stops a pod the user started themselves.
+        """
+        if not self._config.is_runpod():
+            return False
+
+        # First choice is whatever the configured URL names — that's the pod
+        # the user last chose.
+        configured = runpod_api.pod_id_from_url(self._config.get("runpod_url", ""))
+        pod = None
+        if configured:
+            try:
+                candidate = runpod_api.get_pod(configured)
+                if runpod_api.is_healthy(candidate):
+                    pod = candidate
+            except runpod_api.RunPodError:
+                pass
+
+        # Otherwise: the configured pod is stopped, but a pod started by hand in
+        # the console may well be up. Only one pod runs at a time, so the first
+        # healthy one on the account is unambiguously the one in use — point the
+        # connection at it rather than asking to start yet another.
+        if pod is None:
+            try:
+                pod = next((p for p in runpod_api.list_pods() if runpod_api.is_healthy(p)), None)
+            except runpod_api.RunPodError:
+                return False
+            if pod is None:
+                return False
+
+        pod_id = pod.get("id", "")
+        url = runpod_api.proxy_url(pod_id)
+        switched = pod_id != configured
+        self._adopt(pod_id, url, owned=False)
+        self.log.emit(
+            f"RunPod: using {pod.get('name') or pod_id}, already running "
+            f"({runpod_api.spend_summary(pod)}) — started outside the app, so it "
+            f"won't be stopped on exit"
+            + (f". Connection switched from {configured or 'the previous URL'} to this pod."
+               if switched else ""))
+        return True
 
     def _recover_orphan(self) -> bool:
         """A pod left running because the app died without its closeEvent."""
@@ -241,9 +303,9 @@ class PodControl(QWidget):
         self._close_progress()
         self._refresh_button()
 
-    def _adopt(self, pod_id: str, url: str):
+    def _adopt(self, pod_id: str, url: str, owned: bool = True):
         """Point the app at this pod and switch to RunPod mode."""
-        self._remember(pod_id)
+        self._remember(pod_id, owned)
         self._warned = False
         self._stop_when_idle = False
         self._config.set("runpod_url", url)
@@ -427,8 +489,21 @@ class PodControl(QWidget):
 
         color = {"warn": COLORS["warning"], "over": COLORS["error"]}.get(state, COLORS["fg_dim"])
         if limit > 0:
-            summary += f" / ${limit:.2f}"
+            left = runpod_api.projected_runtime(pod, limit)
+            summary += (f" / ${limit:.2f}  |  {runpod_api.format_duration(left)} left"
+                        if left else f" / ${limit:.2f}  |  limit reached")
         self._spend_lbl.setText(f"<span style='color:{color}'>{summary}</span>")
+
+        rate = runpod_api.hourly_cost(pod)
+        tip = [f"{pod.get('name') or self._pod_id}",
+               f"${rate:.2f}/hr — ${runpod_api.spend_so_far(pod):.2f} of compute so far",
+               "Storage bills separately and is not counted here."]
+        if limit > 0:
+            left = runpod_api.projected_runtime(pod, limit)
+            when = time.strftime("%H:%M", time.localtime(time.time() + left))
+            tip.insert(2, f"${limit:.2f} limit reached about {when}"
+                          if left else f"${limit:.2f} limit reached")
+        self._spend_lbl.setToolTip("\n".join(tip))
 
         if state == "warn" and not self._warned:
             self._warned = True
@@ -439,6 +514,15 @@ class PodControl(QWidget):
             self._hit_limit(pod)
 
     def _hit_limit(self, pod: dict):
+        if not self._owned:
+            # Block new runs, but don't stop a pod the user started themselves —
+            # handing their machine back to the pool is not ours to decide.
+            if not self._stop_when_idle:
+                self._stop_when_idle = True
+                self.log.emit(f"RunPod: spend limit reached (${runpod_api.spend_so_far(pod):.2f}). "
+                              "No new runs will start. This pod was started outside the app, "
+                              "so stop it yourself when you're done.")
+            return
         if self._stop_when_idle:
             if not self._is_busy():
                 self._stop_when_idle = False
@@ -478,8 +562,8 @@ class PodControl(QWidget):
         if self._start_worker is not None:
             self._start_worker.cancel()
             self._start_worker.wait(3000)
-        if not self._pod_id:
-            return
+        if not self._pod_id or not self._owned:
+            return          # never stop a pod someone started outside the app
         if not self._config.get("runpod_auto_stop_on_exit", True):
             return
         runpod_api.stop_pod(self._pod_id)
