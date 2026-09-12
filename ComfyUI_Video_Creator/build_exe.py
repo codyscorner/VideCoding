@@ -4,6 +4,9 @@ P:\\Apps\\VibeCoded\\ComfyUI Video Creator.
 Run with the repo .venv (build.bat does this automatically) — it has PyQt6,
 requests, websocket-client and Pillow. The shared venv also carries heavy
 ML packages, so every one of them is excluded or the EXE balloons ~10x.
+
+Pass --no-deploy to build only (the EXE stays in dist/) — for a build
+made while the deployed app is busy running.
 """
 
 import re
@@ -70,6 +73,9 @@ def main():
         print("EXE not found in dist/ — check the PyInstaller output above")
         sys.exit(1)
     print(f"Built {exe_src} ({exe_src.stat().st_size // (1024 * 1024)} MB)")
+    if "--no-deploy" in sys.argv:
+        print(f"--no-deploy: leaving it in dist/, {OUTPUT} untouched")
+        return
 
     OUTPUT.mkdir(parents=True, exist_ok=True)
     target = OUTPUT / exe_src.name
