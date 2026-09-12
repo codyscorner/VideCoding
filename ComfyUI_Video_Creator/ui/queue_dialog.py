@@ -1,7 +1,8 @@
 """Queue viewer: what's running now and what's lined up behind it.
 
-ComfyUI runs one prompt at a time, so both tabs share a single queue. Pile a
-few runs on while switching between Image → Video and Video → Extend and the
+ComfyUI runs one prompt at a time, so every tab shares a single queue. Pile a
+few runs on while switching between Image → Video, Video → Extend and Text →
+Video and the
 count alone ("3 queued") stops being enough to tell whether the thing you're
 about to click is already in there — this lists each waiting run with the
 frame it starts from, its workflow, source, prompt and settings, and lets rows
@@ -182,18 +183,20 @@ class QueueDialog(QDialog):
         item = QTreeWidgetItem([
             number,
             "",
-            "Image → Video" if req.source_kind == "image" else "Video → Extend",
+            req.tab_label,
             req.workflow_label,
-            req.source_path.name,
+            req.source_name,
             prompt,
         ])
         icon = self._thumb_icon(req.thumb_path)
         if icon is not None:
             item.setIcon(1, icon)
-        frame = ("the source image" if req.source_kind == "image"
-                 else "the source video's last frame — where the extension picks up")
+        frame = {
+            "image": "the source image",
+            "video": "the source video's last frame — where the extension picks up",
+        }.get(req.source_kind, "nothing — text to video, the prompt is the whole input")
         tip = (f"{position}\n\nWorkflow: {req.workflow_label}\n"
-               f"Source: {req.source_path}\n"
+               f"Source: {req.source_path if req.source_path is not None else req.source_name}\n"
                f"Starts from: {frame}\n"
                f"{req.settings_summary}\n\nPrompt:\n{req.prompt_preview or '(none)'}")
         for col in range(len(COLS)):

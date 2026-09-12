@@ -52,6 +52,13 @@ RUNNING_INTERVAL = 3
 # RunPod accepts the start action before the pod leaves EXITED, so polling
 # immediately reads the old state.
 EXITED_GRACE = 30
+# ...and right after it flips to RUNNING the `runtime` block (uptime, ports,
+# the attached-GPU list) is still null for a few seconds: the control plane
+# changes the status before the container has reported in. Judging the GPU
+# inside that gap stopped a perfectly good pod as "started with no GPU
+# attached" (2026-09-12, 09:12 - RUNNING and rejected in the same second), so
+# a RUNNING pod whose runtime hasn't arrived yet gets this long to report.
+RUNTIME_GRACE = 60
 
 # ComfyUI itself then has to scan models and import custom nodes, which is the
 # slow part and varies a lot with how many nodes a pod has.
@@ -291,29 +298,39 @@ def gpu_availability(key: str | None = None, cloud: str = "SECURE") -> dict:
 # Health
 # ---------------------------------------------------------------------- #
 
-def is_healthy(pod: dict) -> bool:
-    """RUNNING is not enough.
+def gpu_state(pod: dict) -> str:
+    """What the pod record says about its GPU, as one of four words.
 
-    When a pod is stopped it releases its GPU but stays tied to its original
-    machine. If someone else rented that GPU in the meantime, RunPod starts the
-    pod anyway *with no GPU at all* as a data-recovery mode: HTTP 200, status
-    RUNNING, proxy URL up, ComfyUI answering — and billing the whole time, while
-    every generation crawls along on CPU.
+    "ok"       RUNNING and the runtime block lists an attached GPU.
+    "pending"  RUNNING, but the runtime block hasn't been reported yet — normal
+               for the first seconds after a start; wait, don't judge.
+    "none"     RUNNING with no GPU: the zero-GPU trap.
+    "off"      not RUNNING at all.
 
-    https://docs.runpod.io/pods/troubleshooting/zero-gpus
+    RUNNING is not enough on its own. When a pod is stopped it releases its GPU
+    but stays tied to its original machine. If someone else rented that GPU in
+    the meantime, RunPod starts the pod anyway *with no GPU at all* as a
+    data-recovery mode: HTTP 200, status RUNNING, proxy URL up, ComfyUI
+    answering — and billing the whole time, while every generation crawls
+    along on CPU. https://docs.runpod.io/pods/troubleshooting/zero-gpus
     """
     if (pod.get("status") or "") != "RUNNING":
-        return False
+        return "off"
     if ((pod.get("gpu") or {}).get("count") or 0) < 1:
-        return False
+        return "none"
     runtime = pod.get("runtime")
     if not runtime:
-        return False
+        return "pending"
     # Only enforce this when the field is actually present, so a schema change
     # can't make every healthy pod look broken.
     if "gpus" in runtime and not runtime["gpus"]:
-        return False
-    return True
+        return "none"
+    return "ok"
+
+
+def is_healthy(pod: dict) -> bool:
+    """RUNNING with a GPU actually reported attached — see gpu_state()."""
+    return gpu_state(pod) == "ok"
 
 
 # ---------------------------------------------------------------------- #
@@ -538,10 +555,10 @@ def start_pod(pod_id: str, key: str | None = None, session: requests.Session | N
         # The action wasn't legal for the current state — nearly always because
         # the pod is already running or mid-start from an earlier attempt.
         pod = get_pod(pod_id, session=s)
-        if pod.get("status") == "RUNNING" and not is_healthy(pod):
+        if gpu_state(pod) == "none":
             stop_pod(pod_id, session=s)
             raise Unavailable("already running with no GPU")
-        return pod
+        return pod   # "pending" is wait_running's job, not a verdict
 
     if r.status_code >= 500:
         # A 5xx can come back *after* the pod actually started, so ask before
@@ -577,6 +594,7 @@ def wait_running(pod_id: str, session: requests.Session,
     started = time.time()
     deadline = started + timeout
     last = ""
+    running_since: float | None = None
     while time.time() < deadline:
         if should_cancel and should_cancel():
             stop_pod(pod_id, session=session)
@@ -587,8 +605,23 @@ def wait_running(pod_id: str, session: requests.Session,
             log(f"  {pod_id}: {status}")
             last = status
         if status == "RUNNING":
-            if is_healthy(pod):
+            state = gpu_state(pod)
+            if state == "ok":
                 return pod
+            if state == "pending":
+                # The status flipped before the container reported in, so the
+                # GPU list simply isn't there yet. Give it RUNTIME_GRACE from
+                # the first RUNNING reading — stopping now would throw away a
+                # pod that is coming up fine.
+                if running_since is None:
+                    running_since = time.time()
+                    deadline = max(deadline, running_since + RUNTIME_GRACE + RUNNING_INTERVAL)
+                    log(f"  {pod_id}: RUNNING, waiting for it to report its GPU...")
+                if time.time() - running_since < RUNTIME_GRACE:
+                    time.sleep(RUNNING_INTERVAL)
+                    continue
+                stop_pod(pod_id, session=session)
+                raise Unavailable(f"RUNNING but never reported a GPU within {RUNTIME_GRACE}s")
             stop_pod(pod_id, session=session)
             raise Unavailable("started with no GPU attached — that machine's card is taken")
         # A pod that has just been told to start still reads EXITED for a few
