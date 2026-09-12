@@ -396,6 +396,73 @@ def projected_runtime(pod: dict, limit: float) -> int:
     return max(0, int((limit - spend_so_far(pod)) / rate * 3600))
 
 
+def gpu_id(pod: dict) -> str:
+    """The GPU model this pod is built around, e.g. 'NVIDIA A100-SXM4-80GB'.
+
+    This is the pod's *spec*, present whether it is running or stopped —
+    unlike runtime.gpus, which is empty until it boots. Ordering has to work
+    on a list of stopped pods, so it keys off this.
+    """
+    return ((pod.get("gpu") or {}).get("id") or "").strip()
+
+
+def gpu_types(pods: list[dict]) -> list[tuple[str, int]]:
+    """Distinct GPU models on the account, in account order, with pod counts.
+
+    Feeds the GPU priority list in Settings, which ranks card models rather
+    than individual pods.
+    """
+    counts: dict[str, int] = {}
+    for pod in pods:
+        gid = gpu_id(pod)
+        if gid:
+            counts[gid] = counts.get(gid, 0) + 1
+    return list(counts.items())
+
+
+def resolve_order(all_pods: list[dict],
+                  pod_order: list[str] | None = None,
+                  gpu_order: list[str] | None = None,
+                  log: Callable[[str], None] | None = None) -> list[str]:
+    """Turn the two saved preferences into the actual list of pod ids to try.
+
+    GPU model is the OUTER key — "every RTX 6000 before any A100" — because a
+    pod that gets rebuilt or added later must join its card's group rather than
+    landing at the bottom of a hand-dragged list of ids. Within a group an
+    already-running pod comes first (nothing to start and nothing to wait for),
+    then the per-pod order, then anything that order has never seen.
+
+    Neither list is a whitelist. An unranked GPU model sorts after every ranked
+    one and an unlisted pod after every listed one in its group, but every pod
+    on the account is always tried — a preference must never make hardware
+    invisible.
+    """
+    log = log or (lambda _m: None)
+    gpu_rank = {g: i for i, g in enumerate(gpu_order or [])}
+    pod_rank = {p: i for i, p in enumerate(pod_order or [])}
+    gpu_last = len(gpu_rank)
+    pod_last = len(pod_rank)
+
+    candidates = [(i, p) for i, p in enumerate(all_pods) if p.get("id")]
+    ordered = sorted(candidates, key=lambda ip: (
+        gpu_rank.get(gpu_id(ip[1]), gpu_last),
+        0 if ip[1].get("status") == "RUNNING" else 1,
+        pod_rank.get(ip[1]["id"], pod_last),
+        ip[0],
+    ))
+
+    if gpu_rank:
+        unranked = {gpu_id(p) for _, p in candidates if gpu_id(p) not in gpu_rank}
+        for gid in sorted(g for g in unranked if g):
+            log(f"{gid} is not in your GPU priority list — those pods go last")
+    if pod_rank:
+        extras = [p for _, p in candidates if p["id"] not in pod_rank]
+        if extras:
+            log(f"{len(extras)} pod(s) not in your saved order — trying them "
+                f"last within their GPU group")
+    return [p["id"] for _, p in ordered]
+
+
 def describe(pod: dict) -> str:
     """One line for logs and the pod-ordering list."""
     gpu = pod.get("gpu") or {}
@@ -579,8 +646,9 @@ def wake_first_available(pod_ids: list[str],
                          log: Callable[[str], None] | None = None,
                          should_cancel: Callable[[], bool] | None = None,
                          use_availability: bool = True,
-                         misses_out: list[str] | None = None) -> tuple[str, str] | None:
-    """Walk pod_ids in priority order and bring up the first one that works.
+                         misses_out: list[str] | None = None,
+                         gpu_order: list[str] | None = None) -> tuple[str, str] | None:
+    """Walk the account's pods in priority order and bring up the first that works.
 
     Returns (pod_id, comfy_url), or None when every candidate was unavailable —
     which is a normal outcome, not an error. A resume is pinned to one physical
@@ -595,24 +663,10 @@ def wake_first_available(pod_ids: list[str],
     all_pods = list_pods(key)
     pods = {p.get("id"): p for p in all_pods}
 
-    # Running pods first, so an already-warm one is found without starting
-    # anything; otherwise account order.
-    by_warmth = [p["id"] for p in sorted(
-        all_pods, key=lambda p: 0 if p.get("status") == "RUNNING" else 1) if p.get("id")]
-
-    if not pod_ids:
-        # No saved order yet (first run) — try everything.
-        pod_ids = by_warmth
-    else:
-        # The saved order is a PREFERENCE, not a whitelist. A pod created after
-        # the order was saved must still be tried, just last — otherwise a brand
-        # new pod is silently invisible to the chain until someone happens to
-        # press Refresh in Settings.
-        known = set(pod_ids)
-        extras = [pid for pid in by_warmth if pid not in known]
-        if extras:
-            log(f"{len(extras)} pod(s) not in your saved order — trying them last")
-        pod_ids = list(pod_ids) + extras
+    # GPU model ranks above the per-pod order, so "all the RTX 6000s, then the
+    # A100s" survives a pod being rebuilt. Both lists are preferences rather
+    # than whitelists — every pod on the account still gets tried.
+    pod_ids = resolve_order(all_pods, pod_ids, gpu_order, log=log)
 
     # Already running and healthy? Use it. Only ever one pod at a time.
     for pod_id in pod_ids:
@@ -686,6 +740,7 @@ def _main(argv: list[str]) -> int:
         "  python runpod_api.py start <pod-id>       resume one pod and wait for ComfyUI\n"
         "  python runpod_api.py stop <pod-id>        stop one pod\n"
         "  python runpod_api.py wake <id> [id ...]   walk the list, first available wins\n"
+        "  python runpod_api.py order                the chain order the saved config resolves to\n"
     )
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(usage)
@@ -728,6 +783,20 @@ def _main(argv: list[str]) -> int:
         elif cmd == "wake" and args:
             got = wake_first_available(args, log=print)
             print(f"\n=> {got[0]} at {got[1]}" if got else "\n=> none available")
+        elif cmd == "order":
+            # What the GUI's pod list shows, without opening the GUI.
+            import json
+            cfg_path = app_dir() / "video_creator_config.json"
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+            gpu_order = cfg.get("runpod_gpu_order") or []
+            print("GPU priority: " + (" > ".join(gpu_order) if gpu_order
+                                      else "(none set — card model is not considered)"))
+            pods = list_pods()
+            by_id = {x["id"]: x for x in pods if x.get("id")}
+            ids = resolve_order(pods, cfg.get("runpod_pod_order") or [], gpu_order,
+                                log=lambda m: print(f"  note: {m}"))
+            for n, pid in enumerate(ids, 1):
+                print(f"[{n}/{len(ids)}] {describe(by_id[pid])}")
         else:
             print(usage)
             return 1

@@ -4,7 +4,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QButtonGroup, QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QWidget,
+    QPushButton, QRadioButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from config import ConfigManager
@@ -17,7 +17,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self._config = config
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(1240)
+        self.setMinimumWidth(1120)
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint)
         self.setStyleSheet(parent.styleSheet() if parent else "")
 
@@ -25,19 +25,25 @@ class SettingsDialog(QDialog):
         layout.setSpacing(12)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        # Two equal columns so the dialog stays well inside a 1080p screen.
-        columns = QHBoxLayout()
-        columns.setSpacing(16)
-        left_w, right_w = QWidget(), QWidget()
-        left, right = QVBoxLayout(left_w), QVBoxLayout(right_w)
-        for col in (left, right):
-            col.setSpacing(12)
-            col.setContentsMargins(0, 0, 0, 0)
-        for w in (left_w, right_w):
-            w.setMinimumWidth(580)
-        columns.addWidget(left_w, stretch=1)
-        columns.addWidget(right_w, stretch=1)
-        layout.addLayout(columns)
+        # Tabs rather than columns: the dialog is only ever as tall as its
+        # tallest page, so a group can grow (the pod lists did) without
+        # pushing the whole thing off a 1080p screen, and each page gets the
+        # full width instead of half of it.
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
+
+        def page(title: str) -> QVBoxLayout:
+            w = QWidget()
+            lay = QVBoxLayout(w)
+            lay.setSpacing(12)
+            lay.setContentsMargins(16, 16, 16, 16)
+            tabs.addTab(w, title)
+            return lay
+
+        server_tab = page("Server")
+        folders_tab = page("Folders")
+        runpod_tab = page("RunPod")
+        prompt_tab = page("Prompts")
 
         # ── ComfyUI Server ───────────────────────────────────────────────
         server_group = QGroupBox("ComfyUI Server")
@@ -68,7 +74,7 @@ class SettingsDialog(QDialog):
         self._test_status.setWordWrap(True)
         self._test_status.setObjectName("status_dim")
         sl.addWidget(self._test_status)
-        left.addWidget(server_group)
+        server_tab.addWidget(server_group)
 
         # ── Folders ──────────────────────────────────────────────────────
         folders_group = QGroupBox("Folders")
@@ -88,7 +94,7 @@ class SettingsDialog(QDialog):
                                              "Folder shown on the Library tab (blank = the Output folder)…")
         self._archive_dir = self._folder_row(fl, "Archive:", config.get("archive_dir", ""),
                                              "Where archived videos are moved to (watch later in Desktop Video Browser)…")
-        left.addWidget(folders_group)
+        folders_tab.addWidget(folders_group)
 
         # ── Staging ──────────────────────────────────────────────────────
         stage_group = QGroupBox("Folder-loader workflows (Load Image List From Dir)")
@@ -103,7 +109,7 @@ class SettingsDialog(QDialog):
                                              "Local folder for staged images (blank = app's temp folder)…")
         self._runpod_input = self._text_row(stl, "RunPod input:", config.get("runpod_input_dir", ""),
                                             "Absolute path of ComfyUI's input folder on the pod…")
-        right.addWidget(stage_group)
+        server_tab.addWidget(stage_group)
 
         # ── FFmpeg ───────────────────────────────────────────────────────
         ff_group = QGroupBox("FFmpeg")
@@ -115,7 +121,7 @@ class SettingsDialog(QDialog):
         ff_note.setWordWrap(True)
         ff_note.setObjectName("status_dim")
         ffl.addWidget(ff_note)
-        right.addWidget(ff_group)
+        folders_tab.addWidget(ff_group)
 
         # ── Editor ───────────────────────────────────────────────────────
         ed_group = QGroupBox("Prompt editor")
@@ -126,7 +132,7 @@ class SettingsDialog(QDialog):
         self._font_spin.setValue(int(config.get("prompt_font_size", 10) or 10))
         edl.addWidget(self._font_spin)
         edl.addStretch()
-        right.addWidget(ed_group)
+        prompt_tab.addWidget(ed_group)
 
         # ── AI Prompt Rewriter ──────────────────────────────────────────
         rw_group = QGroupBox("AI Prompt Rewriter (local LM Studio)")
@@ -156,24 +162,52 @@ class SettingsDialog(QDialog):
         self._rewriter_status.setWordWrap(True)
         self._rewriter_status.setObjectName("status_dim")
         rwl.addWidget(self._rewriter_status)
-        right.addWidget(rw_group)
+        prompt_tab.addWidget(rw_group)
 
         # ── RunPod pod control ───────────────────────────────────────────
         pod_group = QGroupBox("RunPod pod control")
         pl = QVBoxLayout(pod_group)
         pl.setSpacing(10)
 
+        # GPU model outranks the per-pod order, so "all the RTX 6000s, then
+        # the A100s" keeps holding when a pod is rebuilt and its id changes.
+        pl.addWidget(self._caption("GPU priority — every pod on the first card is tried "
+                                   "before any pod on the second:"))
+        gpu_row = QHBoxLayout()
+        self._gpu_list = QListWidget()
+        self._gpu_list.setFixedHeight(72)
+        self._gpu_list.setToolTip("Card models on your account, best first.\n"
+                                  "A model that is not listed sorts last — a preference "
+                                  "never excludes hardware.")
+        self._gpu_list.model().rowsMoved.connect(lambda *_: self._rebuild_pod_list())
+        gpu_row.addWidget(self._gpu_list, stretch=1)
+        gpu_btns = QVBoxLayout()
+        gpu_btns.setSpacing(2)
+        for text, slot in (("▲", lambda: self._move_gpu(-1)), ("▼", lambda: self._move_gpu(1))):
+            b = QPushButton(text)
+            b.setObjectName("small_btn")
+            b.setFixedWidth(40)
+            b.clicked.connect(slot)
+            gpu_btns.addWidget(b)
+        gpu_btns.addStretch()
+        gpu_row.addLayout(gpu_btns)
+        pl.addLayout(gpu_row)
+
+        pl.addWidget(self._caption("Pod order — the chain works down this list:"))
         list_row = QHBoxLayout()
         self._pod_list = QListWidget()
         # Fixed, not minimum: QListWidget asks for 256px by default, which
         # over-commits the column and makes Qt overlap the rows below it.
-        self._pod_list.setFixedHeight(92)
-        self._pod_list.setToolTip("Tried top to bottom; the first available pod is used.\n"
+        self._pod_list.setFixedHeight(196)
+        self._pod_list.setToolTip("The real chain order, GPU priority already applied.\n"
+                                  "▲▼ moves a pod within its own card group.\n"
+                                  "A running pod is used first — nothing to start or wait for.\n"
                                   "Existing pods only — never created or terminated.\n"
                                   "Double-click a pod to point the RunPod URL at it.")
         self._pod_list.itemDoubleClicked.connect(self._use_pod)
         list_row.addWidget(self._pod_list, stretch=1)
         btn_col = QVBoxLayout()
+        btn_col.setSpacing(2)
         for text, slot in (("▲", lambda: self._move_pod(-1)), ("▼", lambda: self._move_pod(1))):
             b = QPushButton(text)
             b.setObjectName("small_btn")
@@ -269,13 +303,11 @@ class SettingsDialog(QDialog):
         self._pod_status.setWordWrap(True)
         self._pod_status.setObjectName("status_dim")
         pl.addWidget(self._pod_status)
-        # Left column: Server + Folders leave ~440px free there, while the
-        # right column already runs to the bottom of the dialog.
-        left.addWidget(pod_group)
+        runpod_tab.addWidget(pod_group)
         self._load_pod_order()
 
-        left.addStretch()
-        right.addStretch()
+        for lay in (server_tab, folders_tab, runpod_tab, prompt_tab):
+            lay.addStretch()
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._save)
@@ -287,6 +319,14 @@ class SettingsDialog(QDialog):
     def _label(self, text: str) -> QLabel:
         lbl = QLabel(text)
         lbl.setFixedWidth(110)
+        return lbl
+
+    def _caption(self, text: str) -> QLabel:
+        """Full-width heading above a list — unlike _label, which pins itself
+        to 110px to keep the form's label column aligned."""
+        lbl = QLabel(text)
+        lbl.setWordWrap(True)
+        lbl.setObjectName("status_dim")
         return lbl
 
     def _text_row(self, parent, label, value, placeholder) -> QLineEdit:
@@ -369,13 +409,99 @@ class SettingsDialog(QDialog):
 
     # ── RunPod pod control ───────────────────────────────────────────────
 
+    # The two saved preferences, read back out of the widgets.
+    def _current_gpu_order(self) -> list[str]:
+        return [self._gpu_list.item(i).data(Qt.ItemDataRole.UserRole)
+                for i in range(self._gpu_list.count())]
+
+    def _current_pod_order(self) -> list[str]:
+        return [self._pod_list.item(i).data(Qt.ItemDataRole.UserRole)
+                for i in range(self._pod_list.count())]
+
     def _load_pod_order(self):
-        """Show the saved order straight away; names arrive with Refresh."""
+        """Seed both lists from the config, then fetch the real pods.
+
+        Until the fetch lands the pod list can only show bare ids, which say
+        nothing about which card a row is — so the fetch is fired immediately
+        rather than waiting for someone to press Refresh. It runs on a thread:
+        opening Settings must not block on RunPod being reachable.
+        """
+        self._pods = {}
+        self._list_worker = None
+
+        self._gpu_list.clear()
+        for gid in (self._config.get("runpod_gpu_order", []) or []):
+            item = QListWidgetItem(gid)
+            item.setData(Qt.ItemDataRole.UserRole, gid)
+            self._gpu_list.addItem(item)
+
         self._pod_list.clear()
         for pod_id in (self._config.get("runpod_pod_order", []) or []):
             item = QListWidgetItem(pod_id)
             item.setData(Qt.ItemDataRole.UserRole, pod_id)
             self._pod_list.addItem(item)
+
+        import runpod_api
+        if runpod_api.have_key():
+            self._refresh_pods()
+        else:
+            self._pod_status.setText(
+                f"No API key — add one to {runpod_api.KEY_FILE_NAME} next to the app "
+                f"to see pod names and GPUs.")
+            self._pod_status.setStyleSheet(f"color: {COLORS['fg_dim']};")
+
+    def _set_pods(self, pods: list[dict]):
+        """Adopt a freshly fetched pod list into both widgets."""
+        import runpod_api
+        self._pods = {p.get("id"): p for p in pods if p.get("id")}
+
+        # GPU models: saved ranking first, then anything new in account order.
+        ranked = [g for g in self._current_gpu_order()
+                  if any(runpod_api.gpu_id(p) == g for p in pods)]
+        counts = dict(runpod_api.gpu_types(pods))
+        for gid, _n in runpod_api.gpu_types(pods):
+            if gid not in ranked:
+                ranked.append(gid)
+
+        self._gpu_list.clear()
+        for gid in ranked:
+            n = counts.get(gid, 0)
+            item = QListWidgetItem(f"{gid}  —  {n} pod{'s' if n != 1 else ''}")
+            item.setData(Qt.ItemDataRole.UserRole, gid)
+            self._gpu_list.addItem(item)
+
+        self._rebuild_pod_list()
+
+    def _rebuild_pod_list(self, select_id: str | None = None):
+        """Redraw the pod list as the order the chain will actually use.
+
+        The list is the preview: GPU priority is applied here exactly as
+        wake_first_available applies it, so what you see is what runs.
+        """
+        if not self._pods:
+            return
+        import runpod_api
+        order = runpod_api.resolve_order(list(self._pods.values()),
+                                         self._current_pod_order(),
+                                         self._current_gpu_order())
+        self._pod_list.clear()
+        for n, pid in enumerate(order, 1):
+            pod = self._pods[pid]
+            item = QListWidgetItem(f"{n}.  {runpod_api.describe(pod)}")
+            item.setData(Qt.ItemDataRole.UserRole, pid)
+            item.setData(Qt.ItemDataRole.UserRole + 1, runpod_api.gpu_id(pod))
+            self._pod_list.addItem(item)
+        if select_id in order:
+            self._pod_list.setCurrentRow(order.index(select_id))
+
+    def _move_gpu(self, delta: int):
+        row = self._gpu_list.currentRow()
+        new = row + delta
+        if row < 0 or not (0 <= new < self._gpu_list.count()):
+            return
+        self._gpu_list.insertItem(new, self._gpu_list.takeItem(row))
+        self._gpu_list.setCurrentRow(new)
+        self._rebuild_pod_list()
 
     def _test_sound(self):
         import alerts
@@ -406,42 +532,63 @@ class SettingsDialog(QDialog):
         self._pod_status.setStyleSheet(f"color: {COLORS['success']};")
 
     def _move_pod(self, delta: int):
+        """Move a pod within its own GPU group.
+
+        Crossing a group boundary is not allowed: GPU priority is the outer
+        key, so a pod dragged across one would simply snap back on the next
+        redraw, which reads as a broken button.
+        """
         row = self._pod_list.currentRow()
         new = row + delta
         if row < 0 or not (0 <= new < self._pod_list.count()):
             return
+        if self._pods:
+            gpu = self._pod_list.item(row).data(Qt.ItemDataRole.UserRole + 1)
+            if self._pod_list.item(new).data(Qt.ItemDataRole.UserRole + 1) != gpu:
+                self._pod_status.setText(
+                    f"{gpu} is a different card — reorder the GPU priority list "
+                    f"above to move a whole group.")
+                self._pod_status.setStyleSheet(f"color: {COLORS['fg_dim']};")
+                return
+
+        pod_id = self._pod_list.item(row).data(Qt.ItemDataRole.UserRole)
         self._pod_list.insertItem(new, self._pod_list.takeItem(row))
         self._pod_list.setCurrentRow(new)
+        if not self._pods:
+            return
+        self._rebuild_pod_list(select_id=pod_id)
+        if self._pod_list.currentRow() != new:
+            # resolve_order put it back: a RUNNING pod leads its group, because
+            # using it costs nothing to start and nothing to wait for.
+            self._pod_status.setText("A running pod is always tried first within its group.")
+            self._pod_status.setStyleSheet(f"color: {COLORS['fg_dim']};")
 
     def _refresh_pods(self):
-        """Fetch the account's pods, keeping whatever order is already set and
-        appending anything new at the bottom."""
-        import runpod_api
+        """Fetch the account's pods on a thread, keeping both saved orders."""
+        from ui.pod_worker import PodListWorker
+        if self._list_worker is not None:
+            return
         self._pod_status.setText("Fetching pods…")
         self._pod_status.setStyleSheet(f"color: {COLORS['fg_dim']};")
-        self._pod_status.repaint()
-        try:
-            pods = {p.get("id"): p for p in runpod_api.list_pods()}
-        except runpod_api.RunPodError as e:
-            self._pod_status.setText(str(e))
+        self._list_worker = PodListWorker()
+        self._list_worker.done.connect(self._pods_fetched)
+        self._list_worker.finished.connect(self._list_worker_finished)
+        self._list_worker.start()
+
+    def _list_worker_finished(self):
+        self._list_worker = None
+
+    def _pods_fetched(self, pods: list, error: str):
+        if error:
+            self._pod_status.setText(error)
             self._pod_status.setStyleSheet(f"color: {COLORS['error']};")
             return
-        except Exception as e:  # noqa: BLE001
-            self._pod_status.setText(f"{type(e).__name__}: {e}")
-            self._pod_status.setStyleSheet(f"color: {COLORS['error']};")
-            return
-
-        existing = [self._pod_list.item(i).data(Qt.ItemDataRole.UserRole)
-                    for i in range(self._pod_list.count())]
-        ordered = [pid for pid in existing if pid in pods]
-        ordered += [pid for pid in pods if pid not in ordered]
-
-        self._pod_list.clear()
-        for pid in ordered:
-            item = QListWidgetItem(runpod_api.describe(pods[pid]))
-            item.setData(Qt.ItemDataRole.UserRole, pid)
-            self._pod_list.addItem(item)
-        self._pod_status.setText(f"{len(ordered)} pod(s). Order them best first.")
+        self._set_pods(pods)
+        groups = len({self._gpu_list.item(i).data(Qt.ItemDataRole.UserRole)
+                      for i in range(self._gpu_list.count())})
+        self._pod_status.setText(
+            f"{len(pods)} pod(s) across {groups} card model(s). "
+            f"Order the cards first, then the pods within each.")
         self._pod_status.setStyleSheet(f"color: {COLORS['success']};")
 
     def _test_runpod_api(self):
@@ -493,8 +640,8 @@ class SettingsDialog(QDialog):
         c.set("prompt_font_size", int(self._font_spin.value()))
         c.set("rewriter_base_url", self._rewriter_url.text().strip())
         c.set("rewriter_model", self._rewriter_model.currentText().strip())
-        c.set("runpod_pod_order", [self._pod_list.item(i).data(Qt.ItemDataRole.UserRole)
-                                   for i in range(self._pod_list.count())])
+        c.set("runpod_gpu_order", self._current_gpu_order())
+        c.set("runpod_pod_order", self._current_pod_order())
         c.set("runpod_spend_limit", float(self._spend_limit.value()))
         c.set("runpod_auto_prompt", bool(self._pod_prompt.isChecked()))
         c.set("runpod_auto_stop_on_exit", bool(self._pod_autostop.isChecked()))
