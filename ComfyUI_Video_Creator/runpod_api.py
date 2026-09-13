@@ -680,7 +680,8 @@ def wake_first_available(pod_ids: list[str],
                          should_cancel: Callable[[], bool] | None = None,
                          use_availability: bool = True,
                          misses_out: list[str] | None = None,
-                         gpu_order: list[str] | None = None) -> tuple[str, str] | None:
+                         gpu_order: list[str] | None = None,
+                         skip: set[str] | None = None) -> tuple[str, str] | None:
     """Walk the account's pods in priority order and bring up the first that works.
 
     Returns (pod_id, comfy_url), or None when every candidate was unavailable —
@@ -700,6 +701,12 @@ def wake_first_available(pod_ids: list[str],
     # A100s" survives a pod being rebuilt. Both lists are preferences rather
     # than whitelists — every pod on the account still gets tried.
     pod_ids = resolve_order(all_pods, pod_ids, gpu_order, log=log)
+    if skip:
+        # In use by something else (the launch chooser said so): neither
+        # reused nor restarted, whatever state they are in.
+        for pod_id in [p for p in pod_ids if p in skip]:
+            log(f"{describe(pods[pod_id]) if pod_id in pods else pod_id}: in use elsewhere, skipping")
+        pod_ids = [p for p in pod_ids if p not in skip]
 
     # Already running and healthy? Use it. Only ever one pod at a time.
     for pod_id in pod_ids:

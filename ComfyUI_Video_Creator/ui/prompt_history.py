@@ -140,14 +140,15 @@ def add_results(workflow_path: Path, index: int, results: list[str],
     """Attach a finished run's output names — and how long it took — to
     the entry written when it was queued. ``timing`` is the worker's
     ``run_timing`` dict; its keys land on the entry as-is (``run_seconds``,
-    ``render_seconds``), so entries from before v2.2.0 simply lack them."""
+    ``render_seconds``, and from v2.3.0 ``sampler_steps`` / ``step_seconds`` /
+    ``sampler_seconds``), so older entries simply lack them."""
     entries = load_history(workflow_path)
     if 0 <= index < len(entries):
         existing = entries[index].setdefault("results", [])
         for r in results:
             if r not in existing:
                 existing.append(r)
-        for key in ("run_seconds", "render_seconds"):
+        for key in ("run_seconds", "render_seconds", "sampler_steps", "step_seconds", "sampler_seconds"):
             if timing and timing.get(key) is not None:
                 entries[index][key] = timing[key]
         save_history(workflow_path, entries)
@@ -158,17 +159,31 @@ def format_seconds(seconds: float) -> str:
     return f"{m}m {s:02d}s" if m else f"{s}s"
 
 
+def describe_steps(e: dict) -> str:
+    """"48 steps @ 3.2 s/step" when the run timed its sampler, else ""."""
+    steps, per = e.get("sampler_steps"), e.get("step_seconds")
+    if not isinstance(steps, int) or not isinstance(per, (int, float)) or steps <= 0:
+        return ""
+    return f"{steps} steps @ {per:.1f} s/step"
+
+
 def describe_timing(e: dict) -> str:
-    """"12m 34s (render 11m 50s)" for an entry that recorded its run
-    time; the render part is dropped when it isn't known or is the whole
-    run anyway. "" for entries made before timing was recorded."""
+    """"12m 34s (render 11m 50s · 48 steps @ 3.2 s/step)" for an entry
+    that recorded its run time; the render part is dropped when it isn't
+    known or is the whole run anyway, the steps part when the sampler
+    wasn't timed. "" for entries made before timing was recorded."""
     run = e.get("run_seconds")
     if not isinstance(run, (int, float)):
         return ""
     text = format_seconds(run)
+    inner = []
     render = e.get("render_seconds")
     if isinstance(render, (int, float)) and int(render) < int(run):
-        text += f" (render {format_seconds(render)})"
+        inner.append(f"render {format_seconds(render)}")
+    if describe_steps(e):
+        inner.append(describe_steps(e))
+    if inner:
+        text += " (" + " · ".join(inner) + ")"
     return text
 
 
@@ -206,6 +221,8 @@ def format_entry(e: dict) -> str:
     lines = [f"Saved: {e.get('timestamp', '?')}"]
     if describe_timing(e):
         lines.append(f"Generated in: {describe_timing(e)}")
+    if describe_steps(e) and isinstance(e.get("sampler_seconds"), (int, float)):
+        lines.append(f"Sampler: {describe_steps(e)} — about {format_seconds(e['sampler_seconds'])} denoising")
     if e.get("source"):
         lines.append(f"Source: {e['source']}")
     if e.get("app"):

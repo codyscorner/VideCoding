@@ -557,6 +557,8 @@ class MainWindow(QMainWindow):
                 return
             if ans == QMessageBox.StandardButton.Yes:
                 self._pod.shutdown()
+            else:
+                self._pod.leave_running()
         self._close_player()
         if self._queue_dlg is not None:
             self._queue_dlg.close()
