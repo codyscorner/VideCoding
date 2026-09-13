@@ -18,7 +18,7 @@ import workflow_tools
 from config import ConfigManager
 from file_ops import archive_paths, delete_paths, thumbnail_caches
 from media_tools import extract_embedded_prompt, probe
-from ui.prompt_history import find_entry_for_result, format_entry
+from ui.prompt_history import describe_timing, find_entry_for_result, format_entry
 from ui.styles import COLORS
 from ui.widgets import MediaBrowser, NoScrollComboBox
 
@@ -454,6 +454,9 @@ class LibraryTab(QWidget):
             rel = wf_path.relative_to(wf_dir).as_posix()
         except ValueError:
             rel = wf_path.name
-        self._made_lbl.setText(f"{rel}   ·   {entry.get('timestamp', '?')}")
+        made = f"{rel}   ·   {entry.get('timestamp', '?')}"
+        if describe_timing(entry):
+            made += f"   ·   ⏱ generated in {describe_timing(entry)}"
+        self._made_lbl.setText(made)
         self._details.setPlainText(format_entry(entry))
         self._details.setStyleSheet(f"color: {COLORS['fg_primary']};")

@@ -99,7 +99,7 @@ class RunWorker(QThread):
     plan = pyqtSignal(int, int)          # total sampler steps, post-sampler phases
     step = pyqtSignal(int, int)          # value, max (one sampler pass)
     phase = pyqtSignal(str)              # a post-sampler phase started
-    finished_ok = pyqtSignal(list)       # list[str] of local output paths
+    finished_ok = pyqtSignal(list, dict) # list[str] of local output paths, timing (see run_timing)
     failed = pyqtSignal(str)
 
     def __init__(self, config: dict, req: RunRequest):
@@ -242,6 +242,7 @@ class RunWorker(QThread):
 
             self.plan.emit(sum(info.sampler_steps), info.post_phases)
             self._log("Queuing workflow...")
+            t_render = time.time()
             self._prompt_id = self._client.queue(workflow)
             self._log(f"Queued ({self._prompt_id[:8]}...) — waiting for ComfyUI")
 
@@ -252,6 +253,7 @@ class RunWorker(QThread):
                 cancelled=lambda: self._cancelled,
             )
             self._check_cancel()
+            render_seconds = time.time() - t_render
 
             if self._runpod:
                 time.sleep(3)  # let the proxy catch up with the written file
@@ -263,8 +265,9 @@ class RunWorker(QThread):
                 stitched = self._stitch_extension(req.source_path, outputs[0], req)
                 results.append(str(stitched))
 
-            self._log(f"Done in {_fmt(time.time() - t0)}")
-            self.finished_ok.emit(results)
+            timing = run_timing(time.time() - t0, render_seconds)
+            self._log(f"Done in {_fmt(timing['run_seconds'])} (render {_fmt(timing['render_seconds'])})")
+            self.finished_ok.emit(results, timing)
         except _Cancelled:
             self._log("Cancelled.")
             self.failed.emit("Cancelled")
@@ -523,6 +526,14 @@ def _safe(name: str) -> str:
     # reported, and a leading dot makes a hidden file.
     keep = keep.strip("_.")
     return keep or "video"
+
+
+def run_timing(run_seconds: float, render_seconds: float) -> dict:
+    """What a finished run reports about how long it took, in the shape
+    the history entry stores: ``run_seconds`` is the whole run from Create
+    to the file on disk (upload, queue wait, render, download, stitch);
+    ``render_seconds`` is the ComfyUI part alone, queued to finished."""
+    return {"run_seconds": round(run_seconds, 1), "render_seconds": round(render_seconds, 1)}
 
 
 def _fmt(seconds: float) -> str:

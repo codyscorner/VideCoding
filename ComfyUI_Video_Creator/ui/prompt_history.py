@@ -135,14 +135,41 @@ def set_entry_flag(workflow_path: Path, entry: dict, key: str, value: bool) -> b
     return hit
 
 
-def add_results(workflow_path: Path, index: int, results: list[str]) -> None:
+def add_results(workflow_path: Path, index: int, results: list[str],
+                timing: dict | None = None) -> None:
+    """Attach a finished run's output names — and how long it took — to
+    the entry written when it was queued. ``timing`` is the worker's
+    ``run_timing`` dict; its keys land on the entry as-is (``run_seconds``,
+    ``render_seconds``), so entries from before v2.2.0 simply lack them."""
     entries = load_history(workflow_path)
     if 0 <= index < len(entries):
         existing = entries[index].setdefault("results", [])
         for r in results:
             if r not in existing:
                 existing.append(r)
+        for key in ("run_seconds", "render_seconds"):
+            if timing and timing.get(key) is not None:
+                entries[index][key] = timing[key]
         save_history(workflow_path, entries)
+
+
+def format_seconds(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    return f"{m}m {s:02d}s" if m else f"{s}s"
+
+
+def describe_timing(e: dict) -> str:
+    """"12m 34s (render 11m 50s)" for an entry that recorded its run
+    time; the render part is dropped when it isn't known or is the whole
+    run anyway. "" for entries made before timing was recorded."""
+    run = e.get("run_seconds")
+    if not isinstance(run, (int, float)):
+        return ""
+    text = format_seconds(run)
+    render = e.get("render_seconds")
+    if isinstance(render, (int, float)) and int(render) < int(run):
+        text += f" (render {format_seconds(render)})"
+    return text
 
 
 def describe_settings(settings: dict | None) -> str:
@@ -177,6 +204,8 @@ def describe_settings(settings: dict | None) -> str:
 def format_entry(e: dict) -> str:
     """Multi-line human-readable dump of one history entry."""
     lines = [f"Saved: {e.get('timestamp', '?')}"]
+    if describe_timing(e):
+        lines.append(f"Generated in: {describe_timing(e)}")
     if e.get("source"):
         lines.append(f"Source: {e['source']}")
     if e.get("app"):
@@ -635,6 +664,8 @@ class PromptHistoryDialog(QDialog):
                 line += f"   {settings}"
             if e.get("results"):
                 line += f"   → {Path(e['results'][-1]).name}"
+            if describe_timing(e):
+                line += f"   ⏱ {describe_timing(e)}"
             item = QListWidgetItem(line + "\n    " + preview)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             # Ticked = shown in the list. Unticking hides without deleting.

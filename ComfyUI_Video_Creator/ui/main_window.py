@@ -336,9 +336,9 @@ class MainWindow(QMainWindow):
             if self._active_panel is not None:
                 self._active_panel.append_log("Cancelling — interrupting the server…")
 
-    def _on_done(self, paths: list):
+    def _on_done(self, paths: list, timing: dict | None = None):
         if self._active_panel is not None:
-            self._active_panel.on_done(list(paths), self._active_req)
+            self._active_panel.on_done(list(paths), self._active_req, timing)
         self._library.refresh()
         # New files may have landed in the folder the Video tab is showing
         out_dir = Path((self.config.get("output_dir", "") or "").strip() or ".")

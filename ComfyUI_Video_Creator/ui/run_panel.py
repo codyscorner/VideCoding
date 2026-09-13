@@ -1493,7 +1493,7 @@ Queue it anyway?""",
         self._advance(self._sampler_total + self._phases_seen - 1)
         self._progress_lbl.setText(f"{label} · {self._elapsed()}")
 
-    def on_done(self, paths: list[str], req: RunRequest | None = None):
+    def on_done(self, paths: list[str], req: RunRequest | None = None, timing: dict | None = None):
         self._progress.setRange(0, 1)
         self._progress.setValue(1)
         self._progress.setFormat("DONE")
@@ -1518,7 +1518,7 @@ Queue it anyway?""",
         # CURRENT selection - by the time this run finishes, the user may
         # have already switched workflows to queue a different one.
         if req is not None and req.history_index is not None:
-            add_results(req.workflow_path, req.history_index, [Path(p).name for p in paths])
+            add_results(req.workflow_path, req.history_index, [Path(p).name for p in paths], timing)
 
     def on_failed(self, message: str):
         self._progress.setRange(0, 1)
