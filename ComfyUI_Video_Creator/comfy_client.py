@@ -126,7 +126,7 @@ class ComfyClient:
     # ------------------------------------------------------------------ #
 
     def wait(self, prompt_id: str, workflow: dict,
-             on_step: Callable[[int, int], None],
+             on_step: Callable[[int, int, str], None],
              on_phase: Callable[[str], None],
              cancelled: Callable[[], bool]) -> None:
         """Block until the prompt finishes. Live step progress over the
@@ -181,7 +181,8 @@ class ComfyClient:
                 mtype = payload.get("type")
                 data = payload.get("data", {}) or {}
                 if mtype == "progress":
-                    on_step(int(data.get("value", 0)), int(data.get("max", 1)))
+                    on_step(int(data.get("value", 0)), int(data.get("max", 1)),
+                            str(data.get("node") or ""))
                     minute = int(time.time() - start) // 60
                     if minute > last_minute:
                         last_minute = minute

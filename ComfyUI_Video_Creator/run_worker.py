@@ -241,6 +241,7 @@ class RunWorker(QThread):
             set_output_prefix(workflow, f"VideoCreator/{self._run_id}/{stem}")
 
             self.plan.emit(sum(info.sampler_steps), info.post_phases)
+            steps = StepTimer(sampler_nodes(workflow))
             self._log("Queuing workflow...")
             t_render = time.time()
             self._prompt_id = self._client.queue(workflow)
@@ -248,7 +249,7 @@ class RunWorker(QThread):
 
             self._client.wait(
                 self._prompt_id, workflow,
-                on_step=lambda v, m: self.step.emit(v, m),
+                on_step=lambda v, m, node="": (steps.on_step(v, m, node), self.step.emit(v, m)),
                 on_phase=self._on_phase,
                 cancelled=lambda: self._cancelled,
             )
@@ -265,8 +266,11 @@ class RunWorker(QThread):
                 stitched = self._stitch_extension(req.source_path, outputs[0], req)
                 results.append(str(stitched))
 
-            timing = run_timing(time.time() - t0, render_seconds)
-            self._log(f"Done in {_fmt(timing['run_seconds'])} (render {_fmt(timing['render_seconds'])})")
+            timing = run_timing(time.time() - t0, render_seconds, steps.result())
+            done = f"Done in {_fmt(timing['run_seconds'])} (render {_fmt(timing['render_seconds'])}"
+            if "step_seconds" in timing:
+                done += f", {timing['sampler_steps']} steps @ {timing['step_seconds']:.2f} s/step"
+            self._log(done + ")")
             self.finished_ok.emit(results, timing)
         except _Cancelled:
             self._log("Cancelled.")
@@ -528,12 +532,64 @@ def _safe(name: str) -> str:
     return keep or "video"
 
 
-def run_timing(run_seconds: float, render_seconds: float) -> dict:
+def run_timing(run_seconds: float, render_seconds: float, steps: dict | None = None) -> dict:
     """What a finished run reports about how long it took, in the shape
     the history entry stores: ``run_seconds`` is the whole run from Create
     to the file on disk (upload, queue wait, render, download, stitch);
-    ``render_seconds`` is the ComfyUI part alone, queued to finished."""
-    return {"run_seconds": round(run_seconds, 1), "render_seconds": round(render_seconds, 1)}
+    ``render_seconds`` is the ComfyUI part alone, queued to finished; the
+    sampler keys from ``StepTimer.result()`` ride along when there are any."""
+    timing = {"run_seconds": round(run_seconds, 1), "render_seconds": round(render_seconds, 1)}
+    timing.update(steps or {})
+    return timing
+
+
+def sampler_nodes(workflow: dict) -> set[str]:
+    """Ids of the nodes whose progress events are denoising steps: any
+    sampler class (KSampler, KSamplerAdvanced, SamplerCustomAdvanced, the
+    WAN wrappers...). Progress from anything else — tiled VAE decode,
+    an API node polling its job — is not a step and must not be timed."""
+    return {nid for nid, node in workflow.items()
+            if isinstance(node, dict) and "sampler" in str(node.get("class_type", "")).lower()}
+
+
+class StepTimer:
+    """Times the sampler from ComfyUI's per-step progress events.
+
+    A step is the gap between two consecutive progress events from the
+    same sampler node with the value up by one. The first event of a pass
+    has no gap to measure (the time before it holds the model load), so
+    an N-step pass yields N-1 gaps; the step COUNT is still N (the highest
+    value each sampler reported, summed over samplers, so a WAN hi/lo
+    split counts both halves). Events from nodes outside ``nodes`` are
+    ignored; an event with no node id (older servers) is taken as-is."""
+
+    def __init__(self, nodes: set[str], clock=time.time):
+        self._nodes = nodes
+        self._clock = clock
+        self._last: tuple[str, int, float] | None = None
+        self._gaps: list[float] = []
+        self._steps: dict[str, int] = {}
+
+    def on_step(self, value: int, _vmax: int, node: str = "") -> None:
+        if node and node not in self._nodes:
+            self._last = None
+            return
+        now = self._clock()
+        if self._last is not None and self._last[0] == node and value == self._last[1] + 1:
+            self._gaps.append(now - self._last[2])
+        self._last = (node, value, now)
+        self._steps[node] = max(self._steps.get(node, 0), value)
+
+    def result(self) -> dict:
+        """``sampler_steps`` (count), ``step_seconds`` (average per step)
+        and ``sampler_seconds`` (steps x average — the estimated time the
+        run spent denoising); {} when nothing was timed."""
+        if not self._gaps:
+            return {}
+        avg = sum(self._gaps) / len(self._gaps)
+        total = sum(self._steps.values())
+        return {"sampler_steps": total, "step_seconds": round(avg, 2),
+                "sampler_seconds": round(avg * total, 1)}
 
 
 def _fmt(seconds: float) -> str:
