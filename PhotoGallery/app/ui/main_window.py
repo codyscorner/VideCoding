@@ -1,4 +1,7 @@
 import os
+import subprocess
+import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -6,8 +9,9 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
     QSplitter, QHBoxLayout, QVBoxLayout, QFileDialog,
     QMessageBox, QDoubleSpinBox, QStatusBar, QCheckBox, QComboBox,
+    QApplication, QMenu, QProgressDialog,
 )
-from PyQt6.QtCore import Qt, QRect, pyqtSlot
+from PyQt6.QtCore import Qt, QRect, QTimer, QPoint, QUrl, QMimeData, pyqtSlot
 from PyQt6.QtGui import QKeyEvent, QPixmap
 
 from config import ConfigManager
@@ -19,10 +23,15 @@ from app.ui.image_viewer import ImageViewer
 from app.ui.image_info_bar import ImageInfoBar
 from app.ui.slideshow import SlideshowWindow
 from app.ui.compare_dialog import CompareDialog
+from app.ui.similarity_dialog import SimilarityDialog
 from app.workers.thumbnail_worker import (
     ThumbnailWorker, SUPPORTED_EXTENSIONS, THUMB_SOURCE_SIZE,
     is_video, load_video_frame,
 )
+from app.workers.similarity_worker import SimilarityIndexWorker
+from app.workers.similarity_search_worker import SimilaritySearchWorker
+from app.similarity_cache import SimilarityCache
+from app.similarity import compute_fingerprint
 
 FILTER_OPTIONS = [
     ("All", None),
@@ -51,6 +60,21 @@ class MainWindow(QMainWindow):
         self._slideshow_window: Optional[SlideshowWindow] = None
         self._pending_crop: Optional[QRect] = None
         self._compare_armed: bool = False
+        self._search_text: str = ""
+        self._search_debounce = QTimer(self)
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.setInterval(250)
+        self._search_debounce.timeout.connect(self._apply_filter)
+
+        self._similarity_cache = SimilarityCache(
+            self.config.config_file.parent / "photo_gallery_similarity_cache.sqlite3"
+        )
+        self._similarity_index_worker: Optional[SimilarityIndexWorker] = None
+        self._similarity_search_worker: Optional[SimilaritySearchWorker] = None
+        self._similarity_order: Optional[List[str]] = None   # ranked paths, best match first
+        self._similarity_scores: dict = {}                   # path -> 0..1 score for display
+        self._similarity_faces_only: bool = False
+        self._face_tolerance: float = self.config.get("similarity_face_tolerance", 0.6)
 
         self.setWindowTitle(f"Photo Gallery v{self.version}")
         self.setMinimumSize(900, 600)
@@ -175,6 +199,29 @@ class MainWindow(QMainWindow):
         self._filter_combo.currentIndexChanged.connect(self._on_filter_changed)
         layout.addWidget(self._filter_combo)
 
+        layout.addSpacing(8)
+
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("Search filename...")
+        self._search_edit.setClearButtonEnabled(True)
+        self._search_edit.setFixedWidth(220)
+        self._search_edit.setToolTip("Filter thumbnails by filename (case-insensitive substring)")
+        self._search_edit.textChanged.connect(self._on_search_changed)
+        layout.addWidget(self._search_edit)
+
+        self._find_similar_btn = QPushButton("Find Similar...")
+        self._find_similar_btn.setEnabled(False)
+        self._find_similar_btn.setToolTip(
+            "Pick or paste a reference image to find similar/matching-face photos in this folder"
+        )
+        self._find_similar_btn.clicked.connect(self._open_similarity_dialog)
+        layout.addWidget(self._find_similar_btn)
+
+        self._clear_similarity_btn = QPushButton("✕ Clear Similarity")
+        self._clear_similarity_btn.setVisible(False)
+        self._clear_similarity_btn.clicked.connect(self._clear_similarity)
+        layout.addWidget(self._clear_similarity_btn)
+
         self._rating_label = QLabel("")
         self._rating_label.setStyleSheet(f"color: #facc15; font-size: 11pt;")
         self._rating_label.setFixedWidth(120)
@@ -189,23 +236,38 @@ class MainWindow(QMainWindow):
         self._compare_btn.clicked.connect(self._arm_compare)
         layout.addWidget(self._compare_btn)
 
-        self._crop_btn = QPushButton("Crop")
+        self._crop_btn = QPushButton("Select Area")
         self._crop_btn.setCheckable(True)
         self._crop_btn.setEnabled(False)
-        self._crop_btn.setToolTip("Drag a rectangle on the image to select the crop area (Esc cancels)")
+        self._crop_btn.setToolTip(
+            "Drag a rectangle on the image (Esc cancels) — use it to copy that "
+            "area, search for similar images, or crop-and-save a copy"
+        )
         self._crop_btn.toggled.connect(self._on_crop_toggled)
         layout.addWidget(self._crop_btn)
 
-        self._save_btn = QPushButton("Save")
-        self._save_btn.setEnabled(False)
-        self._save_btn.setToolTip("Save the current rotation/crop over the original file")
-        self._save_btn.clicked.connect(lambda: self._save_edits(save_as=False))
-        layout.addWidget(self._save_btn)
+        self._copy_selection_btn = QPushButton("Copy Selection")
+        self._copy_selection_btn.setEnabled(False)
+        self._copy_selection_btn.setToolTip(
+            "Copy the selected area to the clipboard as an image (Ctrl+V to paste elsewhere)"
+        )
+        self._copy_selection_btn.clicked.connect(self._copy_selection_to_clipboard)
+        layout.addWidget(self._copy_selection_btn)
+
+        self._find_similar_selection_btn = QPushButton("Find Similar (Selection)")
+        self._find_similar_selection_btn.setEnabled(False)
+        self._find_similar_selection_btn.setToolTip(
+            "Search this folder for images similar to the selected area"
+        )
+        self._find_similar_selection_btn.clicked.connect(self._find_similar_from_selection)
+        layout.addWidget(self._find_similar_selection_btn)
 
         self._save_as_btn = QPushButton("Save As...")
         self._save_as_btn.setEnabled(False)
-        self._save_as_btn.setToolTip("Save the current rotation/crop to a new file")
-        self._save_as_btn.clicked.connect(lambda: self._save_edits(save_as=True))
+        self._save_as_btn.setToolTip(
+            "Save the rotated/cropped result to a NEW file — the original is never modified"
+        )
+        self._save_as_btn.clicked.connect(self._save_edits)
         layout.addWidget(self._save_as_btn)
 
         self._delete_btn = QPushButton("Delete")
@@ -252,6 +314,8 @@ class MainWindow(QMainWindow):
         self._filmstrip.image_selected.connect(self._on_image_selected)
         self._viewer.crop_selected.connect(self._on_crop_selected)
         self._viewer.activated.connect(self._open_current_video)
+        self._viewer.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._viewer.customContextMenuRequested.connect(self._show_viewer_context_menu)
 
     # ── Config ────────────────────────────────────────────────────────────────
 
@@ -270,6 +334,7 @@ class MainWindow(QMainWindow):
         self.config.set("slideshow_delay", self._delay_spin.value())
         self.config.set("fade_duration", self._fade_spin.value())
         self.config.set("include_subfolders", self._subfolders_check.isChecked())
+        self.config.set("similarity_face_tolerance", self._face_tolerance)
         self.config.set("window_width", self.width())
         self.config.set("window_height", self.height())
         self.config.set("filmstrip_width", self._filmstrip.width())
@@ -312,12 +377,41 @@ class MainWindow(QMainWindow):
             str(p) for p in entries
             if p.suffix.lower() in SUPPORTED_EXTENSIONS
         ]
+        self._clear_similarity(rerun_filter=False)
         self._apply_filter()
+        stills = [p for p in self._all_paths if not is_video(p)]
+        if stills:
+            self._restart_similarity_indexing(stills)
+
+    def _restart_similarity_indexing(self, paths: List[str]) -> None:
+        if self._similarity_index_worker and self._similarity_index_worker.isRunning():
+            self._similarity_index_worker.cancel()
+            self._similarity_index_worker.wait()
+        worker = SimilarityIndexWorker(paths, self._similarity_cache)
+        worker.progress.connect(self._on_similarity_index_progress)
+        worker.finished_ok.connect(self._on_similarity_index_done)
+        worker.error.connect(lambda msg: None)
+        self._similarity_index_worker = worker
+        worker.start()
+
+    @pyqtSlot(int, int)
+    def _on_similarity_index_progress(self, done: int, total: int) -> None:
+        if done == 0 or done == total or done % 200 == 0:
+            self.statusBar().showMessage(
+                f"Indexing for similarity search: {done} / {total}...", 0
+            )
+
+    @pyqtSlot()
+    def _on_similarity_index_done(self) -> None:
+        self._similarity_index_worker = None
+        self.statusBar().showMessage("Similarity index up to date.", 4000)
 
     def _current_filter(self):
         return FILTER_OPTIONS[self._filter_combo.currentIndex()][1]
 
     def _passes_filter(self, path: str) -> bool:
+        if self._search_text and self._search_text not in Path(path).name.lower():
+            return False
         rule = self._current_filter()
         if rule is None:
             return True
@@ -334,7 +428,12 @@ class MainWindow(QMainWindow):
             self._image_paths[self._current_index]
             if 0 <= self._current_index < len(self._image_paths) else None
         )
-        self._image_paths = [p for p in self._all_paths if self._passes_filter(p)]
+        if self._similarity_order:
+            all_set = set(self._all_paths)
+            ordered = [p for p in self._similarity_order if p in all_set]
+            self._image_paths = [p for p in ordered if self._passes_filter(p)]
+        else:
+            self._image_paths = [p for p in self._all_paths if self._passes_filter(p)]
         self._cancel_edit_state()
         self._compare_armed = False
 
@@ -389,6 +488,12 @@ class MainWindow(QMainWindow):
         if self._all_paths:
             self._apply_filter()
 
+    @pyqtSlot(str)
+    def _on_search_changed(self, text: str) -> None:
+        self._search_text = text.strip().lower()
+        if self._all_paths:
+            self._search_debounce.start()
+
     # ── Image Display ─────────────────────────────────────────────────────────
 
     def _show_image(self, index: int) -> None:
@@ -424,9 +529,15 @@ class MainWindow(QMainWindow):
         self._slideshow_btn.setEnabled(has_images)
         self._compare_btn.setEnabled(total > 1)
         self._delete_btn.setEnabled(has_images and 0 <= idx < total)
+        self._find_similar_btn.setEnabled(bool(self._all_paths))
         if has_images and 0 <= idx < total:
-            name = Path(self._image_paths[idx]).name
-            self._counter_label.setText(f"{idx + 1} of {total}  —  {name}")
+            path = self._image_paths[idx]
+            name = Path(path).name
+            text = f"{idx + 1} of {total}  —  {name}"
+            score = self._similarity_scores.get(path)
+            if score is not None:
+                text += f"  —  {score * 100:.0f}% match"
+            self._counter_label.setText(text)
         else:
             self._counter_label.setText("No images")
 
@@ -444,9 +555,11 @@ class MainWindow(QMainWindow):
         path = self._current_path()
         editable = bool(path) and not is_video(path or "")
         self._crop_btn.setEnabled(editable)
+        has_selection = editable and self._pending_crop is not None
         has_edits = editable and (self._viewer.rotation != 0 or self._pending_crop is not None)
-        self._save_btn.setEnabled(has_edits)
         self._save_as_btn.setEnabled(has_edits)
+        self._copy_selection_btn.setEnabled(has_selection)
+        self._find_similar_selection_btn.setEnabled(has_selection and bool(self._all_paths))
 
     def _current_path(self) -> Optional[str]:
         if 0 <= self._current_index < len(self._image_paths):
@@ -475,6 +588,90 @@ class MainWindow(QMainWindow):
         self._refresh_badges(self._current_index)
         self.statusBar().showMessage("Flagged ⚑" if state else "Flag removed", 3000)
 
+    # ── Find Similar ──────────────────────────────────────────────────────────
+
+    @pyqtSlot()
+    def _open_similarity_dialog(self) -> None:
+        dialog = SimilarityDialog(self, face_tolerance=self._face_tolerance)
+        if dialog.exec() != SimilarityDialog.DialogCode.Accepted or not dialog.reference_path:
+            return
+        self._face_tolerance = dialog.face_tolerance
+        self._run_similarity_search(dialog.reference_path, dialog.face_tolerance)
+
+    def _run_similarity_search(self, reference_path: str, face_tolerance: float) -> None:
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            ref_fingerprint = compute_fingerprint(reference_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not read that image:\n{e}")
+            return
+        finally:
+            self.unsetCursor()
+
+        if self._similarity_search_worker and self._similarity_search_worker.isRunning():
+            self._similarity_search_worker.cancel()
+            self._similarity_search_worker.wait()
+
+        progress = QProgressDialog("Searching for matches...", "Cancel", 0, 0, self)
+        progress.setWindowTitle("Find Similar")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
+        worker = SimilaritySearchWorker(
+            self._all_paths, self._similarity_cache, ref_fingerprint, face_tolerance
+        )
+        worker.finished_ok.connect(
+            lambda order, scores, used_faces, indexed, total_all: self._on_similarity_search_done(
+                progress, order, scores, used_faces, indexed, total_all
+            )
+        )
+        worker.error.connect(lambda msg: self._on_similarity_search_error(progress, msg))
+        progress.canceled.connect(worker.cancel)
+        self._similarity_search_worker = worker
+        worker.start()
+        progress.exec()
+
+    def _on_similarity_search_done(
+        self, progress: "QProgressDialog", order: List[str], scores: dict,
+        used_faces: bool, indexed: int, total_all: int,
+    ) -> None:
+        progress.close()
+        self._similarity_search_worker = None
+
+        if not order and indexed == 0:
+            QMessageBox.information(
+                self, "Not Indexed Yet",
+                "Similarity indexing hasn't finished for this folder yet.\n"
+                "Wait a bit and try again — indexing runs in the background."
+            )
+            return
+
+        self._similarity_order = order
+        self._similarity_scores = scores
+        self._similarity_faces_only = used_faces
+        self._clear_similarity_btn.setVisible(True)
+        self._apply_filter()
+
+        mode = "face match" if used_faces else "visual similarity"
+        msg = f"Find Similar ({mode}): {len(order)} result(s) from {indexed} of {total_all} indexed images."
+        if indexed < total_all:
+            msg += " Indexing is still running — results will improve."
+        self.statusBar().showMessage(msg, 8000)
+
+    def _on_similarity_search_error(self, progress: "QProgressDialog", message: str) -> None:
+        progress.close()
+        self._similarity_search_worker = None
+        QMessageBox.critical(self, "Search Failed", message)
+
+    def _clear_similarity(self, rerun_filter: bool = True) -> None:
+        self._similarity_order = None
+        self._similarity_scores = {}
+        self._similarity_faces_only = False
+        self._clear_similarity_btn.setVisible(False)
+        if rerun_filter and self._all_paths:
+            self._apply_filter()
+
     # ── Compare ───────────────────────────────────────────────────────────────
 
     @pyqtSlot()
@@ -493,7 +690,7 @@ class MainWindow(QMainWindow):
         self._viewer.set_crop_mode(checked)
         if checked:
             self.statusBar().showMessage(
-                "Crop: drag a rectangle on the image, then click Save or Save As (Esc cancels)."
+                "Selection: drag a rectangle, then Copy Selection / Find Similar (Selection) / Save As (Esc cancels)."
             )
         else:
             self._pending_crop = None
@@ -504,7 +701,8 @@ class MainWindow(QMainWindow):
         self._pending_crop = rect
         self._update_edit_controls()
         self.statusBar().showMessage(
-            f"Crop selected: {rect.width()} × {rect.height()} px — click Save or Save As.", 0
+            f"Selected: {rect.width()} × {rect.height()} px — "
+            "Copy Selection, Find Similar (Selection), or Save As.", 0
         )
 
     def _cancel_edit_state(self) -> None:
@@ -513,7 +711,34 @@ class MainWindow(QMainWindow):
             self._crop_btn.setChecked(False)
         self._viewer.set_crop_mode(False)
 
-    def _save_edits(self, save_as: bool) -> None:
+    def _copy_selection_to_clipboard(self) -> None:
+        if self._pending_crop is None:
+            return
+        pixmap = self._viewer.cropped_pixmap(self._pending_crop)
+        if pixmap is None or pixmap.isNull():
+            return
+        QApplication.clipboard().setPixmap(pixmap)
+        self.statusBar().showMessage("Selection copied to clipboard as an image.", 4000)
+
+    def _find_similar_from_selection(self) -> None:
+        if self._pending_crop is None:
+            return
+        pixmap = self._viewer.cropped_pixmap(self._pending_crop)
+        if pixmap is None or pixmap.isNull():
+            return
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        temp_path = os.path.join(tempfile.gettempdir(), f"photogallery_selection_{stamp}.png")
+        pixmap.save(temp_path, "PNG")
+        dialog = SimilarityDialog(
+            self, face_tolerance=self._face_tolerance, initial_reference_path=temp_path
+        )
+        if dialog.exec() != SimilarityDialog.DialogCode.Accepted or not dialog.reference_path:
+            return
+        self._face_tolerance = dialog.face_tolerance
+        self._run_similarity_search(dialog.reference_path, dialog.face_tolerance)
+
+    def _save_edits(self) -> None:
+        # The original file is never modified — this always writes a new file.
         path = self._current_path()
         if not path or is_video(path):
             return
@@ -522,25 +747,20 @@ class MainWindow(QMainWindow):
         if rotation == 0 and crop is None:
             return
 
-        dest = None
-        if save_as:
-            suffix = Path(path).suffix
-            suggested = str(Path(path).with_name(Path(path).stem + "_edited" + suffix))
-            dest, _ = QFileDialog.getSaveFileName(
-                self, "Save Image As", suggested,
-                f"Image (*{suffix})",
+        suffix = Path(path).suffix
+        suggested = str(Path(path).with_name(Path(path).stem + "_edited" + suffix))
+        dest, _ = QFileDialog.getSaveFileName(
+            self, "Save Image As", suggested,
+            f"Image (*{suffix})",
+        )
+        if not dest:
+            return
+        if os.path.normpath(dest) == os.path.normpath(path):
+            QMessageBox.warning(
+                self, "Cannot Overwrite Original",
+                "This app never modifies the original file — please choose a different filename."
             )
-            if not dest:
-                return
-        else:
-            reply = QMessageBox.question(
-                self, "Overwrite Image",
-                f"Save changes over the original file?\n\n{path}",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
+            return
 
         crop_box = None
         if crop is not None:
@@ -553,17 +773,8 @@ class MainWindow(QMainWindow):
             return
 
         self._cancel_edit_state()
-        if written == path:
-            # Refresh viewer + this file's thumbnail
-            self._viewer.show_image(path)
-            self._info_bar.update_image(path)
-            worker = ThumbnailWorker([path], THUMB_SOURCE_SIZE)
-            pix = worker._load_thumbnail(path)
-            if pix:
-                self._filmstrip.set_thumbnail(self._current_index, pix)
-                self._refresh_badges(self._current_index)
         self._update_edit_controls()
-        self.statusBar().showMessage(f"Saved: {written}", 5000)
+        self.statusBar().showMessage(f"Saved copy: {written}", 5000)
 
     # ── Delete ────────────────────────────────────────────────────────────────
 
@@ -603,6 +814,45 @@ class MainWindow(QMainWindow):
         else:
             self._show_image(min(idx, len(self._image_paths) - 1))
         self.statusBar().showMessage("Sent to Recycle Bin.", 5000)
+
+    # ── File context menu ────────────────────────────────────────────────────
+
+    @pyqtSlot(QPoint)
+    def _show_viewer_context_menu(self, pos: QPoint) -> None:
+        path = self._current_path()
+        if not path:
+            return
+        menu = QMenu(self)
+        menu.addAction("Copy File Path", lambda: self._copy_text_to_clipboard(path))
+        menu.addAction("Copy File Name", lambda: self._copy_text_to_clipboard(Path(path).name))
+        menu.addAction("Copy Folder Path", lambda: self._copy_text_to_clipboard(str(Path(path).parent)))
+        menu.addSeparator()
+        menu.addAction("Copy File", lambda: self._copy_file_to_clipboard(path))
+        menu.addSeparator()
+        menu.addAction("Reveal in Explorer", lambda: self._reveal_in_explorer(path))
+        menu.exec(self._viewer.mapToGlobal(pos))
+
+    def _copy_text_to_clipboard(self, text: str) -> None:
+        QApplication.clipboard().setText(text)
+        self.statusBar().showMessage(f"Copied to clipboard: {text}", 4000)
+
+    def _copy_file_to_clipboard(self, path: str) -> None:
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(path)])
+        QApplication.clipboard().setMimeData(mime)
+        self.statusBar().showMessage(
+            "File copied — press Ctrl+V in Explorer to paste a copy elsewhere.", 5000
+        )
+
+    def _reveal_in_explorer(self, path: str) -> None:
+        # Passed as a raw command string (not a list) so Windows' argv-quoting
+        # doesn't wrap "/select," together with the path — that breaks the
+        # switch and explorer silently falls back to a default folder.
+        norm = os.path.normpath(path)
+        try:
+            subprocess.run(f'explorer /select,"{norm}"')
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not open Explorer:\n{e}")
 
     # ── Video ─────────────────────────────────────────────────────────────────
 
@@ -717,6 +967,13 @@ class MainWindow(QMainWindow):
         if self._thumbnail_worker and self._thumbnail_worker.isRunning():
             self._thumbnail_worker.cancel()
             self._thumbnail_worker.wait()
+        if self._similarity_index_worker and self._similarity_index_worker.isRunning():
+            self._similarity_index_worker.cancel()
+            self._similarity_index_worker.wait()
+        if self._similarity_search_worker and self._similarity_search_worker.isRunning():
+            self._similarity_search_worker.cancel()
+            self._similarity_search_worker.wait()
+        self._similarity_cache.close()
         if self._slideshow_window:
             self._slideshow_window.close()
         self._save_config()

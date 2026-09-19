@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.0.0 — 2026-09-19
+
+Major release — filename/similarity search plus copy-only editing (original files are never modified again).
+
+### Added
+- **Filename search**: search box in the actions bar filters the filmstrip by filename substring (case-insensitive, debounced), stacking with the rating/flag filter.
+- **Find Similar...**: pick or paste a reference image (or use a live selection from the current photo — see "Select Area" below) to search the folder for matches. Results rank by face match (via `face_recognition`/`dlib`) when a face is detected, with an adjustable strictness slider (persisted to config); otherwise by general visual similarity (dHash + color histogram — no CLIP/torch, to keep the EXE small). A background indexer caches fingerprints per folder (SQLite, keyed by path/mtime/size) so re-scans are instant, and the search itself runs off the UI thread with a cancellable progress dialog so it no longer freezes the window on large libraries.
+- **Select Area**: drag a rectangle on the image (renamed from "Crop", which undersold it), then either **Copy Selection** (to the clipboard as an image), **Find Similar (Selection)** (search using that region directly, no intermediate file), or **Save As** (crop-and-save a new file).
+- **File context menu**: right-click the main viewer for Copy File Path / File Name / Folder Path, Copy File (paste a real copy elsewhere via Ctrl+V in Explorer), and Reveal in Explorer.
+
+### Changed
+- **The original file can no longer be overwritten, anywhere in the app.** Removed the old "Save" (overwrite) button — only "Save As..." remains, and it now refuses (with a warning) if the destination path matches the original.
+
+### Fixed
+- **Reveal in Explorer** was opening a default folder instead of selecting the file — Windows' automatic argv quoting was wrapping `/select,` together with the path when the path had spaces, breaking the switch. Now passed as a raw command string.
+
 ## v1.4.0 — 2026-07-19
 
 ### Added

@@ -11,6 +11,7 @@ DEFAULT_CONFIG = {
     "window_width": 1200,
     "window_height": 750,
     "include_subfolders": False,
+    "similarity_face_tolerance": 0.6,
 }
 
 
