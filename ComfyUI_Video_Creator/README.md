@@ -1,6 +1,6 @@
 # ComfyUI Video Creator
 
-Version: 2.4.4
+Version: 2.8.1
 
 Single-shot ComfyUI API workflow runner with a dark red theme. Pick an image, a video to extend, or nothing but a prompt (text → video), pick a workflow JSON, press Run, and the finished video lands in a local folder — from a local ComfyUI or a RunPod pod.
 
@@ -8,7 +8,7 @@ This is a **separate app from the ComfyUI Workflow Chain Automator**. It shares 
 
 ## Features
 
-- **Image → Video tab** — thumbnail grid of a chosen image folder (sort by name/date; thumbnails cached in `<folder>/thumbnails`), workflow dropdown, prompt editor, Run
+- **Image → Video tab** — thumbnail grid of a chosen image folder (sort by name/date; thumbnails cached in `<folder>/thumbnails`), workflow dropdown, prompt editor, Run. **Select several images and Create queues one run per image**, same prompt and settings, in grid order
 - **Video → Extend tab** — thumbnail grid of a chosen video folder. The selected video feeds the workflow as either:
   - its **last frame** (extracted with ffmpeg) into a `LoadImage` node or a folder loader — works with any image-to-video workflow, or
   - the **whole file** into a `LoadVideo` / `VHS_LoadVideo` node (MiniMax H3 reference workflows etc.)
@@ -31,7 +31,8 @@ This is a **separate app from the ComfyUI Workflow Chain Automator**. It shares 
 - **Keep trying until a pod frees up** — because the pods are pinned to specific machines, all of them being busy is normal. Rather than giving up, the app can re-sweep the list every few minutes for a set window (default: every 10 minutes for 2 hours) and **play a sound of your choosing** the moment one comes up, raising the window since the pod starts billing then. The same sound plays if the window expires with nothing found, so you get an answer either way without watching the screen
 - Live step progress over the ComfyUI websocket (polling fallback), Cancel that interrupts the server, built-in video player, run log
 
-- **Prompt history you curate** — every run is recorded with the prompt, LoRAs, seed, steps and length it used, in `<workflow>.prompt_history.json` beside the workflow (the same sidecar the Chain Automator writes). The 📜 History window has four tabs — **★ Favorites / Recent / All / Hidden** — with a tick box on every row: untick to move an entry to Hidden, tick it there to bring it back. **Nothing is ever removed from the file** unless you press Delete. Favorites are per template (the workflow JSON), with an *All templates* view across the lot. Row previews skip the boilerplate preamble a template's runs all share, so the preview shows what actually differs between runs
+- **↻ Lists / F5** — rescans every list from disk and the server (workflow dropdowns on all tabs, LoRAs from folder and server, Image/Video folders, Library) so a file renamed while the app runs shows under its new name; a selected LoRA the list no longer has is flagged red until you pick its new name
+- **Prompt history you curate** — every run is recorded with the prompt, LoRAs, seed, steps and length it used, in `<workflow>.prompt_history.json` beside the workflow (the same sidecar the Chain Automator writes). The 📜 History window has four tabs — **★ Favorites / Recent / All / Archived** — with a tick box on every row: untick (or press Archive) to move an entry to Archived, tick it there to bring it back. **Nothing is ever removed from the file** unless you press Delete. **Favorites live in their own file**, `<workflow>.prompt_favorites.json`: starring copies the prompt + settings there, so deleting or archiving history never loses a favorite. Favorites are per template (the workflow JSON), with an *All templates* view across the lot. Row previews skip the boilerplate preamble a template's runs all share, so the preview shows what actually differs between runs
 
 ## Requirements
 

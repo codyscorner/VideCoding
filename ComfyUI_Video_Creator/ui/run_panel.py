@@ -117,6 +117,7 @@ class RunPanel(QWidget):
     show_queue_requested = pyqtSignal()
     play_requested = pyqtSignal(str)
     workflows_changed = pyqtSignal()        # a workflow file was added — other tabs rescan
+    loras_changed = pyqtSignal(str, str)    # the shared LoRA list was reloaded (folder info, server info)
 
     def __init__(self, kind: str, config: ConfigManager, parent=None):
         super().__init__(parent)
@@ -126,6 +127,7 @@ class RunPanel(QWidget):
         # matching run already queued/running, or "" when it's not a repeat.
         self._queue_probe = None
         self._source: Path | None = None
+        self._sources: list[Path] = []          # every selected source; Create queues one run each
         self._workflow_path: Path | None = None
         self._workflow_rel = ""
         # Set by load_reused_entry() (Library → Reuse Settings) so a retry
@@ -179,8 +181,8 @@ class RunPanel(QWidget):
         refresh = QPushButton("↻")
         refresh.setObjectName("small_btn")
         refresh.setFixedWidth(36)
-        refresh.setToolTip("Rescan the workflow folder")
-        refresh.clicked.connect(self.reload_workflows)
+        refresh.setToolTip("Rescan the workflow folder — on every tab (F5 refreshes every list)")
+        refresh.clicked.connect(self.rescan_workflows)
         row.addWidget(refresh)
         self._clone_btn = QPushButton("⧉ Clone")
         self._clone_btn.setObjectName("secondary_btn")
@@ -596,6 +598,12 @@ class RunPanel(QWidget):
         idx = self._wf_combo.findData(remembered) if remembered else -1
         self._wf_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self._on_workflow_changed(self._wf_combo.currentIndex())
+
+    def rescan_workflows(self):
+        """The ↻ button: a workflow renamed or added on disk shows up here and
+        on the other tabs, which keep their own selection and edits."""
+        self.reload_workflows()
+        self.workflows_changed.emit()
 
     def refresh_workflow_list(self):
         """Repopulate the dropdown after a workflow file was added elsewhere,
@@ -1080,6 +1088,15 @@ class RunPanel(QWidget):
             self._lora_folder_info = "No LoRAs folder set (Settings > Folders > LoRAs)"
         self._refresh_lora_status_label()
         self._refill_lora_combos()
+        self.loras_changed.emit(self._lora_folder_info, self._lora_server_info)
+
+    def apply_shared_loras(self, folder_info: str, server_info: str):
+        """Another tab reloaded the shared LoRA list: show the same status and
+        refill this tab's dropdowns, keeping what each one has selected."""
+        self._lora_folder_info = folder_info
+        self._lora_server_info = server_info
+        self._refresh_lora_status_label()
+        self._refill_lora_combos()
 
     def _fetch_loras_from_server(self):
         url = self._cfg.server_url()
@@ -1107,6 +1124,7 @@ class RunPanel(QWidget):
         self._lora_server_info = f"{len(names)} from server"
         self._refresh_lora_status_label()
         self._refill_lora_combos()
+        self.loras_changed.emit(self._lora_folder_info, self._lora_server_info)
 
     def _rebuild_loras(self):
         self._clear_layout(self._lora_grid)
@@ -1152,6 +1170,8 @@ class RunPanel(QWidget):
             self._lora_rows.append((slot, combo, spins))
             self._fill_lora_combo(combo, slot)
             combo.currentTextChanged.connect(lambda _t: self._update_summary())
+            combo.currentTextChanged.connect(
+                lambda t, c=combo: self._mark_lora_missing(c, t.strip(), self._lora_names()))
         self._update_summary()
 
     def _fill_lora_combo(self, combo: QComboBox, slot: LoraSlot):
@@ -1166,6 +1186,20 @@ class RunPanel(QWidget):
         combo.addItems(names)
         self._set_combo_text(combo, current)
         combo.blockSignals(False)
+        self._mark_lora_missing(combo, current, names)
+
+    @staticmethod
+    def _mark_lora_missing(combo: QComboBox, name: str, names: list[str]):
+        """A selected name the list doesn't have any more — the file was renamed
+        or removed since the workflow was saved — gets a red edge and says so,
+        instead of failing at run time."""
+        missing = bool(name) and name != "None" and bool(names) and name not in names
+        combo.setStyleSheet(f"QComboBox {{ border: 1px solid {COLORS['error']}; }}" if missing else "")
+        combo.setToolTip(
+            f"\u26a0 \"{name}\" is not in the LoRA list — renamed or removed? Pick its new name."
+            if missing else
+            "LoRA file name as ComfyUI lists it (subfolders included). Type any part of a name "
+            "to filter the list; a name that isn't in the list is kept as typed.")
 
     @staticmethod
     def _set_combo_text(combo: QComboBox, text: str):
@@ -1266,17 +1300,18 @@ class RunPanel(QWidget):
             bits.append(f"{self._length_lbl.text().rstrip(':')}: {self._length_spin.value():g}")
         return bits
 
-    def _start_frame_path(self) -> Path | None:
+    def _start_frame_path(self, source: Path | None = None) -> Path | None:
         """The frame this run actually starts from, for the queue view. An
         image source is that frame; a video source starts from its LAST frame,
         which the Extend grid has already extracted and cached for the tile
         it's showing — reused here rather than shelling out to ffmpeg on a
         button click. Missing cache just means no preview, never a stall."""
-        if self._source is None:
+        source = source or self._source
+        if source is None:
             return None
         if self.kind == "image":
-            return self._source if self._source.exists() else None
-        cached = self._source.parent / "thumbnails" / (self._source.stem + "_last.jpg")
+            return source if source.exists() else None
+        cached = source.parent / "thumbnails" / (source.stem + "_last.jpg")
         return cached if cached.exists() else None
 
     def _positive_prompt_preview(self) -> str:
@@ -1293,6 +1328,22 @@ class RunPanel(QWidget):
     # ------------------------------------------------------------------ #
     # Source / run
     # ------------------------------------------------------------------ #
+
+    def set_sources(self, paths: list):
+        """The browser's whole selection. One image is the ordinary case;
+        several means Create queues one run per image, in this order, with
+        the same prompt and settings — as if each were picked and Created
+        by hand. The first is shown as the source preview."""
+        self._sources = [Path(p) for p in paths]
+        self.set_source(self._sources[0] if self._sources else None)
+        n = len(self._sources)
+        noun = "image" if self.kind == "image" else "video"
+        if n > 1:
+            names = ", ".join(p.name for p in self._sources[:4]) + (", …" if n > 4 else "")
+            self._source_lbl.setText(f"Selected: {n} {noun}s — {names}   (one run each, in this order)")
+            self._run_btn.setText(f"▶  {'Extend' if self.kind == 'video' else 'Create'} {n} Videos")
+        else:
+            self._run_btn.setText("▶  Extend Video" if self.kind == "video" else "▶  Create Video")
 
     def set_source(self, path: Path | None):
         self._source = path
@@ -1329,6 +1380,17 @@ class RunPanel(QWidget):
             return
         if self._source is None and self.kind != "text":
             return
+        sources = self._sources if len(self._sources) > 1 else [self._source]
+        queued = 0
+        for source in sources:
+            if self._queue_one(source):
+                queued += 1
+        if len(sources) > 1:
+            self.append_log(f"Queued {queued} of {len(sources)} selected images as separate runs")
+
+    def _queue_one(self, source: Path | None) -> bool:
+        """Build, guard, record and emit one run for one source. Returns
+        whether it was queued (the repeat guard can decline it)."""
         rel = Path(self._workflow_rel)
         label = rel.parts[0] if len(rel.parts) > 1 else rel.stem
         seed = int(self._seed_spin.value()) if self._seed_mode.currentIndex() == 1 else None
@@ -1336,7 +1398,7 @@ class RunPanel(QWidget):
         req = RunRequest(
             workflow_path=self._workflow_path,
             workflow_label=label,
-            source_path=self._source,
+            source_path=source,
             source_kind=self.kind,
             prompts=self._prompt_overrides(),
             lora_edits=self._lora_edits(),
@@ -1351,11 +1413,11 @@ class RunPanel(QWidget):
             output_dir_override=self._reused_output_dir,
             prompt_preview=self._positive_prompt_preview(),
             settings_summary="   |   ".join(self._summary_bits()),
-            thumb_path=self._start_frame_path(),
+            thumb_path=self._start_frame_path(source),
             output_name=self._name_edit.text().strip() if self._name_edit is not None else "",
         )
         if not self._confirm_not_a_repeat(req):
-            return
+            return False
         # Record what this run uses before it starts; the result file name is
         # attached to the same entry when the run finishes. Stored on the
         # request itself (not on self) so queuing several runs in a row -
@@ -1366,10 +1428,11 @@ class RunPanel(QWidget):
                 req.history_index = append_entry(
                     self._workflow_path,
                     make_entry(self._prompt_tuples(), self._collect_settings(),
-                               self._source.name if self._source else ""))
+                               source.name if source else ""))
             except Exception:  # noqa: BLE001
                 req.history_index = None
         self.run_requested.emit(req)
+        return True
 
     def _confirm_not_a_repeat(self, req: RunRequest) -> bool:
         """Asks before queuing a run that matches one already queued or
@@ -1518,7 +1581,8 @@ Queue it anyway?""",
         # CURRENT selection - by the time this run finishes, the user may
         # have already switched workflows to queue a different one.
         if req is not None and req.history_index is not None:
-            add_results(req.workflow_path, req.history_index, [Path(p).name for p in paths], timing)
+            add_results(req.workflow_path, req.history_index, [Path(p).name for p in paths], timing,
+                        source=req.source_path.name if req.source_path is not None else "")
 
     def on_failed(self, message: str):
         self._progress.setRange(0, 1)

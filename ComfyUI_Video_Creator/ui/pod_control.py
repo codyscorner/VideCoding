@@ -157,10 +157,17 @@ class PodControl(QWidget):
         self._retry_timer = QTimer(self)
         self._retry_timer.setSingleShot(True)
         self._retry_timer.timeout.connect(self._retry_tick)
+        self._balance_worker = None     # BalanceWorker in flight, or None
+        self._balance: dict = {}        # last account_balance() result
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
+        # A coloured dot carries the spend status (green ok / amber warn /
+        # red over); the text itself stays one solid light colour.
+        self._status_dot = QLabel("")
+        self._status_dot.setObjectName("subtitle")
+        lay.addWidget(self._status_dot)
         self._spend_lbl = QLabel("")
         self._spend_lbl.setObjectName("subtitle")
         lay.addWidget(self._spend_lbl)
@@ -243,6 +250,7 @@ class PodControl(QWidget):
         self._btn.setEnabled(self._start_worker is None and self._stop_worker is None)
         if not running and not self._retrying():
             self._spend_lbl.setText("")
+            self._status_dot.setText("")
 
     # ------------------------------------------------------------------ #
     # Launch
@@ -531,8 +539,9 @@ class PodControl(QWidget):
         self._retry_timer.start(int(wait * 1000))
         nxt = time.strftime("%H:%M", time.localtime(time.time() + wait))
         until = time.strftime("%H:%M", time.localtime(self._retry_deadline))
+        self._status_dot.setText(f"<span style='color:{COLORS['warning']}'>●</span>")
         self._spend_lbl.setText(
-            f"<span style='color:{COLORS['warning']}'>retrying — next {nxt}, until {until}</span>")
+            f"<span style='color:{COLORS['fg_primary']}'>retrying — next {nxt}, until {until}</span>")
         self._refresh_button()
 
     def _retry_tick(self):
@@ -548,6 +557,7 @@ class PodControl(QWidget):
         self._retry_timer.stop()
         self.log.emit("RunPod: gave up — no pod became available in the retry window")
         self._spend_lbl.setText("")
+        self._status_dot.setText("")
         self._alert()
         self._refresh_button()
 
@@ -656,17 +666,24 @@ class PodControl(QWidget):
         state = runpod_api.limit_state(pod, limit, warn_at)
         summary = runpod_api.spend_summary(pod)
 
-        color = {"warn": COLORS["warning"], "over": COLORS["error"]}.get(state, COLORS["fg_dim"])
+        dot = {"warn": COLORS["warning"], "over": COLORS["error"]}.get(state, COLORS["success"])
         if limit > 0:
             left = runpod_api.projected_runtime(pod, limit)
             summary += (f" / ${limit:.2f}  |  {runpod_api.format_duration(left)} left"
                         if left else f" / ${limit:.2f}  |  limit reached")
-        self._spend_lbl.setText(f"<span style='color:{color}'>{summary}</span>")
+        if self._balance:
+            summary += f"  |  balance ${self._balance['balance']:.2f}"
+        self._status_dot.setText(f"<span style='color:{dot}'>●</span>")
+        self._spend_lbl.setText(f"<span style='color:{COLORS['fg_primary']}'>{summary}</span>")
 
         rate = runpod_api.hourly_cost(pod)
         tip = [f"{pod.get('name') or self._pod_id}",
                f"${rate:.2f}/hr — ${runpod_api.spend_so_far(pod):.2f} of compute so far",
                "Storage bills separately and is not counted here."]
+        if self._balance:
+            tip.append("Account " + runpod_api.balance_summary(self._balance)
+                       + "  (whole account: every pod + storage)")
+        self._fetch_balance()
         if limit > 0:
             left = runpod_api.projected_runtime(pod, limit)
             when = time.strftime("%H:%M", time.localtime(time.time() + left))
@@ -681,6 +698,23 @@ class PodControl(QWidget):
                           f"about {runpod_api.format_duration(left)} of GPU time left")
         elif state == "over":
             self._hit_limit(pod)
+
+    def _fetch_balance(self):
+        """Refresh the account balance on a thread; the next poll shows it."""
+        from ui.pod_worker import BalanceWorker
+        if self._balance_worker is not None:
+            return
+        self._balance_worker = BalanceWorker()
+        self._balance_worker.done.connect(self._balance_fetched)
+        self._balance_worker.finished.connect(self._balance_worker_finished)
+        self._balance_worker.start()
+
+    def _balance_worker_finished(self):
+        self._balance_worker = None
+
+    def _balance_fetched(self, info: dict, error: str):
+        if info:
+            self._balance = info
 
     def _hit_limit(self, pod: dict):
         if not self._owned:

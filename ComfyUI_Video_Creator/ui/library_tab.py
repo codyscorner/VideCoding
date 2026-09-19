@@ -458,5 +458,5 @@ class LibraryTab(QWidget):
         if describe_timing(entry):
             made += f"   ·   ⏱ generated in {describe_timing(entry)}"
         self._made_lbl.setText(made)
-        self._details.setPlainText(format_entry(entry))
+        self._details.setPlainText(format_entry(entry, result=p.name))
         self._details.setStyleSheet(f"color: {COLORS['fg_primary']};")

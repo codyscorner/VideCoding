@@ -1,6 +1,7 @@
 import tempfile
 from pathlib import Path
 
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QSplitter,
@@ -12,6 +13,7 @@ from media_tools import extract_thumbnail, resolve_ffmpeg
 from run_worker import RunRequest, RunWorker, _base_stem, _workflow_labels
 from ui.library_tab import LibraryTab
 from ui.pod_control import PodControl
+from ui.prompt_history import source_for_result
 from ui.queue_dialog import QueueDialog
 from ui.run_panel import RunPanel
 from ui.settings_dialog import SettingsDialog
@@ -81,6 +83,13 @@ class MainWindow(QMainWindow):
         self._pod.server_changed.connect(self._update_mode_label)
         self._pod.log.connect(self._log_everywhere)
         header.addWidget(self._pod)
+        refresh_btn = QPushButton("↻ Lists")
+        refresh_btn.setObjectName("secondary_btn")
+        refresh_btn.setToolTip("Rescan every list from disk and the server — workflows, LoRAs, "
+                               "image and video folders, the Library (F5)")
+        refresh_btn.clicked.connect(self.refresh_lists)
+        header.addWidget(refresh_btn)
+        QShortcut(QKeySequence("F5"), self, activated=self.refresh_lists)
         settings_btn = QPushButton("⚙ Settings")
         settings_btn.setObjectName("secondary_btn")
         settings_btn.clicked.connect(self._open_settings)
@@ -88,8 +97,10 @@ class MainWindow(QMainWindow):
         root.addLayout(header)
 
         self._tabs = QTabWidget()
+        # Multi-select: every selected image becomes its own queued run.
         self._image_browser = MediaBrowser("image", self.config.get("image_dir", ""),
-                                           self.config.get("image_sort", "Name A→Z"), self._ffmpeg)
+                                           self.config.get("image_sort", "Name A→Z"), self._ffmpeg,
+                                           multi=True)
         self._image_panel = RunPanel("image", self.config)
         self._tabs.addTab(self._make_tab(self._image_browser, self._image_panel), "🖼  Image → Video")
 
@@ -130,6 +141,7 @@ class MainWindow(QMainWindow):
             for other in self._panels.values():
                 if other is not source:
                     source.workflows_changed.connect(other.refresh_workflow_list)
+                    source.loras_changed.connect(other.apply_shared_loras)
         self._video_browser.activated.connect(lambda p: self._play(str(p)))
         self._update_mode_label()
         # Initial scans run after the signals above are wired so the run
@@ -178,7 +190,7 @@ class MainWindow(QMainWindow):
                 split.setSizes([TWO_COLUMN_WIDTH, max(total - TWO_COLUMN_WIDTH, 560)])
 
     def _wire(self, browser: MediaBrowser, panel: RunPanel, dir_key: str, sort_key: str):
-        browser.selection_changed.connect(panel.set_source)
+        browser.selection_paths_changed.connect(panel.set_sources)
         browser.folder_changed.connect(lambda f: (self.config.set(dir_key, f), self.config.save()))
         browser.sort_changed.connect(lambda s: (self.config.set(sort_key, s), self.config.save()))
         self._wire_panel(panel)
@@ -190,6 +202,21 @@ class MainWindow(QMainWindow):
         panel.show_queue_requested.connect(self._show_queue)
         panel.set_queue_probe(self._queued_duplicate)
         panel.play_requested.connect(self._play)
+
+    def refresh_lists(self):
+        """F5 / ↻ Lists: everything that lists a folder or the server is
+        rescanned, so a file renamed while the app runs shows up under its
+        new name without a restart. Selections and unsaved edits are kept."""
+        for panel in self._panels.values():
+            panel.refresh_workflow_list()
+        first = self._image_panel                 # the list is shared; one reload broadcasts
+        first.reload_loras_from_folder(quiet=True)
+        if self.config.server_url():
+            first._fetch_loras_from_server()
+        self._image_browser.refresh()
+        self._video_browser.refresh()
+        self._library.refresh()
+        self._log_everywhere("Lists refreshed — workflows, LoRAs, image/video folders, Library")
 
     def _update_mode_label(self):
         mode = "RunPod" if self.config.is_runpod() else "Local"
@@ -212,8 +239,8 @@ class MainWindow(QMainWindow):
         if self.config.get("video_dir") != before["video_dir"] or self.config.get("ffmpeg_path") != before["ffmpeg_path"]:
             self._video_browser.set_folder(self.config.get("video_dir", ""))
         if self.config.get("workflow_dir") != before["workflow_dir"]:
-            self._image_panel.reload_workflows()
-            self._video_panel.reload_workflows()
+            for panel in self._panels.values():
+                panel.reload_workflows()
         if (self.config.get("output_dir") != before["output_dir"]
                 or self.config.get("library_dir") != before["library_dir"]):
             self._library.set_folder(self._library.effective_folder())
@@ -475,7 +502,7 @@ class MainWindow(QMainWindow):
         if kind == "image":
             self._reuse_image_source(panel, video_path)
         elif kind == "video":
-            self._reuse_video_source(browser, panel, entry.get("source") or "")
+            self._reuse_video_source(browser, panel, source_for_result(entry, video_path.name))
         else:
             panel.append_log("Reused settings from Library — text to video needs no source; "
                              "tweak the prompt, then Create.")

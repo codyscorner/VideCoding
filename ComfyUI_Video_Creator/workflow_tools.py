@@ -34,6 +34,10 @@ STATUS_NODE_LABELS = {
 }
 
 HISTORY_SUFFIX = ".prompt_history.json"
+FAVORITES_SUFFIX = ".prompt_favorites.json"
+# Sidecar files this app writes next to a workflow. They are JSON but not
+# workflows, so the scanner and the workflow dropdown must never list them.
+SIDECAR_SUFFIXES = (HISTORY_SUFFIX, FAVORITES_SUFFIX)
 
 LORA_EXTS = {".safetensors", ".pt", ".pt2", ".bin", ".pth", ".ckpt", ".pkl", ".sft"}
 _LORA_KEY_RE = re.compile(r"^lora(_name|_\d+)$")
@@ -202,8 +206,8 @@ def check_workflow_name(name: str) -> str:
         return "A file name cannot end with a dot or a space."
     if stem.split(".")[0].lower() in _RESERVED_NAMES:
         return f'"{stem}" is a name Windows reserves.'
-    if stem.lower().endswith(HISTORY_SUFFIX[:-5]):
-        return "That name collides with the prompt-history file naming."
+    if stem.lower().endswith(tuple(sfx[:-5] for sfx in SIDECAR_SUFFIXES)):
+        return "That name collides with the prompt-history / favorites file naming."
     return ""
 
 
@@ -246,7 +250,7 @@ def list_workflows(workflow_dir: Path) -> list[str]:
         return []
     out = []
     for p in sorted(workflow_dir.rglob("*.json"), key=lambda p: str(p).lower()):
-        if p.name.lower().endswith(HISTORY_SUFFIX):
+        if p.name.lower().endswith(SIDECAR_SUFFIXES):
             continue
         if any(part.lower() == "thumbnails" for part in p.relative_to(workflow_dir).parts):
             continue
