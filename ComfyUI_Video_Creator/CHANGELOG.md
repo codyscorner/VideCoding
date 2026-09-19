@@ -1,5 +1,42 @@
 # Changelog — ComfyUI Video Creator
 
+### v2.8.1
+- **Fix: favorites files showed up in the Workflow dropdown.** v2.8.0 added `<workflow>.prompt_favorites.json` beside each workflow, but the folder scanner only knew to skip the `.prompt_history.json` sidecar, so every favorites file was listed as if it were a workflow. Both sidecar suffixes are now held in one place (`SIDECAR_SUFFIXES` in `workflow_tools.py`) and the scanner, the dropdown and the new-workflow name check all use it; `prompt_history.py` imports the suffixes from there rather than keeping its own copy.
+
+### v2.8.0
+- **Favorites have their own file.** A starred prompt used to be a flag on its history row, so deleting that row — clearing out old prompts — took the favorite with it. Now ★ Favorite copies the prompt + settings into `<workflow>.prompt_favorites.json` beside the history sidecar, and the Favorites tab lists that file and nothing else. Delete on a history row never touches it; Delete on the Favorites tab (the button reads **Remove favorite** there) removes only the favorite. Archive and the tick box apply to history rows only.
+- History rows still show ★ when a favorite with the same prompt and settings exists, and ★ Unfavorite on such a row removes the favorite. The All view still floats starred prompts to the top.
+- Existing stars migrate on the first open: every `favorite: true` entry is copied into the favorites file (one per distinct prompt + settings) and the old flag is cleared from history.
+- The favorites file records when each prompt was starred (`favorited`), shown at the top of its details.
+
+### v2.7.1
+- **Spend and balance readouts are solid light text with a status dot.** The header line (uptime, spend, limit, balance) used to be tinted dim/amber/red by state and sank into the dark background. Now the text is the normal light colour and a ● in front of it carries the state: green within the limit, amber past the warning fraction, red over the limit (amber while retrying a start). The Settings → RunPod balance line does the same: green dot, red under $20.
+
+### v2.7.0
+- **Account balance on the Settings → RunPod tab.** A line above the GPU/pod lists reads `Account balance $368.47  |  $2.14/hr  |  ~172h left`, fetched with the pod list (same API key; the REST API has no account endpoint, so this one call goes to RunPod's GraphQL API). The rate and the hours are account-wide — every running pod plus storage — not just the pod this app is using. Turns amber under $20.
+- **Balance in the header too.** While a pod is in use the spend readout gains `| balance $368.47`, refreshed on the same once-a-minute poll, with the full account line in its tooltip. Fetched on a thread so the window never waits on it.
+- CLI: `python runpod_api.py balance`.
+
+### v2.6.2
+- **History dialog: "Hidden" is now "Archived".** The tab, the Hide/Unhide button (now Archive/Unarchive), the tooltips and the Delete prompt all say archive. The sidecar still stores the flag as `hidden`, so nothing on disk changes and older entries read as before.
+
+### v2.6.1
+- **One prompt over several images is one history entry again, not one per image.** v2.6.0 made the source image part of the "don't repeat the last entry" rule, so Create over five selected images wrote five entries that differed only in a file name the list never shows. The rule is back to prompt + settings; each finished file's own source is recorded per result (`sources` on the entry), so nothing is lost.
+- **Source and App lines dropped from the Prompt History dialog.** The dialog is about the prompt, and an entry can now stand for runs over several images. The Library's file details still show the source, looked up for the exact file on screen (per-result record first, then the entry-level source older sidecars wrote). Library → Reuse Settings on the Video → Extend tab uses the same per-file lookup.
+- Sidecar entries written by older versions read fine: they lack `sources` and fall back to the entry's `source`.
+
+### v2.6.0
+- **Select several images on the Image → Video tab and Create queues one run per image.** The image grid is multi-select now (Ctrl-click, Shift-click, Ctrl+A). With more than one selected, the source line reads `Selected: 3 images — a.png, b.png, c.png   (one run each, in this order)`, the button reads **▶ Create 3 Videos**, and pressing it does exactly what picking each image and pressing Create would: one run per image, same prompt and settings, queued in grid order (the sort on screen, top-left to bottom-right, not click order). Each run gets its own history entry, its own repeat-guard check and its own queue-view thumbnail; the log says `Queued 3 of 3 selected images as separate runs`. One selected image behaves as before. The Video → Extend tab stays single-select.
+- **Fix: a different image under the same prompt got folded into the previous history entry.** The sidecar's "don't append an exact repeat" rule compared prompt and settings but not the source, so running image B right after image A with the same prompt attached B's result to A's entry — and the Library then showed A as B's source. The source is part of the rule now. (Runs of the same image with the same prompt still share one entry, as before.)
+- Verified headless with a real MainWindow over a temp folder of three images: single select queues one run; select-all queues three in A→Z order with three distinct fingerprints, three history entries and the right thumbnails; deselecting reverts label and button; the Video tab's grid is still single-select; an empty selection queues nothing. The v2.3–2.5 suites still pass.
+
+### v2.5.0
+- **Rename a LoRA or a workflow while the app runs and every dropdown follows.** The `↻ Folder` / `⇣ Server` buttons above the LoRA rows only ever refilled the tab they were pressed on; the shared list changed underneath the other two tabs, whose dropdowns kept the old names until their workflow was reloaded. Now a reload on any tab broadcasts to all three (`loras_changed`), each keeping what it had selected. The workflow `↻` does the same for the workflow dropdown on every tab.
+- **A selected LoRA that is no longer in the list is flagged.** After a rename the dropdown still shows the old name (it is what the workflow file says, and a typed name is allowed), so it used to fail quietly at run time. Now the box gets a red edge and its tooltip says `⚠ "old.safetensors" is not in the LoRA list — renamed or removed? Pick its new name.` Picking any listed name clears it.
+- **`↻ Lists` in the header, and F5 anywhere:** rescans everything that lists a folder or the server — the workflow dropdowns on all tabs, the LoRA list from the folder and (when a server URL is set) from the server, the Image and Video folders, and the Library — keeping selections and unsaved edits.
+- Fix: changing the Workflows folder in Settings reloaded the Image and Video tabs' dropdowns but not the Text tab's.
+- Verified headless with a real MainWindow over a temp folder: a LoRA renamed on disk shows under its new name on all three tabs after one `↻ Folder` press with the stale selection flagged on each; picking the new name clears the flag and reaches the run request; a renamed workflow file shows on all tabs after one `↻`; F5 runs with no server; a removed LoRA stays flagged.
+
 ### v2.4.4
 - Chooser cells are centred, matching the headers — with only a few rows on show it reads better than mixed left/right alignment.
 

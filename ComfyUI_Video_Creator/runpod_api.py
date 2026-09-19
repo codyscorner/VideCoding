@@ -27,6 +27,9 @@ import requests
 from config import app_dir
 
 API_BASE = "https://api.runpod.io/v2"
+# The REST API has no account endpoint; balance and spend rate come from
+# the older GraphQL API, which takes the same key.
+GRAPHQL_URL = "https://api.runpod.io/graphql"
 API_KEY_ENV = "RUNPOD_API_KEY"
 
 # Fallback when the environment variable isn't set. Lives next to the EXE like
@@ -232,6 +235,48 @@ def test_connection(key: str | None = None) -> tuple[bool, str]:
 # ---------------------------------------------------------------------- #
 # Reads
 # ---------------------------------------------------------------------- #
+
+def account_balance(key: str | None = None, session: requests.Session | None = None) -> dict:
+    """Account-wide money, from GraphQL ``myself``: ``balance`` (USD left),
+    ``spend_per_hr`` (everything running right now, all pods, storage
+    included) and ``spend_limit`` (the console's own cap). Raises Fatal."""
+    s = session or _session(key)
+    query = "{ myself { clientBalance currentSpendPerHr spendLimit } }"
+    try:
+        r = s.post(GRAPHQL_URL, json={"query": query}, timeout=HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise Fatal(f"Can't reach RunPod ({type(e).__name__}). Check your connection.") from e
+    if r.status_code in (401, 403):
+        raise Fatal(f"RunPod rejected the API key ({r.status_code}). {_detail(r)}")
+    if not r.ok:
+        raise Fatal(f"RunPod returned {r.status_code}: {_detail(r)}")
+    try:
+        me = (r.json().get("data") or {}).get("myself") or {}
+    except ValueError as e:
+        raise Fatal(f"RunPod returned something that isn't JSON: {e}") from e
+    if not me:
+        raise Fatal("RunPod returned no account data for this key.")
+
+    def num(v):
+        try:
+            return float(v or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    return {"balance": num(me.get("clientBalance")),
+            "spend_per_hr": num(me.get("currentSpendPerHr")),
+            "spend_limit": num(me.get("spendLimit"))}
+
+
+def balance_summary(info: dict) -> str:
+    """One ASCII line: 'balance $368.47 | $2.14/hr | ~172h left'. The
+    hours are balance over the account-wide rate, so they cover every pod
+    and volume on the account, not only the one this app is using."""
+    bal, rate = info.get("balance", 0.0), info.get("spend_per_hr", 0.0)
+    line = f"balance ${bal:.2f}"
+    if rate > 0:
+        line += f"  |  ${rate:.2f}/hr  |  ~{format_duration(int(bal / rate * 3600))} left"
+    return line
+
 
 def list_pods(key: str | None = None) -> list[dict]:
     """Every pod on the account, stopped ones included."""
@@ -775,6 +820,7 @@ def _main(argv: list[str]) -> int:
     usage = (
         "usage:\n"
         "  python runpod_api.py test                 check RunPod is up and the key works\n"
+        "  python runpod_api.py balance              account balance and current spend rate\n"
         "  python runpod_api.py list                 show every pod on the account\n"
         "  python runpod_api.py status <pod-id>      one pod, with its health verdict\n"
         "  python runpod_api.py start <pod-id>       resume one pod and wait for ComfyUI\n"
@@ -795,7 +841,12 @@ def _main(argv: list[str]) -> int:
             ok, msg = test_connection()
             print(("OK    " if ok else "FAIL  ") + msg)
             return 0 if ok else 1
-        if cmd == "list":
+        if cmd == "balance":
+            info = account_balance()
+            print(balance_summary(info))
+            if info["spend_limit"]:
+                print(f"console spend limit: ${info['spend_limit']:.2f}")
+        elif cmd == "list":
             for p in list_pods():
                 flag = "healthy" if is_healthy(p) else ""
                 print(f"{p.get('id','?'):16} {describe(p)}  {flag}")

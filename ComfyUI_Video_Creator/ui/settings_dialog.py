@@ -169,6 +169,16 @@ class SettingsDialog(QDialog):
         pl = QVBoxLayout(pod_group)
         pl.setSpacing(10)
 
+        # Account balance, fetched with the pod list. Account-wide: the
+        # rate is every pod and volume on the account, not just ours.
+        self._balance_lbl = QLabel("")
+        self._balance_lbl.setObjectName("subtitle")
+        self._balance_lbl.setToolTip(
+            "Your RunPod account balance and what the whole account is spending right now\n"
+            "(every running pod plus storage). Hours left = balance / that rate.\n"
+            "Refreshes with the pod list.")
+        pl.addWidget(self._balance_lbl)
+
         # GPU model outranks the per-pod order, so "all the RTX 6000s, then
         # the A100s" keeps holding when a pod is rebuilt and its id changes.
         pl.addWidget(self._caption("GPU priority — every pod on the first card is tried "
@@ -572,11 +582,25 @@ class SettingsDialog(QDialog):
         self._pod_status.setStyleSheet(f"color: {COLORS['fg_dim']};")
         self._list_worker = PodListWorker()
         self._list_worker.done.connect(self._pods_fetched)
+        self._list_worker.balance.connect(self._balance_fetched)
         self._list_worker.finished.connect(self._list_worker_finished)
         self._list_worker.start()
 
     def _list_worker_finished(self):
         self._list_worker = None
+
+    def _balance_fetched(self, info: dict, error: str):
+        import runpod_api
+        if error or not info:
+            self._balance_lbl.setText(
+                f"<span style='color:{COLORS['fg_dim']}'>Balance unavailable — {error or 'no data'}</span>")
+            return
+        # Solid light text; the dot carries the status (green, red when the
+        # balance is nearly gone) — same scheme as the header readout.
+        dot = COLORS["success"] if info["balance"] >= 20 else COLORS["error"]
+        self._balance_lbl.setText(
+            f"<span style='color:{dot}'>●</span> <span style='color:{COLORS['fg_primary']}'>"
+            f"Account {runpod_api.balance_summary(info)}</span>")
 
     def _pods_fetched(self, pods: list, error: str):
         if error:

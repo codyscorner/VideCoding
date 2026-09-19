@@ -403,7 +403,8 @@ class VideoLoaderThread(QThread):
 
 class MediaBrowser(QWidget):
     """Folder row + sort + thumbnail grid for one media kind."""
-    selection_changed = pyqtSignal(object)   # Path | None
+    selection_changed = pyqtSignal(object)   # Path | None (the first selected, in grid order)
+    selection_paths_changed = pyqtSignal(list)  # every selected Path, in grid order
     activated = pyqtSignal(object)           # Path (double-click)
     folder_changed = pyqtSignal(str)
     sort_changed = pyqtSignal(str)
@@ -508,11 +509,14 @@ class MediaBrowser(QWidget):
         self.refresh()
 
     def selected_path(self) -> Path | None:
-        key = self.grid.selected_key()
-        return Path(key) if key else None
+        paths = self.selected_paths()
+        return paths[0] if paths else None
 
     def selected_paths(self) -> list[Path]:
-        return [Path(it.data(Qt.ItemDataRole.UserRole)) for it in self.grid.selectedItems()]
+        """In grid order (the sort on screen), not click order — so a
+        multi-select queues top-left to bottom-right, predictably."""
+        items = sorted(self.grid.selectedItems(), key=self.grid.row)
+        return [Path(it.data(Qt.ItemDataRole.UserRole)) for it in items]
 
     def _browse(self):
         start = self._folder if self._folder and Path(self._folder).is_dir() else str(Path.home())
@@ -536,7 +540,9 @@ class MediaBrowser(QWidget):
 
     def _on_selection(self):
         self._del_btn.setEnabled(bool(self.grid.selectedItems()))
-        self.selection_changed.emit(self.selected_path())
+        paths = self.selected_paths()
+        self.selection_changed.emit(paths[0] if paths else None)
+        self.selection_paths_changed.emit(paths)
 
     def _grid_menu(self, pos):
         item = self.grid.itemAt(pos)

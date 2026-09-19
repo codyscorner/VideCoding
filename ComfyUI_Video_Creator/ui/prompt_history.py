@@ -4,11 +4,16 @@ pop-out prompt editor.
 History lives in ``<workflow>.prompt_history.json`` next to the workflow —
 the same sidecar file the Chain Automator writes, so entries from either
 app show up in both. Entries written here carry extra keys (``prompts``,
-``settings``, ``source``, ``results``, ``favorite``, ``hidden``) that the
+``settings``, ``source``, ``sources``, ``results``, ``hidden``) that the
 Automator simply ignores.
 
+Favorites live in their OWN file, ``<workflow>.prompt_favorites.json``: a
+starred prompt is a copy, not a flag on the history row, so clearing old
+history can never take a favorite with it (v2.8.0 — it did, once). A history
+row shows a star when a favorite with the same prompt and settings exists.
+
 Nothing is ever dropped from the file: ``hidden`` only takes an entry out of
-the default list, and the Hidden tab brings it back. The history is meant to
+the default list, and the Archived tab brings it back. The history is meant to
 be a complete record, so curation is a view, not a deletion.
 """
 
@@ -30,7 +35,7 @@ from PyQt6.QtWidgets import (
 from ui.styles import COLORS
 from ui.widgets import NoScrollComboBox
 
-HISTORY_SUFFIX = ".prompt_history.json"
+from workflow_tools import FAVORITES_SUFFIX, HISTORY_SUFFIX  # noqa: F401  (single source of truth)
 APP_TAG = "ComfyUI Video Creator"
 
 
@@ -61,6 +66,80 @@ def save_history(workflow_path: Path, entries: list[dict]) -> None:
         pass
 
 
+def favorites_path(workflow_path: Path) -> Path:
+    return workflow_path.parent / f"{workflow_path.stem}{FAVORITES_SUFFIX}"
+
+
+def load_favorites(workflow_path: Path) -> list[dict]:
+    try:
+        with open(favorites_path(workflow_path), encoding="utf-8") as f:
+            data = json.load(f)
+        return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def save_favorites(workflow_path: Path, entries: list[dict]) -> None:
+    path = favorites_path(workflow_path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(entries, f, indent=2, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def find_favorite(favorites: list[dict], entry: dict) -> dict | None:
+    """The favorite standing for this prompt + settings, if any."""
+    return next((f for f in favorites if _same_run(f, entry)), None)
+
+
+def _favorite_copy(entry: dict) -> dict:
+    copy = {k: v for k, v in entry.items() if k not in ("favorite", "hidden")}
+    copy["favorited"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return copy
+
+
+def add_favorite(workflow_path: Path, entry: dict) -> bool:
+    """Copy a history entry into the favorites file. False if already there."""
+    favs = load_favorites(workflow_path)
+    if find_favorite(favs, entry) is not None:
+        return False
+    favs.append(_favorite_copy(entry))
+    save_favorites(workflow_path, favs)
+    return True
+
+
+def remove_favorite(workflow_path: Path, entry: dict) -> bool:
+    """Drop the favorite for this prompt + settings. History is untouched."""
+    favs = load_favorites(workflow_path)
+    keep = [f for f in favs if not _same_run(f, entry)]
+    if len(keep) == len(favs):
+        return False
+    save_favorites(workflow_path, keep)
+    return True
+
+
+def migrate_favorites(workflow_path: Path) -> int:
+    """One-time move of the old ``favorite: true`` flags into the favorites
+    file. The flag is cleared from history once copied, so an unstar later
+    is not undone by the next migration pass. Returns how many moved."""
+    entries = load_history(workflow_path)
+    flagged = [e for e in entries if e.get("favorite")]
+    if not flagged:
+        return 0
+    favs = load_favorites(workflow_path)
+    moved = 0
+    for e in flagged:
+        if find_favorite(favs, e) is None:
+            favs.append(_favorite_copy(e))
+            moved += 1
+        e.pop("favorite", None)
+    save_favorites(workflow_path, favs)
+    save_history(workflow_path, entries)
+    return moved
+
+
 def make_entry(prompts: list[tuple[str, str, str, bool, str]], settings: dict, source: str) -> dict:
     """prompts: (node_id, key, label, negative, text) tuples."""
     positives = [t.strip() for _n, _k, _l, neg, t in prompts if not neg and t.strip()]
@@ -79,6 +158,11 @@ def make_entry(prompts: list[tuple[str, str, str, bool, str]], settings: dict, s
 
 
 def _same_run(a: dict, b: dict) -> bool:
+    """Same prompt and same settings. The source image is deliberately NOT
+    part of this: running one prompt over five images is one history entry
+    with five results, not five near-identical entries (v2.6.0 tried that
+    and it flooded the list). Which image made which file is kept per
+    result in ``sources`` — see ``add_results``."""
     return (a.get("positive") == b.get("positive") and a.get("negative") == b.get("negative")
             and a.get("settings") == b.get("settings"))
 
@@ -108,16 +192,12 @@ def entry_matches(a: dict, b: dict) -> bool:
             and a.get("settings") == b.get("settings"))
 
 
-def is_favorite(entry: dict) -> bool:
-    return bool(entry.get("favorite"))
-
-
 def is_hidden(entry: dict) -> bool:
     return bool(entry.get("hidden"))
 
 
 def set_entry_flag(workflow_path: Path, entry: dict, key: str, value: bool) -> bool:
-    """Persist ``favorite`` or ``hidden`` on one entry. Returns whether it landed.
+    """Persist ``hidden`` on one entry. Returns whether it landed.
 
     Re-reads the file rather than writing back the whole in-memory list, so a
     run recorded by the app (or the Chain Automator) while the dialog sat open
@@ -136,18 +216,25 @@ def set_entry_flag(workflow_path: Path, entry: dict, key: str, value: bool) -> b
 
 
 def add_results(workflow_path: Path, index: int, results: list[str],
-                timing: dict | None = None) -> None:
+                timing: dict | None = None, source: str = "") -> None:
     """Attach a finished run's output names — and how long it took — to
     the entry written when it was queued. ``timing`` is the worker's
     ``run_timing`` dict; its keys land on the entry as-is (``run_seconds``,
     ``render_seconds``, and from v2.3.0 ``sampler_steps`` / ``step_seconds`` /
-    ``sampler_seconds``), so older entries simply lack them."""
+    ``sampler_seconds``), so older entries simply lack them. ``source`` is
+    the image/video this particular run started from; it is stored per
+    result file in ``sources`` so one entry can hold runs over several
+    images and the Library still shows the right one for each file."""
     entries = load_history(workflow_path)
     if 0 <= index < len(entries):
         existing = entries[index].setdefault("results", [])
         for r in results:
             if r not in existing:
                 existing.append(r)
+        if source:
+            sources = entries[index].setdefault("sources", {})
+            for r in results:
+                sources[r] = source
         for key in ("run_seconds", "render_seconds", "sampler_steps", "step_seconds", "sampler_seconds"):
             if timing and timing.get(key) is not None:
                 entries[index][key] = timing[key]
@@ -216,17 +303,26 @@ def describe_settings(settings: dict | None) -> str:
     return "  |  ".join(bits)
 
 
-def format_entry(e: dict) -> str:
-    """Multi-line human-readable dump of one history entry."""
+def source_for_result(e: dict, result: str) -> str:
+    """The image/video that made ``result``: the per-file record first,
+    then the entry-level source older sidecars (pre-v2.6.1) wrote."""
+    return ((e.get("sources") or {}).get(result) or e.get("source") or "") if result else ""
+
+
+def format_entry(e: dict, result: str | None = None) -> str:
+    """Multi-line human-readable dump of one history entry.
+
+    The Prompt History dialog calls this with no ``result`` and gets no
+    source line at all — an entry can stand for runs over several images,
+    and the list is about the prompt, not the file. The Library passes the
+    file it is showing and gets that file's own source."""
     lines = [f"Saved: {e.get('timestamp', '?')}"]
     if describe_timing(e):
         lines.append(f"Generated in: {describe_timing(e)}")
     if describe_steps(e) and isinstance(e.get("sampler_seconds"), (int, float)):
         lines.append(f"Sampler: {describe_steps(e)} — about {format_seconds(e['sampler_seconds'])} denoising")
-    if e.get("source"):
-        lines.append(f"Source: {e['source']}")
-    if e.get("app"):
-        lines.append(f"App: {e['app']}")
+    if result and source_for_result(e, result):
+        lines.append(f"Source: {source_for_result(e, result)}")
     lines.append("")
     prompts = e.get("prompts") or {}
     if prompts:
@@ -344,9 +440,10 @@ class PromptHistoryDialog(QDialog):
     ALL_WORKFLOWS = "__all__"
     DATE_MODES = [("all", "All dates"), ("year", "Year"), ("month", "Month"), ("day", "Day")]
 
-    # Views. "All" means all VISIBLE — Hidden is the way back to the rest.
+    # Views. "All" means all VISIBLE — Archived is the way back to the rest.
+    # (The stored flag is still ``hidden`` so older sidecars read as-is.)
     FAVORITES, RECENT, ALL, HIDDEN = range(4)
-    VIEWS = [(FAVORITES, "★ Favorites"), (RECENT, "Recent"), (ALL, "All"), (HIDDEN, "Hidden")]
+    VIEWS = [(FAVORITES, "★ Favorites"), (RECENT, "Recent"), (ALL, "All"), (HIDDEN, "Archived")]
     RECENT_LIMIT = 100
 
     def __init__(self, workflow_path: Path, parent=None, workflow_dir: Path | None = None):
@@ -354,10 +451,13 @@ class PromptHistoryDialog(QDialog):
         self._workflow_path = workflow_path
         self._workflow_dir = workflow_dir
         self._current_rel = self._rel(workflow_path)
-        # (rel, workflow json path, entry) for every entry, newest first
-        self._rows: list[tuple[str, Path, dict]] = []
-        self._filtered: list[tuple[str, Path, dict]] = []
-        self._selected: tuple[str, Path, dict] | None = None
+        # (rel, workflow json path, entry, kind) for every entry, newest
+        # first. kind is "history" (from the history sidecar) or "favorite"
+        # (from the favorites file) — they are separate records.
+        self._rows: list[tuple[str, Path, dict, str]] = []
+        self._filtered: list[tuple[str, Path, dict, str]] = []
+        self._selected: tuple[str, Path, dict, str] | None = None
+        self._favorites: list[dict] = []     # every favorite, for the star lookup
         self._load_rows()
 
         self.setWindowTitle(f"Prompt History — {workflow_path.name}")
@@ -380,27 +480,35 @@ class PromptHistoryDialog(QDialog):
                 pass
         return wf_path.name
 
-    def _load_rows(self):
-        self._rows = []
+    def _sidecars(self, suffix: str) -> list[Path]:
+        """Every workflow (json path) with a sidecar of this suffix, own first."""
         files: list[Path] = []
         if self._workflow_dir is not None and self._workflow_dir.is_dir():
-            files = sorted(self._workflow_dir.rglob(f"*{HISTORY_SUFFIX}"), key=lambda p: str(p).lower())
-        own = history_path(self._workflow_path)
+            files = sorted(self._workflow_dir.rglob(f"*{suffix}"), key=lambda p: str(p).lower())
+        own = self._workflow_path.parent / f"{self._workflow_path.stem}{suffix}"
         if own not in files:
             files.insert(0, own)
-        for hist in files:
-            wf_path = hist.with_name(hist.name[: -len(HISTORY_SUFFIX)] + ".json")
+        return [f.with_name(f.name[: -len(suffix)] + ".json") for f in files]
+
+    def _load_rows(self):
+        self._rows = []
+        self._favorites = []
+        for wf_path in self._sidecars(HISTORY_SUFFIX):
+            migrate_favorites(wf_path)      # old favorite flags -> favorites file
             rel = self._rel(wf_path)
-            try:
-                with open(hist, encoding="utf-8") as f:
-                    data = json.load(f)
-            except (OSError, ValueError):
-                continue
-            if isinstance(data, list):
-                for e in data:
-                    if isinstance(e, dict):
-                        self._rows.append((rel, wf_path, e))
+            for e in load_history(wf_path):
+                if isinstance(e, dict):
+                    self._rows.append((rel, wf_path, e, "history"))
+        for wf_path in self._sidecars(FAVORITES_SUFFIX):
+            rel = self._rel(wf_path)
+            for e in load_favorites(wf_path):
+                self._rows.append((rel, wf_path, e, "favorite"))
+                self._favorites.append(e)
         self._rows.sort(key=lambda r: r[2].get("timestamp", ""), reverse=True)
+
+    def _starred(self, entry: dict) -> bool:
+        """Whether a favorite with this prompt + settings exists."""
+        return find_favorite(self._favorites, entry) is not None
 
     # ------------------------------------------------------------------ #
     # UI
@@ -414,10 +522,11 @@ class PromptHistoryDialog(QDialog):
         self._tabs = QTabBar()
         self._tabs.setExpanding(False)
         self._tabs.setToolTip(
-            "Favorites — the prompts you starred\n"
-            "Recent — the newest entries you haven't hidden\n"
-            "All — everything you haven't hidden\n"
-            "Hidden — tucked away, still in the file, untick to bring back")
+            "Favorites — the prompts you starred, kept in their own file so clearing\n"
+            "            history never touches them\n"
+            "Recent — the newest entries you haven't archived\n"
+            "All — everything you haven't archived\n"
+            "Archived — tucked away, still in the file, tick to bring back")
         for _key, label in self.VIEWS:
             self._tabs.addTab(label)
         self._tabs.currentChanged.connect(lambda _i: self._populate())
@@ -428,9 +537,10 @@ class PromptHistoryDialog(QDialog):
         self._wf_combo = NoScrollComboBox()
         self._wf_combo.setToolTip("The workflow JSON each history file belongs to")
         counts: dict[str, int] = {}
-        for rel, _p, _e in self._rows:
-            counts[rel] = counts.get(rel, 0) + 1
-        self._wf_combo.addItem(f"All templates ({len(self._rows)})", self.ALL_WORKFLOWS)
+        for rel, _p, _e, kind in self._rows:
+            if kind == "history":
+                counts[rel] = counts.get(rel, 0) + 1
+        self._wf_combo.addItem(f"All templates ({sum(counts.values())})", self.ALL_WORKFLOWS)
         self._wf_combo.addItem(f"{self._current_rel} ({counts.get(self._current_rel, 0)})  — current", self._current_rel)
         for rel in sorted(counts, key=str.lower):
             if rel != self._current_rel:
@@ -495,19 +605,23 @@ class PromptHistoryDialog(QDialog):
         brow.addSpacing(18)
         self._fav_btn = QPushButton("★ Favorite")
         self._fav_btn.setObjectName("secondary_btn")
-        self._fav_btn.setToolTip("Star this prompt so it shows on the Favorites tab")
+        self._fav_btn.setToolTip("Copy this prompt + settings into the favorites file "
+                                 "(<workflow>.prompt_favorites.json). Deleting or archiving "
+                                 "history never touches favorites.")
         self._fav_btn.clicked.connect(self._toggle_favorite)
         brow.addWidget(self._fav_btn)
-        self._hide_btn = QPushButton("Hide")
+        self._hide_btn = QPushButton("Archive")
         self._hide_btn.setObjectName("secondary_btn")
         self._hide_btn.setToolTip("Take this entry out of the list. It stays in the history "
-                                  "file and comes back from the Hidden tab — same as the tick box.")
+                                  "file and comes back from the Archived tab — same as the tick box.")
         self._hide_btn.clicked.connect(self._toggle_hidden)
         brow.addWidget(self._hide_btn)
         del_btn = QPushButton("Delete")
         del_btn.setObjectName("secondary_btn")
-        del_btn.setToolTip("Remove the entry from the history file for good. "
-                           "To just get it out of the way, use Hide.")
+        self._del_btn = del_btn
+        del_btn.setToolTip("Remove the entry from the history file for good (favorites are "
+                           "kept separately and are not affected). On the Favorites tab: "
+                           "remove the favorite only. To just get it out of the way, use Archive.")
         del_btn.clicked.connect(self._delete)
         brow.addWidget(del_btn)
         brow.addStretch()
@@ -547,7 +661,7 @@ class PromptHistoryDialog(QDialog):
         else:
             self._date_value.setEnabled(True)
             counts: dict[str, int] = {}
-            for _r, _p, e in self._workflow_rows():
+            for _r, _p, e, _k in self._workflow_rows():
                 k = self._date_key(e, mode)
                 if k:
                     counts[k] = counts.get(k, 0) + 1
@@ -621,7 +735,8 @@ class PromptHistoryDialog(QDialog):
     @staticmethod
     def _entry_text(rel: str, e: dict) -> str:
         parts = [rel, e.get("positive", ""), e.get("negative", ""), describe_settings(e.get("settings")),
-                 " ".join(e.get("results", []) or []), e.get("source", "") or ""]
+                 " ".join(e.get("results", []) or []), e.get("source", "") or "",
+                 " ".join((e.get("sources") or {}).values())]
         for p in (e.get("prompts") or {}).values():
             parts.append(p.get("text", ""))
         return "\n".join(parts).lower()
@@ -629,24 +744,27 @@ class PromptHistoryDialog(QDialog):
     def _view_rows(self, rows: list) -> list:
         """Apply the selected tab to an already workflow/date/search-filtered list."""
         view = self._tabs.currentIndex()
-        if view == self.HIDDEN:
-            return [r for r in rows if is_hidden(r[2])]
-        visible = [r for r in rows if not is_hidden(r[2])]
         if view == self.FAVORITES:
-            return [r for r in visible if is_favorite(r[2])]
+            # The favorites file, and nothing else — its own space.
+            return [r for r in rows if r[3] == "favorite"]
+        history = [r for r in rows if r[3] == "history"]
+        if view == self.HIDDEN:
+            return [r for r in history if is_hidden(r[2])]
+        visible = [r for r in history if not is_hidden(r[2])]
         if view == self.RECENT:
             # Strictly newest first and capped: "recent" answers "what did I
             # just run", so floating favourites into it would defeat the tab.
             return visible[:self.RECENT_LIMIT]
         # All — the browse-everything view, so starred prompts lead.
-        return sorted(visible, key=lambda r: not is_favorite(r[2]))
+        return sorted(visible, key=lambda r: not self._starred(r[2]))
 
     def _update_tab_counts(self, rows: list):
+        history = [r for r in rows if r[3] == "history"]
         counts = {
-            self.FAVORITES: sum(1 for r in rows if is_favorite(r[2]) and not is_hidden(r[2])),
-            self.RECENT: min(self.RECENT_LIMIT, sum(1 for r in rows if not is_hidden(r[2]))),
-            self.ALL: sum(1 for r in rows if not is_hidden(r[2])),
-            self.HIDDEN: sum(1 for r in rows if is_hidden(r[2])),
+            self.FAVORITES: sum(1 for r in rows if r[3] == "favorite"),
+            self.RECENT: min(self.RECENT_LIMIT, sum(1 for r in history if not is_hidden(r[2]))),
+            self.ALL: sum(1 for r in history if not is_hidden(r[2])),
+            self.HIDDEN: sum(1 for r in history if is_hidden(r[2])),
         }
         for key, label in self.VIEWS:
             self._tabs.setTabText(key, f"{label} ({counts[key]})")
@@ -666,14 +784,15 @@ class PromptHistoryDialog(QDialog):
         self._filtered = self._view_rows(matched)
 
         keep = self._selected
-        bodies = [self._prompt_body(e) for _r, _p, e in self._filtered]
+        bodies = [self._prompt_body(e) for _r, _p, e, _k in self._filtered]
         prefix = self._shared_prefix(bodies)
         # Tick boxes are written here, and each write fires itemChanged.
         self._list.blockSignals(True)
         self._list.clear()
-        for (rel, _p, e), body in zip(self._filtered, bodies):
+        for (rel, _p, e, kind), body in zip(self._filtered, bodies):
             preview = self._clip(body, prefix)
-            line = ("★ " if is_favorite(e) else "") + e.get("timestamp", "?")
+            starred = kind == "favorite" or self._starred(e)
+            line = ("★ " if starred else "") + e.get("timestamp", "?")
             if show_wf:
                 line += f"   [{rel}]"
             settings = describe_settings(e.get("settings"))
@@ -684,23 +803,27 @@ class PromptHistoryDialog(QDialog):
             if describe_timing(e):
                 line += f"   ⏱ {describe_timing(e)}"
             item = QListWidgetItem(line + "\n    " + preview)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            # Ticked = shown in the list. Unticking hides without deleting.
-            item.setCheckState(Qt.CheckState.Unchecked if is_hidden(e) else Qt.CheckState.Checked)
+            if kind == "history":
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                # Ticked = shown in the list. Unticking archives without deleting.
+                item.setCheckState(Qt.CheckState.Unchecked if is_hidden(e) else Qt.CheckState.Checked)
             self._list.addItem(item)
         self._list.blockSignals(False)
 
         self._count_lbl.setText(f"{len(self._filtered)} of {len(rows)}")
+        # Before the selection lands: _on_select disables Archive on a
+        # favorite row, and that must not be undone here afterwards.
+        for b in (self._use_btn, self._use_all_btn, self._fav_btn, self._hide_btn, self._del_btn):
+            b.setEnabled(bool(self._filtered))
         row = next((n for n, r in enumerate(self._filtered)
-                    if keep is not None and r[1] == keep[1] and entry_matches(r[2], keep[2])), 0)
+                    if keep is not None and r[1] == keep[1] and r[3] == keep[3]
+                    and entry_matches(r[2], keep[2])), 0)
         if self._filtered:
             self._list.setCurrentRow(row)
             self._on_select(row)
         else:
             self._selected = None
             self._preview.setPlainText("")
-        for b in (self._use_btn, self._use_all_btn, self._fav_btn, self._hide_btn):
-            b.setEnabled(bool(self._filtered))
 
     def _on_select(self, row: int):
         if row < 0 or row >= len(self._filtered):
@@ -708,18 +831,26 @@ class PromptHistoryDialog(QDialog):
             self._preview.setPlainText("")
             return
         self._selected = self._filtered[row]
-        rel, _p, e = self._selected
+        rel, _p, e, kind = self._selected
         head = f"Workflow: {rel}\n" if rel != self._current_rel else ""
+        if kind == "favorite" and e.get("favorited"):
+            head += f"Favorited: {e['favorited']}\n"
         self._preview.setPlainText(head + format_entry(e))
-        self._fav_btn.setText("★ Unfavorite" if is_favorite(e) else "★ Favorite")
-        self._hide_btn.setText("Unhide" if is_hidden(e) else "Hide")
+        starred = kind == "favorite" or self._starred(e)
+        self._fav_btn.setText("★ Unfavorite" if starred else "★ Favorite")
+        self._hide_btn.setText("Unarchive" if is_hidden(e) else "Archive")
+        # A favorite is its own record: no archive tick box, no archive button.
+        self._hide_btn.setEnabled(kind == "history")
+        self._del_btn.setText("Remove favorite" if kind == "favorite" else "Delete")
 
     def _on_item_checked(self, item: QListWidgetItem):
         """Ticked means visible, so an untick sets hidden."""
         row = self._list.row(item)
         if not (0 <= row < len(self._filtered)):
             return
-        _rel, wf_path, entry = self._filtered[row]
+        _rel, wf_path, entry, kind = self._filtered[row]
+        if kind != "history":
+            return
         self._set_flag(wf_path, entry, "hidden",
                        item.checkState() != Qt.CheckState.Checked)
 
@@ -740,32 +871,54 @@ class PromptHistoryDialog(QDialog):
             self.close()
 
     def _toggle_favorite(self):
+        """Star = copy into the favorites file; unstar = remove that copy.
+        Either way the history file is left exactly as it was."""
         if self._selected is None:
             return
-        _rel, wf_path, entry = self._selected
-        self._set_flag(wf_path, entry, "favorite", not is_favorite(entry))
+        _rel, wf_path, entry, kind = self._selected
+        if kind == "favorite" or self._starred(entry):
+            remove_favorite(wf_path, entry)
+        else:
+            add_favorite(wf_path, entry)
+        self._reload()
+
+    def _reload(self):
+        self._load_rows()
+        self._rebuild_date_values()
+        self._populate()
 
     def _toggle_hidden(self):
         if self._selected is None:
             return
-        _rel, wf_path, entry = self._selected
+        _rel, wf_path, entry, kind = self._selected
+        if kind != "history":
+            return
         self._set_flag(wf_path, entry, "hidden", not is_hidden(entry))
 
     def _delete(self):
         if self._selected is None:
             return
-        rel, wf_path, entry = self._selected
+        rel, wf_path, entry, kind = self._selected
+        if kind == "favorite":
+            if QMessageBox.question(
+                    self, "Remove favorite",
+                    f"Remove this favorite from {rel}?\n\n"
+                    f"Only the favorites file changes — the history entry it came "
+                    f"from (if it still exists) is not touched.") != QMessageBox.StandardButton.Yes:
+                return
+            remove_favorite(wf_path, entry)
+            self._reload()
+            return
         if QMessageBox.question(
                 self, "Delete entry",
                 f"Delete this history entry from {rel} for good?\n\n"
+                f"Favorites are kept in their own file and are not affected.\n"
                 f"To keep the record but take it out of the list, untick it "
-                f"(or press Hide) instead.") != QMessageBox.StandardButton.Yes:
+                f"(or press Archive) instead.") != QMessageBox.StandardButton.Yes:
             return
         entries = load_history(wf_path)
         entries = [x for x in entries if not (
             x.get("timestamp") == entry.get("timestamp") and x.get("positive") == entry.get("positive")
             and x.get("settings") == entry.get("settings"))]
         save_history(wf_path, entries)
-        self._load_rows()
-        self._rebuild_date_values()
-        self._populate()
+        self._reload()

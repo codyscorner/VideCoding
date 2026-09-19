@@ -77,9 +77,11 @@ class PodStopWorker(QThread):
 
 
 class PodListWorker(QThread):
-    """Fetches the account's pods for the ordering list in Settings."""
+    """Fetches the account's pods for the ordering list in Settings, and
+    the account balance for the line above it."""
 
     done = pyqtSignal(list, str)       # pods, error
+    balance = pyqtSignal(dict, str)    # account_balance() result, error
 
     def run(self):
         try:
@@ -88,3 +90,24 @@ class PodListWorker(QThread):
             self.done.emit([], str(e))
         except Exception as e:  # noqa: BLE001
             self.done.emit([], f"{type(e).__name__}: {e}")
+        try:
+            self.balance.emit(runpod_api.account_balance(), "")
+        except runpod_api.RunPodError as e:
+            self.balance.emit({}, str(e))
+        except Exception as e:  # noqa: BLE001
+            self.balance.emit({}, f"{type(e).__name__}: {e}")
+
+
+class BalanceWorker(QThread):
+    """Fetches just the account balance — the header poll runs it once a
+    minute beside the pod poll and must not block the window on it."""
+
+    done = pyqtSignal(dict, str)       # account_balance() result, error
+
+    def run(self):
+        try:
+            self.done.emit(runpod_api.account_balance(), "")
+        except runpod_api.RunPodError as e:
+            self.done.emit({}, str(e))
+        except Exception as e:  # noqa: BLE001
+            self.done.emit({}, f"{type(e).__name__}: {e}")
