@@ -238,8 +238,8 @@ APPS = [
         ),
     },
     {
-        "name": "VHS_Metadata_Parser",
-        "project_folder": "VHS_Metadata_Parser",
+        "name": "ComfyUI_Metadata_Viewer",
+        "project_folder": "ComfyUI_Metadata_Viewer",
         "prompt": (
             "Minimalist flat app icon, dark retro background #1a0a1a, "
             "a glowing VHS tape cassette with a small code bracket symbol "
