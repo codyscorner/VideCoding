@@ -1,6 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
+import face_recognition_models
 
 block_cipher = None
+
+# Path to the face landmark/encoding model files face_recognition needs at runtime.
+models_path = face_recognition_models.__path__[0]
 
 a = Analysis(
     ['main.py'],
@@ -8,6 +12,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('app_icon.ico', '.'),
+        (models_path, 'face_recognition_models'),
     ],
     hiddenimports=[
         'PIL',
@@ -17,6 +22,9 @@ a = Analysis(
         'cv2',
         'numpy',
         'send2trash',
+        'face_recognition',
+        'face_recognition_models',
+        'dlib',
     ],
     hookspath=[],
     hooksconfig={},
@@ -27,7 +35,7 @@ a = Analysis(
         'safetensors', 'onnx', 'onnxruntime', 'sklearn', 'scipy', 'pandas',
         'matplotlib', 'sympy', 'numba', 'llvmlite', 'h5py', 'triton',
         'xformers', 'bitsandbytes', 'sentencepiece', 'tokenizers',
-        'face_recognition', 'dlib', 'ultralytics', 'playwright',
+        'ultralytics', 'playwright',
         'IPython', 'jupyter', 'notebook', 'pytest',
     ],
     win_no_prefer_redirects=False,

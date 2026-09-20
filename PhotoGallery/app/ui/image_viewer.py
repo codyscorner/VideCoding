@@ -47,6 +47,14 @@ class ImageViewer(QLabel):
         self._rotation = 0
         self._update_scaled()
 
+    def cropped_pixmap(self, rect: QRect) -> "QPixmap | None":
+        """Extract a sub-region of the full-resolution (rotated) image —
+        `rect` is in the same rotated-image coordinate space as `crop_selected`."""
+        rotated = self._rotated_pixmap()
+        if rotated is None:
+            return None
+        return rotated.copy(rect.intersected(QRect(0, 0, rotated.width(), rotated.height())))
+
     def rotate(self, degrees: int) -> None:
         if self._current_pixmap is None:
             return

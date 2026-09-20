@@ -5,7 +5,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
 
-VERSION = "1.4.0"
+VERSION = "2.0.0"
 
 
 def get_script_dir() -> Path:
