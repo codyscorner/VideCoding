@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 BG_DARK      = "#0d0d1a"
 BG_MID       = "#12122a"

@@ -2,7 +2,7 @@
 
 A PyQt6 desktop tool that batch-generates AI app icons for projects in this repository using a local ComfyUI instance, then converts them to `.ico` format and copies them into each project folder as `app_icon.ico`.
 
-**Current version: 1.1.0**
+**Current version: 1.1.1**
 
 ## Workflow
 
@@ -55,6 +55,9 @@ IconMaker/
 - Edit the top of `make_icons.py` to change `COMFY_URL`, `COMFY_OUTPUT`, `ICO_SIZES`, or the `APPS` list (app entries and their prompts)
 
 ## Recent Changes
+
+### v1.1.1
+- `APPS` entry for the renamed ComfyUI Metadata Viewer (was VHS Metadata Parser) now points at the `ComfyUI_Metadata_Viewer` folder
 
 ### v1.1.0
 - Prompt history: every generated icon's prompt/seed/timestamp is appended per-app to `output/prompt_history.json`; a "View History" button prints an app's past runs to the log
