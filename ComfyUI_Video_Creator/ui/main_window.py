@@ -317,6 +317,7 @@ class MainWindow(QMainWindow):
             dlg = QueueDialog(self)
             dlg.remove_requested.connect(self._remove_queued)
             dlg.move_requested.connect(self._move_queued)
+            dlg.next_requested.connect(self._move_queued_to_next)
             dlg.clear_requested.connect(self._clear_queue)
             self._queue_dlg = dlg
         self._queue_dlg.set_items(self._active_req, list(self._queue))
@@ -350,6 +351,14 @@ class MainWindow(QMainWindow):
         self._update_queue_label()
         if self._queue_dlg is not None:
             self._queue_dlg.select_position(target)
+
+    def _move_queued_to_next(self, index: int):
+        if not 0 < index < len(self._queue):
+            return
+        self._queue.insert(0, self._queue.pop(index))
+        self._update_queue_label()
+        if self._queue_dlg is not None:
+            self._queue_dlg.select_position(0)
 
     def _clear_queue(self):
         for req in self._queue:

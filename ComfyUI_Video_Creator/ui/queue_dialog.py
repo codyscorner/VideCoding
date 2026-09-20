@@ -57,6 +57,7 @@ RUNNING_ROW = -1          # Qt.UserRole marker for the "running now" row
 class QueueDialog(QDialog):
     remove_requested = pyqtSignal(int)        # index into the pending queue
     move_requested = pyqtSignal(int, int)     # index, delta (-1 up / +1 down)
+    next_requested = pyqtSignal(int)          # index to pull to the front of the queue
     clear_requested = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -123,13 +124,16 @@ class QueueDialog(QDialog):
         btns.setSpacing(8)
         self._up_btn = QPushButton("↑ Move Up")
         self._down_btn = QPushButton("↓ Move Down")
+        self._next_btn = QPushButton("⤒ Move to Next")
+        self._next_btn.setToolTip("Make this run the next one to start, ahead of everything else waiting")
         self._remove_btn = QPushButton("✕ Remove")
         self._clear_btn = QPushButton("✕ Clear All")
-        for b in (self._up_btn, self._down_btn, self._remove_btn, self._clear_btn):
+        for b in (self._up_btn, self._down_btn, self._next_btn, self._remove_btn, self._clear_btn):
             b.setObjectName("secondary_btn")
             btns.addWidget(b)
         self._up_btn.clicked.connect(lambda: self._emit_move(-1))
         self._down_btn.clicked.connect(lambda: self._emit_move(1))
+        self._next_btn.clicked.connect(self._emit_next)
         self._remove_btn.clicked.connect(self._emit_remove)
         self._clear_btn.clicked.connect(self.clear_requested.emit)
         btns.addStretch()
@@ -244,6 +248,7 @@ class QueueDialog(QDialog):
         self._remove_btn.setEnabled(pending)
         self._up_btn.setEnabled(pending and index > 0)
         self._down_btn.setEnabled(pending and index < last)
+        self._next_btn.setEnabled(pending and index > 0)
 
     def _has_running(self) -> bool:
         return (self._tree.topLevelItemCount() > 0
@@ -253,6 +258,11 @@ class QueueDialog(QDialog):
         index = self._selected_index()
         if index is not None and index >= 0:
             self.remove_requested.emit(index)
+
+    def _emit_next(self):
+        index = self._selected_index()
+        if index is not None and index > 0:
+            self.next_requested.emit(index)
 
     def _emit_move(self, delta: int):
         index = self._selected_index()
