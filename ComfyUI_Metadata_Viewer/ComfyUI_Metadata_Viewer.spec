@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['vhs_metadata_parser.py'],
+    ['comfyui_metadata_viewer.py'],
     pathex=[],
     binaries=[],
     datas=[('app_icon.ico', '.')],
@@ -31,7 +31,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='VHS_Metadata_Parser',
+    name='ComfyUI_Metadata_Viewer',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

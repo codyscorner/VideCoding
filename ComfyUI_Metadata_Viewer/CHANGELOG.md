@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.4.0 — 2026-09-19
+- **Renamed to ComfyUI Metadata Viewer** (was VHS Metadata Parser). The folder is now `ComfyUI_Metadata_Viewer/`, the script `comfyui_metadata_viewer.py`, the spec and EXE `ComfyUI_Metadata_Viewer`, and the deploy folder `P:\Apps\VibeCoded\ComfyUI Metadata Viewer\`. The old deploy folder is left in place for the user to delete. The IconMaker entry now points at the new folder.
+- **Reads metadata from any ComfyUI output, not just MP4.** The user wanted to check a Flux.2 PNG's seed without dragging it into ComfyUI (Windows Properties doesn't show PNG text chunks).
+  - **PNG:** `tEXt`, `iTXt` and compressed `zTXt` chunks are parsed properly.
+  - **WebP / JPEG:** EXIF `prompt:{…}` / `workflow:{…}` tags, as written by `SaveAnimatedWEBP`.
+  - **Audio:** FLAC Vorbis comments and MP3 ID3 frames (`prompt={…}`, `prompt\0{…}`).
+  - **Other containers:** MKV, WebM, MOV and anything else, found with the same `{"prompt": …}` search MP4 already used.
+  - **Any file:** a generic scan tries every `prompt` / `workflow` key it finds and keeps only JSON shaped like an API prompt (nodes with `class_type`) or a UI workflow (a `nodes` list), so false matches are ignored. Saved UI-workflow `.json` files now fill the Workflow tab.
+  - Standard library only; no Pillow or mutagen, so the EXE stays small.
+- **Fix: non-ASCII prompt text was dropped from MP4 metadata.** The old MP4 reader kept only ASCII bytes and counted braces even inside strings. JSON is now decoded properly (`raw_decode` over UTF-8), so accents, dashes and braces inside prompt text survive. Decoding starts with a 16 KB window and only widens when a real JSON block runs past it, so thousands of false `prompt` matches in a big file stay cheap.
+- **File Header for every format** (was "MP4 Header"): PNG/WebP/JPEG/GIF sizes and MP4/MOV size + duration, e.g. `PNG, 1584×1312`. Width/height fall back to it whenever the workflow only has a link (Flux.2 edit's `GetImageSize`), shown as `1584 (from PNG header; workflow: → Get Image Size [68:72])`.
+- Image workflows: `*LatentImage` nodes (EmptyLatentImage, EmptyFlux2LatentImage, …) supply width/height/batch; `SaveImage` / `SaveAnimatedWEBP` / `SaveAudio` supply the filename prefix. The first tab is now **Media Settings**.
+- **Seed column in Batch / Search**, plus seed in the search filter, the Diff dialog and the summary CSV.
+- **Explorer right-click entry:** Tools → Add "Open in ComfyUI Metadata Viewer" to Explorer right-click menu.
+  - Writes a per-user verb under `HKCU\Software\Classes\*\shell\ComfyUIMetadataViewer` (no admin), set to single selection. Unticking removes it.
+  - A frozen EXE that finds the entry pointing at a different path re-points it on launch (the EXE is portable).
+  - From source, it registers `pythonw` + the script.
+- A file with no ComfyUI metadata now says so, and why, in the drop zone instead of "Error loading file".
+- File > Open lists images, videos, audio and exports, plus All Files. Batch scans all of those types.
+- Verified headless: MP4 results identical to v1.3.1 on both test videos; three real Flux.2 PNGs (API-queued, prompt only) give seed/UNET/header; synthetic WebP (lossy + lossless), JPEG EXIF, FLAC-style, MP3-style and WebM-style files; saved workflow `.json`; bare prompt `.txt`; a 13 MB file with 3000 decoy matches (0.04 s); a 16 MB real video (0.15 s); a file with no metadata fails cleanly.
+
 ## v1.3.1 — 2026-09-04
 - Version bump + EXE rebuild. The deployed v1.3.0 EXE predated the fixes listed under v1.3.0 below (MP4-header dimensions, layout un-clipping, resizable Negative pane, run.bat + CLI file argument); this build ships all of them. No functional changes beyond the version string.
 

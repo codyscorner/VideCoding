@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-VHS Metadata Parser
-A PyQt6 application to parse and display ComfyUI workflow metadata files.
-Supports drag-and-drop and file browser import.
-Version: 1.3.1
+ComfyUI Metadata Viewer (formerly VHS Metadata Parser)
+A PyQt6 application that reads the ComfyUI prompt/workflow metadata embedded in any output file —
+PNG/WebP/JPEG images, MP4/MOV/MKV/WebM videos, FLAC/MP3 audio — or in .json/.txt exports.
+Supports drag-and-drop, file browser import and an Explorer right-click entry.
+Version: 1.4.0
 """
 
 import csv
@@ -12,6 +13,7 @@ import math
 import re
 import sys
 import json
+import zlib
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -25,7 +27,18 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QFont, QIcon, QAction, QColor
 
-SUPPORTED_EXTENSIONS = ('.mp4', '.json', '.txt')
+# Files the Batch tab scans and File > Open lists first. Any other file can still be opened or dropped —
+# the embedded-metadata scan runs on whatever it is given.
+SUPPORTED_EXTENSIONS = (
+    '.json', '.txt',                                              # workflow / prompt exports
+    '.png', '.webp', '.jpg', '.jpeg', '.gif',                     # SaveImage, SaveAnimatedWEBP, custom savers
+    '.mp4', '.mov', '.m4v', '.mkv', '.webm', '.avi',              # VHS_VideoCombine and other video savers
+    '.flac', '.mp3', '.opus', '.ogg', '.wav', '.m4a',             # SaveAudio
+)
+OPEN_FILTER = ("All Supported Files ({all});;Images (*.png *.webp *.jpg *.jpeg *.gif);;"
+               "Videos (*.mp4 *.mov *.m4v *.mkv *.webm *.avi);;Audio (*.flac *.mp3 *.opus *.ogg *.wav *.m4a);;"
+               "Workflow / Text (*.json *.txt);;All Files (*.*)").format(
+    all=' '.join('*' + e for e in SUPPORTED_EXTENSIONS))
 
 
 # Dark blue-green color scheme
@@ -307,6 +320,252 @@ def parse_prompt_sections(text: str) -> List[Tuple[str, str]]:
     return sections
 
 
+# ---------------------------------------------------------------------- embedded-metadata readers
+#
+# ComfyUI writes the same two JSON blobs everywhere — `prompt` (API format) and `workflow` (UI format) —
+# but each save node stores them differently:
+#   PNG  (SaveImage)            tEXt / iTXt / zTXt chunks keyed "prompt" and "workflow"
+#   WebP (SaveAnimatedWEBP)     EXIF ASCII tags holding "prompt:{…}" and "workflow:{…}"
+#   MP4/MOV/MKV/WebM (VHS)      container comment holding {"prompt": …, "workflow": …}
+#   FLAC/MP3/Opus (SaveAudio)   Vorbis comments / ID3 frames "prompt={…}", "workflow={…}"
+# PNG chunks are parsed properly (zTXt is compressed, so a byte scan would miss it); everything else goes
+# through `_scan_for_comfy_json`, which looks for those keys anywhere in the file and keeps only JSON that
+# actually has the shape of a prompt or workflow. That scan is also the fallback for any other file type.
+
+_JSON_DECODER = json.JSONDecoder()
+_SCAN_WINDOW = 64 * 1024 * 1024          # max bytes decoded after a marker (metadata blobs are well under this)
+_MAX_KEY_HITS = 20000                     # safety stop for pathological files; false matches cost ~microseconds
+_WRAPPED_RE = re.compile(rb'\{\s*"prompt"\s*:')
+_KEYED_RE = re.compile(rb'(prompt|workflow)(?:"?\s*[:=]\s*|\x00+|[\x00-\x1f"]{1,24})(?=[\{"])')
+
+
+def _is_api_prompt(obj: Any) -> bool:
+    return (isinstance(obj, dict) and bool(obj)
+            and all(isinstance(v, dict) for v in obj.values())
+            and any('class_type' in v for v in obj.values()))
+
+
+def _is_ui_workflow(obj: Any) -> bool:
+    return isinstance(obj, dict) and isinstance(obj.get('nodes'), list)
+
+
+def _maybe_json(value: Any) -> Any:
+    """ComfyUI sometimes double-encodes (a JSON string holding JSON); unwrap once."""
+    if isinstance(value, str) and value[:1] in '{[':
+        try:
+            return json.loads(value)
+        except Exception:
+            return value
+    return value
+
+
+def _decode_json_at(data: bytes, start: int) -> Any:
+    """
+    Decode the JSON value starting at byte `start` (string-aware, keeps non-ASCII text intact).
+    Starts with a small window and only widens it when the value runs off the end, so probing
+    the many false "prompt" matches inside a large file stays cheap.
+    """
+    window = 16 * 1024
+    while True:
+        text = data[start:start + window].decode('utf-8', errors='replace')
+        try:
+            obj, _end = _JSON_DECODER.raw_decode(text)
+            return obj
+        except json.JSONDecodeError as e:
+            # Ran off the end of the window (a real blob cut short) vs. garbage that fails early
+            truncated = start + window < len(data) and (
+                e.pos >= len(text) - 65536 or e.msg.startswith('Unterminated string'))
+            if not truncated or window >= _SCAN_WINDOW:
+                raise
+            window *= 8
+
+
+def _scan_for_comfy_json(data: bytes) -> Dict[str, Any]:
+    """Find ComfyUI prompt/workflow JSON anywhere in raw bytes. Returns {} when there is none."""
+    found: Dict[str, Any] = {}
+
+    # 1. VHS style: one object {"prompt": …, "workflow": …}
+    for m in _WRAPPED_RE.finditer(data):
+        try:
+            obj = _decode_json_at(data, m.start())
+        except Exception:
+            continue
+        if isinstance(obj, dict) and _is_api_prompt(_maybe_json(obj.get('prompt'))):
+            found.update(obj)
+            break
+
+    # 2. Keyed style: EXIF prompt:{…} / Vorbis workflow={…} / ID3 "prompt\0{…}" / "prompt": "{…}"
+    hits = {'prompt': 0, 'workflow': 0}
+    for m in _KEYED_RE.finditer(data):
+        key = m.group(1).decode()
+        if key in found or hits[key] >= _MAX_KEY_HITS:
+            if all(k in found or hits[k] >= _MAX_KEY_HITS for k in hits):
+                break
+            continue
+        hits[key] += 1
+        try:
+            obj = _maybe_json(_decode_json_at(data, m.end()))
+        except Exception:
+            continue
+        if (key == 'prompt' and _is_api_prompt(obj)) or (key == 'workflow' and _is_ui_workflow(obj)):
+            found[key] = obj
+
+    # 3. A bare workflow/prompt JSON file with no key in front (saved .json, pasted .txt)
+    if not found:
+        head = data.lstrip()[:1]
+        if head == b'{':
+            try:
+                obj = _decode_json_at(data, len(data) - len(data.lstrip()))
+            except Exception:
+                obj = None
+            if _is_ui_workflow(obj):
+                found['workflow'] = obj
+            elif _is_api_prompt(obj):
+                found['prompt'] = obj
+    return found
+
+
+def _read_png_text(data: bytes) -> Dict[str, Any]:
+    """All tEXt / iTXt / zTXt chunks of a PNG as {keyword: text (JSON decoded when it is JSON)}."""
+    out: Dict[str, Any] = {}
+    pos = 8
+    while pos + 8 <= len(data):
+        length = int.from_bytes(data[pos:pos + 4], 'big')
+        ctype = data[pos + 4:pos + 8]
+        body = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        try:
+            if ctype == b'tEXt':
+                key, _, text = body.partition(b'\x00')
+                out[key.decode('latin-1')] = text.decode('latin-1')
+            elif ctype == b'zTXt':
+                key, _, rest = body.partition(b'\x00')
+                out[key.decode('latin-1')] = zlib.decompress(rest[1:]).decode('latin-1')
+            elif ctype == b'iTXt':
+                key, _, rest = body.partition(b'\x00')
+                compressed, rest = rest[0], rest[2:]
+                _lang, _, rest = rest.partition(b'\x00')
+                _translated, _, text = rest.partition(b'\x00')
+                if compressed:
+                    text = zlib.decompress(text)
+                out[key.decode('latin-1')] = text.decode('utf-8', errors='replace')
+            elif ctype == b'IEND':
+                break
+        except Exception:
+            continue
+    return {k: _maybe_json(v) for k, v in out.items()}
+
+
+def read_media_header(data: bytes, suffix: str) -> Dict[str, Any]:
+    """Real width/height (and duration for MP4/MOV) from the file's own header. `kind` names the source."""
+    info: Dict[str, Any] = {}
+    try:
+        if data[:8] == b'\x89PNG\r\n\x1a\n' and data[12:16] == b'IHDR':
+            info = {'kind': 'PNG', 'width': int.from_bytes(data[16:20], 'big'),
+                    'height': int.from_bytes(data[20:24], 'big')}
+        elif data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+            chunk = data[12:16]
+            if chunk == b'VP8X':
+                w = int.from_bytes(data[24:27], 'little') + 1
+                h = int.from_bytes(data[27:30], 'little') + 1
+            elif chunk == b'VP8L':
+                bits = int.from_bytes(data[21:25], 'little')
+                w, h = (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+            else:  # 'VP8 ' lossy
+                w = int.from_bytes(data[26:28], 'little') & 0x3FFF
+                h = int.from_bytes(data[28:30], 'little') & 0x3FFF
+            info = {'kind': 'WebP', 'width': w, 'height': h}
+        elif data[:2] == b'\xff\xd8':
+            pos = 2
+            while pos + 9 < len(data):
+                if data[pos] != 0xFF:
+                    break
+                marker = data[pos + 1]
+                seg_len = int.from_bytes(data[pos + 2:pos + 4], 'big')
+                if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                    info = {'kind': 'JPEG', 'height': int.from_bytes(data[pos + 5:pos + 7], 'big'),
+                            'width': int.from_bytes(data[pos + 7:pos + 9], 'big')}
+                    break
+                pos += 2 + seg_len
+        elif data[:6] in (b'GIF87a', b'GIF89a'):
+            info = {'kind': 'GIF', 'width': int.from_bytes(data[6:8], 'little'),
+                    'height': int.from_bytes(data[8:10], 'little')}
+        elif suffix in ('.mp4', '.mov', '.m4v') or data[4:8] == b'ftyp':
+            info = MetadataParser._read_mp4_header(data)
+            if info:
+                info['kind'] = 'MP4' if suffix != '.mov' else 'MOV'
+    except Exception:
+        return {}
+    return info
+
+
+def extract_embedded_metadata(data: bytes) -> Dict[str, Any]:
+    """ComfyUI metadata from any file's bytes: PNG text chunks first, then the generic scan."""
+    raw: Dict[str, Any] = {}
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        raw = _read_png_text(data)
+        if 'prompt' in raw or 'workflow' in raw:
+            return raw
+    found = _scan_for_comfy_json(data)
+    if not found and not raw:
+        raise ValueError("No ComfyUI metadata (prompt or workflow) found in this file")
+    raw.update(found)
+    return raw
+
+
+# ---------------------------------------------------------------------- Explorer right-click entry
+#
+# Per-user (HKCU) shell verb on every file type, so no admin rights are needed:
+#   HKCU\Software\Classes\*\shell\ComfyUIMetadataViewer          (Default) = menu text, Icon, MultiSelectModel
+#   HKCU\Software\Classes\*\shell\ComfyUIMetadataViewer\command  (Default) = "<exe>" "%1"
+# On Windows 11 classic verbs sit under "Show more options" (or Shift+right-click).
+
+CONTEXT_MENU_KEY = r'Software\Classes\*\shell\ComfyUIMetadataViewer'
+CONTEXT_MENU_TEXT = 'Open in ComfyUI Metadata Viewer'
+
+
+def _launch_command() -> Tuple[str, str]:
+    """(command line, icon path) that opens a file in this app — the EXE when frozen, else pythonw + script."""
+    if getattr(sys, 'frozen', False):
+        exe = sys.executable
+        return f'"{exe}" "%1"', exe
+    interp = Path(sys.executable)
+    pythonw = interp.with_name('pythonw.exe')
+    runner = pythonw if pythonw.exists() else interp
+    script = Path(__file__).resolve()
+    return f'"{runner}" "{script}" "%1"', str(script.with_name('app_icon.ico'))
+
+
+def context_menu_command() -> Optional[str]:
+    """The registered command line, or None when the entry is not installed (or not on Windows)."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, CONTEXT_MENU_KEY + r'\command') as key:
+            return winreg.QueryValue(key, None)
+    except Exception:
+        return None
+
+
+def register_context_menu():
+    import winreg
+    command, icon = _launch_command()
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, CONTEXT_MENU_KEY) as key:
+        winreg.SetValueEx(key, None, 0, winreg.REG_SZ, CONTEXT_MENU_TEXT)
+        winreg.SetValueEx(key, 'Icon', 0, winreg.REG_SZ, icon)
+        winreg.SetValueEx(key, 'MultiSelectModel', 0, winreg.REG_SZ, 'Single')
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, CONTEXT_MENU_KEY + r'\command') as key:
+        winreg.SetValueEx(key, None, 0, winreg.REG_SZ, command)
+
+
+def unregister_context_menu():
+    import winreg
+    for sub in (CONTEXT_MENU_KEY + r'\command', CONTEXT_MENU_KEY):
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, sub)
+        except FileNotFoundError:
+            pass
+
+
 class MetadataParser:
     """
     Parses ComfyUI workflow metadata and extracts relevant fields.
@@ -322,38 +581,48 @@ class MetadataParser:
         self.prompt_data: Dict = {}
         self.workflow_data: Dict = {}
         self.consumed: Dict[str, set] = {}
-        self.container: Dict[str, Any] = {}   # width/height/duration read from the MP4 header itself
+        self.container: Dict[str, Any] = {}   # width/height(/duration) from the file's own header; 'kind' = PNG, MP4…
+        self.last_error: str = ''
 
     # ------------------------------------------------------------------ loading
 
     def parse_file(self, file_path: str) -> bool:
+        """Load ComfyUI metadata from any file: .json/.txt exports, PNG/WebP/JPEG images, videos, audio…"""
         try:
             self.raw_data, self.prompt_data, self.workflow_data, self.consumed, self.container = {}, {}, {}, {}, {}
-            file_lower = file_path.lower()
-            if file_lower.endswith('.mp4'):
-                with open(file_path, 'rb') as f:
-                    data = f.read()
-                self.container = self._read_mp4_header(data)
-                self.raw_data = self._extract_metadata_from_mp4(data)
-            else:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    self.raw_data = json.load(f)
+            self.last_error = ''
+            with open(file_path, 'rb') as f:
+                data = f.read()
+            suffix = Path(file_path).suffix.lower()
+
+            raw = None
+            if suffix in ('.json', '.txt'):
+                try:
+                    raw = json.loads(data.decode('utf-8-sig'))
+                except Exception:
+                    raw = None          # not plain JSON — fall through to the embedded-metadata scan
+            if not isinstance(raw, dict):
+                self.container = read_media_header(data, suffix)
+                raw = extract_embedded_metadata(data)
+            self.raw_data = raw
 
             if 'prompt' in self.raw_data:
-                prompt_str = self.raw_data['prompt']
-                if isinstance(prompt_str, str):
-                    self.prompt_data = json.loads(prompt_str)
-                else:
-                    self.prompt_data = prompt_str
-            elif self.raw_data and all(isinstance(v, dict) and 'class_type' in v for v in self.raw_data.values()):
+                self.prompt_data = _maybe_json(self.raw_data['prompt'])
+                if not isinstance(self.prompt_data, dict):
+                    self.prompt_data = {}
+            elif _is_api_prompt(self.raw_data):
                 # Bare API-format prompt JSON (no {"prompt": ...} wrapper)
                 self.prompt_data = self.raw_data
 
             if 'workflow' in self.raw_data:
-                self.workflow_data = self.raw_data['workflow']
+                self.workflow_data = _maybe_json(self.raw_data['workflow'])
+            elif _is_ui_workflow(self.raw_data):
+                # Bare UI-format workflow JSON (a workflow saved from ComfyUI)
+                self.workflow_data = self.raw_data
 
             return True
         except Exception as e:
+            self.last_error = str(e)
             print(f"Error parsing file: {e}")
             return False
 
@@ -397,28 +666,6 @@ class MetadataParser:
             if timescale:
                 info['duration_s'] = round(duration / timescale, 2)
         return info
-
-    def _extract_metadata_from_mp4(self, data: bytes) -> Dict:
-        idx = data.find(b'{"prompt"')
-        if idx == -1:
-            raise ValueError("No ComfyUI metadata found in MP4 file")
-        json_bytes = bytearray()
-        brace_count = 0
-        started = False
-        for i in range(idx, len(data)):
-            byte = data[i]
-            if byte < 128:
-                char = chr(byte)
-                if char == '{':
-                    brace_count += 1
-                    started = True
-                elif char == '}':
-                    brace_count -= 1
-                if started:
-                    json_bytes.append(byte)
-                if started and brace_count == 0:
-                    break
-        return json.loads(json_bytes.decode('utf-8'))
 
     # ------------------------------------------------------------------ node helpers
 
@@ -590,6 +837,16 @@ class MetadataParser:
                     if key in ins:
                         settings[key] = self._take(node_id, key)
         for node_id, node in self._nodes():
+            # Image workflows: EmptyLatentImage, EmptySD3LatentImage, EmptyFlux2LatentImage, ...
+            if node.get('class_type', '').endswith('LatentImage'):
+                ins = node.get('inputs', {})
+                for key in ('width', 'height', 'batch_size'):
+                    if key in ins and not isinstance(settings.get(key), (int, float)):
+                        settings[key] = self._take(node_id, key)
+            elif node.get('class_type') in ('SaveImage', 'SaveAnimatedWEBP', 'SaveAnimatedPNG', 'SaveAudio'):
+                if 'filename_prefix' in node.get('inputs', {}) and 'filename_prefix' not in settings:
+                    settings['filename_prefix'] = self._take(node_id, 'filename_prefix')
+        for node_id, node in self._nodes():
             if node.get('class_type') == 'VHS_VideoCombine':
                 for key in ('frame_rate', 'filename_prefix', 'format', 'crf', 'pix_fmt', 'loop_count'):
                     settings[key] = self._take(node_id, key)
@@ -610,21 +867,22 @@ class MetadataParser:
         if isinstance(length, (int, float)) and isinstance(fps, (int, float)) and fps:
             settings['duration_s'] = round(length / fps, 2)
 
-        # Fall back to the MP4 container for anything the workflow only had links for
+        # Fall back to the file's own header for anything the workflow only had links for
         if self.container:
+            kind = self.container.get('kind', 'file')
             for key in ('width', 'height'):
                 if key in self.container and not isinstance(settings.get(key), (int, float)):
                     workflow_val = settings.get(key)
-                    settings[key] = (f"{self.container[key]} (from MP4 header; workflow: {workflow_val})"
-                                     if workflow_val is not None else f"{self.container[key]} (from MP4 header)")
+                    settings[key] = (f"{self.container[key]} (from {kind} header; workflow: {workflow_val})"
+                                     if workflow_val is not None else f"{self.container[key]} (from {kind} header)")
             if 'duration_s' not in settings and 'duration_s' in self.container:
-                settings['duration_s'] = f"{self.container['duration_s']} (from MP4 header)"
-            parts = []
+                settings['duration_s'] = f"{self.container['duration_s']} (from {kind} header)"
+            parts = [kind]
             if 'width' in self.container and 'height' in self.container:
                 parts.append(f"{self.container['width']}×{self.container['height']}")
             if 'duration_s' in self.container:
                 parts.append(f"{self.container['duration_s']} s")
-            settings['mp4_header'] = ', '.join(parts) if parts else 'N/A'
+            settings['file_header'] = ', '.join(parts)
         return settings
 
     def get_models(self) -> Dict[str, List[Dict]]:
@@ -795,6 +1053,7 @@ def summarize_file(file_path: str) -> Dict[str, Any]:
         'cfg': samplers[0]['cfg'] if samplers else 'N/A',
         'sampler_name': samplers[0]['sampler_name'] if samplers else 'N/A',
         'scheduler': samplers[0]['scheduler'] if samplers else 'N/A',
+        'seed': samplers[0]['noise_seed'] if samplers else 'N/A',
         'lora': ', '.join(lora_names),
         'unet': ', '.join(unet_names),
         'clip': ', '.join(clip_names),
@@ -816,6 +1075,7 @@ def row_matches_search(row: Dict[str, Any], term: str) -> bool:
         row.get('name', ''), row.get('lora', ''), row.get('unet', ''),
         row.get('clip', ''), row.get('vae', ''), row.get('sampler_name', ''),
         row.get('positive_prompt', ''), row.get('negative_prompt', ''), row.get('format', ''),
+        row.get('seed', ''),
     ]
     return any(term in str(h).lower() for h in haystacks)
 
@@ -844,7 +1104,7 @@ class DiffDialog(QDialog):
     FIELDS = [
         ('name', 'File'), ('width', 'Width'), ('height', 'Height'), ('length', 'Frames/Length'),
         ('frame_rate', 'Frame Rate'), ('duration_s', 'Duration (s)'), ('has_audio', 'Audio'),
-        ('format', 'Format'), ('steps', 'Steps'), ('cfg', 'CFG'),
+        ('format', 'Format'), ('steps', 'Steps'), ('cfg', 'CFG'), ('seed', 'Seed'),
         ('sampler_name', 'Sampler'), ('scheduler', 'Scheduler'), ('unet', 'UNET'),
         ('clip', 'CLIP'), ('vae', 'VAE'), ('lora', 'LoRA'),
         ('positive_prompt', 'Positive Prompt'), ('negative_prompt', 'Negative Prompt'),
@@ -892,7 +1152,7 @@ class DropZoneLabel(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("drop_zone")
-        self.setText("Drag and drop a metadata file here\n(supports .txt, .json, .mp4)\nor use File > Open")
+        self.setText("Drag and drop any ComfyUI output here\n(PNG, WebP, JPEG, MP4/MOV/MKV/WebM, FLAC/MP3, .json, .txt …)\nor use File > Open")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         # Fixed height: 3 text lines + 12px padding top/bottom (stylesheet) + 2px border top/bottom + slack.
         # Fixed (not minimum) so the loaded-file single line does not leave a tall empty box.
@@ -917,7 +1177,7 @@ class MainWindow(QMainWindow):
         self.batch_rows: List[Dict[str, Any]] = []
         self.batch_visible_rows: List[Dict[str, Any]] = []
         self.batch_worker: Optional[BatchScanWorker] = None
-        self.setWindowTitle("VHS Metadata Parser v1.3.1")
+        self.setWindowTitle("ComfyUI Metadata Viewer v1.4.0")
         self.setMinimumSize(900, 700)
         self.setStyleSheet(STYLESHEET)
         self.setAcceptDrops(True)
@@ -983,6 +1243,42 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+        tools_menu = menubar.addMenu("Tools")
+        self.context_menu_action = QAction(f"Add “{CONTEXT_MENU_TEXT}” to Explorer right-click menu", self)
+        self.context_menu_action.setCheckable(True)
+        self.context_menu_action.setChecked(context_menu_command() is not None)
+        self.context_menu_action.triggered.connect(self._toggle_context_menu)
+        tools_menu.addAction(self.context_menu_action)
+        if sys.platform != 'win32':
+            self.context_menu_action.setEnabled(False)
+        self._refresh_moved_context_menu()
+
+    def _toggle_context_menu(self, checked: bool):
+        try:
+            if checked:
+                register_context_menu()
+                QMessageBox.information(
+                    self, "Right-click Menu Added",
+                    f"Right-click any file in Explorer and choose “{CONTEXT_MENU_TEXT}”.\n\n"
+                    "On Windows 11 it is under “Show more options” (or hold Shift while right-clicking).\n\n"
+                    "If you move the EXE, open it once from the new place and the entry follows it.")
+            else:
+                unregister_context_menu()
+                QMessageBox.information(self, "Right-click Menu Removed",
+                                        f"“{CONTEXT_MENU_TEXT}” is no longer in Explorer's right-click menu.")
+        except Exception as e:
+            QMessageBox.critical(self, "Right-click Menu", f"Could not update the registry:\n{e}")
+        self.context_menu_action.setChecked(context_menu_command() is not None)
+
+    def _refresh_moved_context_menu(self):
+        """Portable EXE moved or renamed? Point an installed entry at this copy (frozen builds only)."""
+        current = context_menu_command()
+        if current and getattr(sys, 'frozen', False) and current != _launch_command()[0]:
+            try:
+                register_context_menu()
+            except Exception:
+                pass
+
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -996,7 +1292,7 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        dims_group = QGroupBox("Video Dimensions")
+        dims_group = QGroupBox("Dimensions")
         dims_layout = QFormLayout(dims_group)
         self.width_edit = QLineEdit(); self.width_edit.setReadOnly(True)
         self.height_edit = QLineEdit(); self.height_edit.setReadOnly(True)
@@ -1017,14 +1313,14 @@ class MainWindow(QMainWindow):
         self.crf_edit = QLineEdit(); self.crf_edit.setReadOnly(True)
         self.pix_fmt_edit = QLineEdit(); self.pix_fmt_edit.setReadOnly(True)
         self.audio_edit = QLineEdit(); self.audio_edit.setReadOnly(True)
-        self.mp4_header_edit = QLineEdit(); self.mp4_header_edit.setReadOnly(True)
+        self.file_header_edit = QLineEdit(); self.file_header_edit.setReadOnly(True)
         output_layout.addRow("Frame Rate:", self.frame_rate_edit)
         output_layout.addRow("Filename Prefix:", self.filename_prefix_edit)
         output_layout.addRow("Format:", self.format_edit)
         output_layout.addRow("CRF:", self.crf_edit)
         output_layout.addRow("Pixel Format:", self.pix_fmt_edit)
         output_layout.addRow("Audio:", self.audio_edit)
-        output_layout.addRow("MP4 Header:", self.mp4_header_edit)
+        output_layout.addRow("File Header:", self.file_header_edit)
         output_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout.addWidget(output_group)
 
@@ -1039,7 +1335,7 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(tab)
-        self.tab_widget.addTab(scroll, "Video Settings")
+        self.tab_widget.addTab(scroll, "Media Settings")
 
     def _create_prompts_tab(self):
         tab = QWidget()
@@ -1300,7 +1596,7 @@ class MainWindow(QMainWindow):
 
         controls.addWidget(QLabel("Search:"))
         self.batch_search_edit = QLineEdit()
-        self.batch_search_edit.setPlaceholderText("Filter by name, LoRA, model, sampler, prompt text…")
+        self.batch_search_edit.setPlaceholderText("Filter by name, LoRA, model, sampler, seed, prompt text…")
         self.batch_search_edit.textChanged.connect(self._filter_batch_rows)
         controls.addWidget(self.batch_search_edit, 1)
         layout.addLayout(controls)
@@ -1311,7 +1607,7 @@ class MainWindow(QMainWindow):
 
         self.batch_table = QTableWidget()
         batch_headers = ['File', 'Width', 'Height', 'Length', 'FPS', 'Format',
-                          'Steps', 'CFG', 'Sampler', 'LoRA', 'UNET']
+                          'Steps', 'CFG', 'Seed', 'Sampler', 'LoRA', 'UNET']
         self.batch_table.setColumnCount(len(batch_headers))
         self.batch_table.setHorizontalHeaderLabels(batch_headers)
         self.batch_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -1346,7 +1642,7 @@ class MainWindow(QMainWindow):
         files = [str(p) for p in pattern if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS]
 
         if not files:
-            QMessageBox.information(self, "No Files", "No .mp4, .json, or .txt files found in that folder.")
+            QMessageBox.information(self, "No Files", "No supported files (images, videos, audio, .json, .txt) found in that folder.")
             return
 
         self.batch_rows = []
@@ -1384,10 +1680,10 @@ class MainWindow(QMainWindow):
         self.batch_table.setRowCount(len(rows))
         for i, r in enumerate(rows):
             values = [r.get('name'), r.get('width'), r.get('height'), r.get('length'),
-                      r.get('frame_rate'), r.get('format'), r.get('steps'), r.get('cfg'),
+                      r.get('frame_rate'), r.get('format'), r.get('steps'), r.get('cfg'), r.get('seed'),
                       r.get('sampler_name'), r.get('lora'), r.get('unet')]
             for j, v in enumerate(values):
-                self.batch_table.setItem(i, j, QTableWidgetItem(str(v) if v not in (None, '') else ('' if j in (9, 10) else 'N/A')))
+                self.batch_table.setItem(i, j, QTableWidgetItem(str(v) if v not in (None, '') else ('' if j in (10, 11) else 'N/A')))
 
     def _selected_batch_rows(self) -> List[Dict[str, Any]]:
         rows_idx = sorted({idx.row() for idx in self.batch_table.selectionModel().selectedRows()})
@@ -1419,10 +1715,10 @@ class MainWindow(QMainWindow):
             return
 
         headers = ['File', 'Path', 'Width', 'Height', 'Length', 'Frame Rate', 'Duration (s)', 'Audio', 'Format',
-                   'Steps', 'CFG', 'Sampler', 'Scheduler', 'CLIP', 'VAE', 'UNET', 'LoRA',
+                   'Steps', 'CFG', 'Seed', 'Sampler', 'Scheduler', 'CLIP', 'VAE', 'UNET', 'LoRA',
                    'Positive Prompt', 'Negative Prompt']
         keys = ['name', 'file', 'width', 'height', 'length', 'frame_rate', 'duration_s', 'has_audio', 'format',
-                'steps', 'cfg', 'sampler_name', 'scheduler', 'clip', 'vae', 'unet', 'lora',
+                'steps', 'cfg', 'seed', 'sampler_name', 'scheduler', 'clip', 'vae', 'unet', 'lora',
                 'positive_prompt', 'negative_prompt']
         try:
             with open(path, 'w', newline='', encoding='utf-8-sig') as f:
@@ -1437,7 +1733,7 @@ class MainWindow(QMainWindow):
     def _open_file_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Metadata File", "",
-            "All Supported Files (*.txt *.json *.mp4);;MP4 Videos (*.mp4);;Text Files (*.txt);;JSON Files (*.json);;All Files (*.*)"
+            OPEN_FILTER
         )
         if path:
             self.load_file(path)
@@ -1448,8 +1744,9 @@ class MainWindow(QMainWindow):
             self.drop_zone.setText(f"File loaded: {Path(file_path).name}")
             self._populate_all()
         else:
-            self.file_path_edit.setText("Error loading file")
-            self.drop_zone.setText("Error loading file. Please try again.")
+            self.file_path_edit.setText(file_path)
+            reason = self.parser.last_error or "unknown error"
+            self.drop_zone.setText(f"No ComfyUI metadata loaded from {Path(file_path).name}\n{reason}")
 
     def _populate_all(self):
         self._populate_video_settings()
@@ -1472,7 +1769,7 @@ class MainWindow(QMainWindow):
         self.pix_fmt_edit.setText(str(s.get('pix_fmt', 'N/A')))
         self.duration_edit.setText(str(s.get('duration_s', 'N/A')))
         self.audio_edit.setText(str(s.get('has_audio', 'N/A')))
-        self.mp4_header_edit.setText(str(s.get('mp4_header', 'N/A (not an MP4)')))
+        self.file_header_edit.setText(str(s.get('file_header', 'N/A (no size in file header)')))
         images = self.parser.get_input_images()
         self.input_images_edit.setPlainText('\n'.join(images) if images else 'No input images')
 
@@ -1675,13 +1972,13 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("VHS Metadata Parser")
+    app.setApplicationName("ComfyUI Metadata Viewer")
     icon_path = Path(__file__).parent / "app_icon.ico"
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow()
     window.show()
-    # Optional: open a metadata file passed on the command line (run.bat file.mp4)
+    # Optional: open a file passed on the command line (run.bat file.png, Explorer right-click entry)
     if len(sys.argv) > 1 and Path(sys.argv[1]).is_file():
         window.load_file(sys.argv[1])
     sys.exit(app.exec())
