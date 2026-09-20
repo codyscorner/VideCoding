@@ -1,5 +1,8 @@
 # Changelog — ComfyUI Video Creator
 
+### v2.9.0
+- **Run Queue: ⤒ Move to Next.** Select any waiting run and press the new button (beside Move Up / Move Down) to jump it to the front, so it is the next thing ComfyUI starts after the current run — no more clicking Move Up 40 times. The run stays selected at position 1, and the button is disabled when it is already first. The running row is untouched.
+
 ### v2.8.1
 - **Fix: favorites files showed up in the Workflow dropdown.** v2.8.0 added `<workflow>.prompt_favorites.json` beside each workflow, but the folder scanner only knew to skip the `.prompt_history.json` sidecar, so every favorites file was listed as if it were a workflow. Both sidecar suffixes are now held in one place (`SIDECAR_SUFFIXES` in `workflow_tools.py`) and the scanner, the dropdown and the new-workflow name check all use it; `prompt_history.py` imports the suffixes from there rather than keeping its own copy.
 
