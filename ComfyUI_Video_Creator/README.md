@@ -1,6 +1,6 @@
 # ComfyUI Video Creator
 
-Version: 2.9.0
+Version: 2.11.0
 
 Single-shot ComfyUI API workflow runner with a dark red theme. Pick an image, a video to extend, or nothing but a prompt (text → video), pick a workflow JSON, press Run, and the finished video lands in a local folder — from a local ComfyUI or a RunPod pod.
 
@@ -9,12 +9,13 @@ This is a **separate app from the ComfyUI Workflow Chain Automator**. It shares 
 ## Features
 
 - **Image → Video tab** — thumbnail grid of a chosen image folder (sort by name/date; thumbnails cached in `<folder>/thumbnails`), workflow dropdown, prompt editor, Run. **Select several images and Create queues one run per image**, same prompt and settings, in grid order
-- **Video → Extend tab** — thumbnail grid of a chosen video folder. The selected video feeds the workflow as either:
+- **Video → Extend tab** — thumbnail grid of a chosen video folder. **Select several videos and Extend queues one run per video**, same prompt and settings, in grid order. The selected video feeds the workflow as either:
   - its **last frame** (extracted with ffmpeg) into a `LoadImage` node or a folder loader — works with any image-to-video workflow, or
   - the **whole file** into a `LoadVideo` / `VHS_LoadVideo` node (MiniMax H3 reference workflows etc.)
 
   Auto-detected from the workflow, with a manual override. Optionally the new clip is **appended to the source video** (`<name>_extended_<stamp>.mp4`). With Append ticked the clip is generated at the source video's own frame size, and the workflow about to run is retuned to save in the source's codec (`video/h265-mp4` → `video/h264-mp4`, checked against the server's own option list; the file on disk is untouched), and the stitch normalizes size, fps, SAR, pixel format and audio format for both parts — a clip of a different shape is padded, never stretched, and a silent clip gets matching silence rather than muting the whole file
 - **Text → Video tab** — no browser, no source: the run panel and its prompt editor take the whole tab. Pick a **prompt-only workflow** (one with no `LoadImage` / `LoadVideo` / folder-loader node — anything with one is refused here with a reason, since it would run against whatever file name is baked into that node), write the prompt or let the 🪄 AI Rewriter build one from a rough idea, type an **Output name** (there's no source to name the clip after: `rain_walk` → `rain_walk_<workflow>_<stamp>.mp4`, blank → `T2V_…`), **Create Video**. LoRAs, seed/steps/megapixels/length, Turbo, history, the queue and Reuse Settings all work exactly as on the other tabs
+- **Finished sources are hidden** — on the Image and Extend grids a file that already has a finished video in the Library (Output, Library or Archive folder) is hidden, so the picker shows what is left to do. Tick **Show all** to see everything again (not remembered between launches). A source whose video was deleted comes back. The status line reads `181 images · 57 done hidden · 3 selected`
 - **Delete from the grid** — every thumbnail browser can delete: the 🗑 button in the folder row, right-click → Delete, or the Del key. Files (and their cached thumbnails) go to the **Recycle Bin**, so a bad generation is one click away from gone without opening Explorer. A file the built-in player is showing is closed first, then deleted
 - **Workflow dropdown** — every API-format `.json` under the Workflows folder (subfolders included). **Type any part of a name to filter it** — matching runs anywhere in the relative path, not just from the start, so `makeout` narrows 77 workflows to 2. Batch-style workflows using `LoadImageListFromDir //Inspire` also work: the single image is staged into a fresh run folder and the loader pointed at it
 - **⧉ Clone workflow** — copy the selected workflow to a new name (and any subfolder) and switch to the copy, so you can experiment without touching a workflow that already works. Optionally seeds the clone with the prompts, LoRAs and settings currently on screen, and optionally copies its prompt history

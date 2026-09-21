@@ -1,5 +1,14 @@
 # Changelog — ComfyUI Video Creator
 
+### v2.11.0
+- **Selected count on every thumbnail grid.** The status line above the grid now reads `181 images · 3 selected` (Image, Extend and Library grids), so a multi-select can be checked at a glance without opening the run panel.
+- **Finished sources are hidden on the Image and Extend grids; tick "Show all" to see everything.** A file counts as finished when a prompt-history entry records a result made from it *and* that result file is still in the Output, Library or Archive folder — delete a bad generation and its source reappears. The status line says how many are hidden (`· 57 done hidden`). The tick box is per grid and resets each launch. A grid re-hides as soon as a run finishes, and Send to Extend / Reuse Settings still select a hidden file by un-hiding it. Hidden tiles are never part of a selection (Ctrl+A skips them). The Library grid is unchanged. New module `processed.py` does the history scan (mtime-cached per sidecar).
+- The Extend grid's long hint line moved to its own row so the Sort / Show all / status row keeps room.
+
+### v2.10.0
+- **Select several videos on the Video → Extend tab and Extend queues one run per video.** The video grid is multi-select now (Ctrl-click, Shift-click, Ctrl+A), exactly like the Image tab. With more than one selected the source line reads `Selected: 3 videos — …   (one run each, in this order)`, the button reads **▶ Extend 3 Videos**, and each run gets its own last-frame thumbnail in the queue view, its own repeat-guard check and (with Append ticked) its own stitch and size match. Runs queue in grid order, not click order; the log says `Queued 3 of 3 selected videos as separate runs`.
+- **Fix: a single source set directly no longer leaves an old multi-selection behind.** Send to Extend and Reuse Settings set one source without going through the grid; if several files had been selected earlier, Create would still have queued all of them. Setting one source now resets the list.
+
 ### v2.9.0
 - **Run Queue: ⤒ Move to Next.** Select any waiting run and press the new button (beside Move Up / Move Down) to jump it to the front, so it is the next thing ComfyUI starts after the current run — no more clicking Move Up 40 times. The run stays selected at position 1, and the button is disabled when it is already first. The running row is untouched.
 
