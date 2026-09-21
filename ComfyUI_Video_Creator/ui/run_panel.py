@@ -1334,8 +1334,9 @@ class RunPanel(QWidget):
         several means Create queues one run per image, in this order, with
         the same prompt and settings — as if each were picked and Created
         by hand. The first is shown as the source preview."""
-        self._sources = [Path(p) for p in paths]
-        self.set_source(self._sources[0] if self._sources else None)
+        sources = [Path(p) for p in paths]
+        self.set_source(sources[0] if sources else None)
+        self._sources = sources         # after set_source, which resets it to the one file
         n = len(self._sources)
         noun = "image" if self.kind == "image" else "video"
         if n > 1:
@@ -1346,6 +1347,10 @@ class RunPanel(QWidget):
             self._run_btn.setText("▶  Extend Video" if self.kind == "video" else "▶  Create Video")
 
     def set_source(self, path: Path | None):
+        # A single source set directly (Send to Extend, Reuse Settings) must
+        # not leave an older multi-selection behind for Create to queue.
+        self._sources = [path] if path is not None else []
+        self._run_btn.setText("▶  Extend Video" if self.kind == "video" else "▶  Create Video")
         self._source = path
         if path is None:
             self._source_lbl.setText("No image selected" if self.kind == "image" else "No video selected")
@@ -1386,7 +1391,8 @@ class RunPanel(QWidget):
             if self._queue_one(source):
                 queued += 1
         if len(sources) > 1:
-            self.append_log(f"Queued {queued} of {len(sources)} selected images as separate runs")
+            noun = "images" if self.kind == "image" else "videos"
+            self.append_log(f"Queued {queued} of {len(sources)} selected {noun} as separate runs")
 
     def _queue_one(self, source: Path | None) -> bool:
         """Build, guard, record and emit one run for one source. Returns
