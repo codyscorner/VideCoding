@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
 from config import ConfigManager
 from media_tools import extract_thumbnail, resolve_ffmpeg
 from run_worker import RunRequest, RunWorker, _base_stem, _workflow_labels
+from processed import processed_sources
 from ui.library_tab import LibraryTab
 from ui.pod_control import PodControl
 from ui.prompt_history import source_for_result
@@ -97,15 +98,16 @@ class MainWindow(QMainWindow):
         root.addLayout(header)
 
         self._tabs = QTabWidget()
-        # Multi-select: every selected image becomes its own queued run.
+        # Multi-select (here and on the Extend tab): every selected file becomes its own queued run.
         self._image_browser = MediaBrowser("image", self.config.get("image_dir", ""),
                                            self.config.get("image_sort", "Name A→Z"), self._ffmpeg,
-                                           multi=True)
+                                           multi=True, processed_provider=self._processed_sources)
         self._image_panel = RunPanel("image", self.config)
         self._tabs.addTab(self._make_tab(self._image_browser, self._image_panel), "🖼  Image → Video")
 
         self._video_browser = MediaBrowser("video", self.config.get("video_dir", ""),
                                            self.config.get("video_sort", "Newest First"), self._ffmpeg,
+                                           multi=True, processed_provider=self._processed_sources,
                                            hint="Thumbnails show each video's LAST frame — the extension's starting point")
         self._video_panel = RunPanel("video", self.config)
         self._tabs.addTab(self._make_tab(self._video_browser, self._video_panel), "🎬  Video → Extend")
@@ -129,6 +131,8 @@ class MainWindow(QMainWindow):
         self._library.play_requested.connect(self._play_list)
         self._library.send_to_extend.connect(self._send_to_extend)
         self._library.reuse_requested.connect(self._reuse_settings)
+        # A different Library folder changes which sources count as finished.
+        self._library.folder_changed.connect(lambda _f: self._refresh_processed_pickers())
         self._tabs.addTab(self._library, "📚  Library")
         root.addWidget(self._tabs, stretch=1)
 
@@ -149,6 +153,17 @@ class MainWindow(QMainWindow):
         self._image_browser.refresh()
         self._video_browser.refresh()
         self._library.refresh()
+
+    def _refresh_processed_pickers(self):
+        self._image_browser.refresh_processed()
+        self._video_browser.refresh_processed()
+
+    def _processed_sources(self) -> set[str]:
+        """Names of source files that already have a finished video in the
+        Library folder — hidden in the pickers. Only the folder the Library tab
+        is showing counts, so pointing it at an empty folder un-hides everything."""
+        return processed_sources(self.config.get("workflow_dir", ""),
+                                 [self._library.effective_folder()])
 
     def _make_tab(self, browser: MediaBrowser, panel: RunPanel) -> QWidget:
         page = QWidget()
@@ -244,6 +259,7 @@ class MainWindow(QMainWindow):
         if (self.config.get("output_dir") != before["output_dir"]
                 or self.config.get("library_dir") != before["library_dir"]):
             self._library.set_folder(self._library.effective_folder())
+            self._refresh_processed_pickers()
         for panel in self._panels.values():
             panel._font_spin.setValue(int(self.config.get("prompt_font_size", 10) or 10))
             if self.config.get("loras_dir") != before["loras_dir"]:
@@ -376,6 +392,9 @@ class MainWindow(QMainWindow):
         if self._active_panel is not None:
             self._active_panel.on_done(list(paths), self._active_req, timing)
         self._library.refresh()
+        # The source of what just finished now has a video, so it drops out of the pickers
+        self._image_browser.refresh_processed()
+        self._video_browser.refresh_processed()
         # New files may have landed in the folder the Video tab is showing
         out_dir = Path((self.config.get("output_dir", "") or "").strip() or ".")
         vid_dir = Path(self._video_browser.folder) if self._video_browser.folder else None

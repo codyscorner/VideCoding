@@ -17,7 +17,7 @@ from PIL import Image, ImageOps
 from PyQt6.QtCore import QEvent, QSize, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QComboBox, QCompleter, QFileDialog, QHBoxLayout, QLabel,
+    QAbstractItemView, QCheckBox, QComboBox, QCompleter, QFileDialog, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
     QSizePolicy, QVBoxLayout, QWidget,
 )
@@ -169,6 +169,9 @@ class NoScrollComboBox(QComboBox):
         super().keyPressEvent(event)
 
 
+PROCESSED_ROLE = Qt.ItemDataRole.UserRole + 1     # True on a tile that already has a finished video
+
+
 class ThumbnailGrid(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -212,6 +215,11 @@ class ThumbnailGrid(QListWidget):
         for i in range(self.count()):
             item = self.item(i)
             if item.data(Qt.ItemDataRole.UserRole) == key:
+                # Asked for by name (Send to Extend, Reuse Settings), so it
+                # shows even while finished sources are hidden.
+                if item.data(PROCESSED_ROLE):
+                    item.setHidden(False)
+                    item.setData(PROCESSED_ROLE, False)
                 self.setCurrentItem(item)
                 self.scrollToItem(item)
                 return True
@@ -414,9 +422,15 @@ class MediaBrowser(QWidget):
 
     def __init__(self, kind: str, folder: str, sort_option: str, ffmpeg_getter, parent=None,
                  multi: bool = False, last_frame: bool = True, title: str | None = None, hint: str = "",
-                 show_delete: bool = True):
+                 show_delete: bool = True, processed_provider=None):
         super().__init__(parent)
         self.kind = kind                      # "image" | "video"
+        # Returns the lower-cased file names that already have a finished
+        # video in the Library; those tiles are hidden unless "Show all" is
+        # ticked. None = no such filter (the Library itself).
+        self._processed_provider = processed_provider
+        self._processed: set[str] = set()
+        self._loading = False
         self._folder = folder
         self._ffmpeg_getter = ffmpeg_getter
         self._last_frame = last_frame
@@ -474,16 +488,24 @@ class MediaBrowser(QWidget):
             self._sort_combo.setCurrentText(sort_option)
         self._sort_combo.currentTextChanged.connect(self._on_sort)
         row2.addWidget(self._sort_combo)
-        if hint:
-            hint_lbl = QLabel(hint)
-            hint_lbl.setObjectName("status_dim")
-            row2.addSpacing(12)
-            row2.addWidget(hint_lbl)
+        self._show_all = QCheckBox("Show all")
+        self._show_all.setToolTip(
+            f"Off: {noun.lower()}s that already have a finished video in the Library are hidden.\n"
+            "On: every file in the folder is shown. Not remembered between launches.")
+        self._show_all.setVisible(processed_provider is not None)
+        self._show_all.toggled.connect(lambda _on: self._apply_processed_filter())
+        row2.addSpacing(8)
+        row2.addWidget(self._show_all)
         row2.addStretch()
         self._status = QLabel("")
         self._status.setObjectName("status_dim")
         row2.addWidget(self._status)
         layout.addLayout(row2)
+        if hint:
+            hint_lbl = QLabel(hint)
+            hint_lbl.setObjectName("status_dim")
+            hint_lbl.setWordWrap(True)
+            layout.addWidget(hint_lbl)
 
         self.grid = ThumbnailGrid()
         if multi:
@@ -515,7 +537,7 @@ class MediaBrowser(QWidget):
     def selected_paths(self) -> list[Path]:
         """In grid order (the sort on screen), not click order — so a
         multi-select queues top-left to bottom-right, predictably."""
-        items = sorted(self.grid.selectedItems(), key=self.grid.row)
+        items = sorted((it for it in self.grid.selectedItems() if not it.isHidden()), key=self.grid.row)
         return [Path(it.data(Qt.ItemDataRole.UserRole)) for it in items]
 
     def _browse(self):
@@ -543,6 +565,7 @@ class MediaBrowser(QWidget):
         paths = self.selected_paths()
         self.selection_changed.emit(paths[0] if paths else None)
         self.selection_paths_changed.emit(paths)
+        self._update_status()
 
     def _grid_menu(self, pos):
         item = self.grid.itemAt(pos)
@@ -582,8 +605,6 @@ class MediaBrowser(QWidget):
             if not Path(it.data(Qt.ItemDataRole.UserRole)).exists():
                 self.grid.takeItem(self.grid.row(it))
         gone = [p for p in paths if not p.exists()]
-        noun = "image" if self.kind == "image" else "video"
-        self._status.setText(f"{self.grid.count()} {noun}{'s' if self.grid.count() != 1 else ''}")
         self._on_selection()
         if errors:
             QMessageBox.warning(self, "Delete", "Some files could not be deleted:\n" + "\n".join(errors))
@@ -623,25 +644,78 @@ class MediaBrowser(QWidget):
         self.selection_changed.emit(None)
         folder = Path(self._folder) if self._folder else None
         if not folder or not folder.is_dir():
+            self._loading = False
             self._status.setText("No folder selected" if not self._folder else "Folder not found")
             return
+        self._loading = True
         self._status.setText("Loading…")
+        self._load_processed()
         sort_option = self._sort_combo.currentText()
         if self.kind == "image":
             self._loader = ImageLoaderThread(folder, sort_option)
         else:
             self._loader = VideoLoaderThread(folder, self._ffmpeg_getter(), sort_option, last_frame=self._last_frame)
-        self._loader.item_ready.connect(self.grid.add_item)
+        self._loader.item_ready.connect(self._add_item)
         self._loader.progress.connect(lambda c, t: self._status.setText(f"Loading {c}/{t}…"))
         self._loader.finished_loading.connect(lambda n: self._on_loaded(n, previous))
         self._loader.start()
 
     def _on_loaded(self, n: int, previous: str | None):
-        noun = "image" if self.kind == "image" else "video"
-        self._status.setText(f"{n} {noun}{'s' if n != 1 else ''}")
+        self._loading = False
+        self._update_status()
         if previous:
             self.grid.select_key(previous)
         self.loaded.emit(n)
+
+    # -- finished-source filter ------------------------------------------ #
+
+    def _load_processed(self):
+        try:
+            self._processed = set(self._processed_provider()) if self._processed_provider else set()
+        except Exception:  # noqa: BLE001 - a bad sidecar must never blank the grid
+            self._processed = set()
+
+    def _add_item(self, img, key: str, label: str):
+        self.grid.add_item(img, key, label)
+        self._mark_processed(self.grid.item(self.grid.count() - 1))
+
+    def _mark_processed(self, item):
+        """Hide a tile that already has a finished video, unless Show all is on."""
+        done = Path(item.data(Qt.ItemDataRole.UserRole)).name.lower() in self._processed
+        item.setData(PROCESSED_ROLE, done)
+        hide = done and not self._show_all.isChecked()
+        if hide and item.isSelected():
+            item.setSelected(False)
+        item.setHidden(hide)
+
+    def _apply_processed_filter(self):
+        for i in range(self.grid.count()):
+            self._mark_processed(self.grid.item(i))
+        self._on_selection()
+
+    def refresh_processed(self):
+        """A run just finished: recompute what has a result and re-hide,
+        without rescanning the folder."""
+        if self._processed_provider is None:
+            return
+        self._load_processed()
+        self._apply_processed_filter()
+
+    def _update_status(self):
+        """'181 images · 57 done hidden · 3 selected'."""
+        if self._loading:
+            return
+        noun = "image" if self.kind == "image" else "video"
+        hidden = sum(1 for i in range(self.grid.count())
+                     if self.grid.item(i).data(PROCESSED_ROLE) and self.grid.item(i).isHidden())
+        shown = self.grid.count() - hidden
+        text = f"{shown} {noun}{'s' if shown != 1 else ''}"
+        if hidden:
+            text += f" · {hidden} done hidden"
+        selected = len(self.selected_paths())
+        if selected:
+            text += f" · {selected} selected"
+        self._status.setText(text)
 
     def remove_paths(self, paths: list[Path]):
         """Drop rows for files another view just deleted, without a rescan."""
@@ -649,8 +723,6 @@ class MediaBrowser(QWidget):
         for i in range(self.grid.count() - 1, -1, -1):
             if self.grid.item(i).data(Qt.ItemDataRole.UserRole) in gone:
                 self.grid.takeItem(i)
-        noun = "image" if self.kind == "image" else "video"
-        self._status.setText(f"{self.grid.count()} {noun}{'s' if self.grid.count() != 1 else ''}")
         self._on_selection()
 
     def shutdown(self):

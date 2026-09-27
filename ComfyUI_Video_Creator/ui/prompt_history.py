@@ -413,7 +413,10 @@ class PromptExpandDialog(QDialog):
         self._edit = QTextEdit()
         self._edit.setAcceptRichText(False)
         self._edit.setPlainText(text)
-        self._edit.setFont(QFont(font.family(), max(font.pointSize() + 1, 11)))
+        size = max(font.pointSize() + 1, 11)
+        self._edit.setFont(QFont(font.family(), size))
+        # App stylesheet's QWidget font-size beats setFont(); override per widget.
+        self._edit.setStyleSheet(f"font-size: {size}pt;")
         layout.addWidget(self._edit, stretch=1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Apply")
