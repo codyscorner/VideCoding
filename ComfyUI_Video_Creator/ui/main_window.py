@@ -131,6 +131,8 @@ class MainWindow(QMainWindow):
         self._library.play_requested.connect(self._play_list)
         self._library.send_to_extend.connect(self._send_to_extend)
         self._library.reuse_requested.connect(self._reuse_settings)
+        # A different Library folder changes which sources count as finished.
+        self._library.folder_changed.connect(lambda _f: self._refresh_processed_pickers())
         self._tabs.addTab(self._library, "📚  Library")
         root.addWidget(self._tabs, stretch=1)
 
@@ -152,13 +154,16 @@ class MainWindow(QMainWindow):
         self._video_browser.refresh()
         self._library.refresh()
 
+    def _refresh_processed_pickers(self):
+        self._image_browser.refresh_processed()
+        self._video_browser.refresh_processed()
+
     def _processed_sources(self) -> set[str]:
         """Names of source files that already have a finished video in the
-        Library (Output, Library and Archive folders) — hidden in the pickers."""
-        return processed_sources(
-            self.config.get("workflow_dir", ""),
-            [self.config.get("output_dir", ""), self.config.get("library_dir", ""),
-             self.config.get("archive_dir", "")])
+        Library folder — hidden in the pickers. Only the folder the Library tab
+        is showing counts, so pointing it at an empty folder un-hides everything."""
+        return processed_sources(self.config.get("workflow_dir", ""),
+                                 [self._library.effective_folder()])
 
     def _make_tab(self, browser: MediaBrowser, panel: RunPanel) -> QWidget:
         page = QWidget()
@@ -254,6 +259,7 @@ class MainWindow(QMainWindow):
         if (self.config.get("output_dir") != before["output_dir"]
                 or self.config.get("library_dir") != before["library_dir"]):
             self._library.set_folder(self._library.effective_folder())
+            self._refresh_processed_pickers()
         for panel in self._panels.values():
             panel._font_spin.setValue(int(self.config.get("prompt_font_size", 10) or 10))
             if self.config.get("loras_dir") != before["loras_dir"]:

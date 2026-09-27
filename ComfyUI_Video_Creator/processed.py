@@ -3,7 +3,7 @@
 A source counts as processed when a prompt-history entry records a result
 made from it (``sources`` per result file, or the entry-level ``source`` that
 pre-2.6.1 sidecars wrote) AND that result file is still sitting in one of the
-Library's folders — so deleting a bad generation puts its source back in the
+Library folder — so deleting a bad generation puts its source back in the
 picker. Names are compared case-insensitively, as Windows does.
 """
 

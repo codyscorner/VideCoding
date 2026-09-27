@@ -1,5 +1,11 @@
 # Changelog — ComfyUI Video Creator
 
+### v2.11.2
+- **Fix: the prompt "Text size" box did nothing.** The dark theme stylesheet is set on the main window with a fixed `font-size: 10pt` for every widget, and a stylesheet font beats `setFont()`, so the prompt editors stayed at 10pt whatever the spin box said (the value was still saved). The size is now applied as a per-editor stylesheet rule, so the prompt boxes resize live as the value changes. The ⤢ Expand / ⤢ Edit pop-out had the same problem and now opens one point larger than the chosen size (minimum 11pt) as intended.
+
+### v2.11.1
+- **Fix: "finished" is now judged by the Library folder alone.** v2.11.0 also counted the Output and Archive folders, so pointing the Library at an empty folder still hid every source that had a video there. Now a source is hidden only when its result file sits in the folder the Library tab is showing — switch the Library to an empty folder and every thumbnail comes back (Image and Extend grids re-check the moment the Library folder changes, from the Library's Browse button or from Settings). Side effect: archiving a video moves it out of the Library, so its source reappears.
+
 ### v2.11.0
 - **Selected count on every thumbnail grid.** The status line above the grid now reads `181 images · 3 selected` (Image, Extend and Library grids), so a multi-select can be checked at a glance without opening the run panel.
 - **Finished sources are hidden on the Image and Extend grids; tick "Show all" to see everything.** A file counts as finished when a prompt-history entry records a result made from it *and* that result file is still in the Output, Library or Archive folder — delete a bad generation and its source reappears. The status line says how many are hidden (`· 57 done hidden`). The tick box is per grid and resets each launch. A grid re-hides as soon as a run finishes, and Send to Extend / Reuse Settings still select a hidden file by un-hiding it. Hidden tiles are never part of a selection (Ctrl+A skips them). The Library grid is unchanged. New module `processed.py` does the history scan (mtime-cached per sidecar).

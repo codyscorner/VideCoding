@@ -902,9 +902,12 @@ class RunPanel(QWidget):
 
     def _apply_font_size(self, size: int):
         self._cfg.set("prompt_font_size", int(size))
+        # The app stylesheet pins QWidget font-size, which beats setFont(), so
+        # the size has to go in as a widget-level stylesheet rule to take effect.
         font = QFont("Segoe UI", int(size))
         for _pf, edit in self._prompt_edits:
             edit.setFont(font)
+            edit.setStyleSheet(f"QTextEdit {{ font-size: {int(size)}pt; }}")
 
     def _prompt_overrides(self) -> dict[tuple[str, str], str]:
         return {(pf.node_id, pf.key): edit.toPlainText() for pf, edit in self._prompt_edits}
