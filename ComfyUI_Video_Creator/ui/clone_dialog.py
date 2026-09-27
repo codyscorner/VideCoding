@@ -22,11 +22,14 @@ ROOT_LABEL = "(Workflows folder)"
 class CloneWorkflowDialog(QDialog):
     """Ask for the clone's name and folder. `result_path()` is valid after accept()."""
 
-    def __init__(self, workflow_dir: Path, source_rel: str, has_edits: bool, parent=None):
+    def __init__(self, workflow_dir: Path, source_rel: str, has_edits: bool, parent=None,
+                 blank: bool = False):
+        """`blank=True` is the "✚ New" button: `source_rel` is the Settings
+        template, and the edits/history options don't apply."""
         super().__init__(parent)
         self._dir = workflow_dir
         self._path: Path | None = None
-        self.setWindowTitle("Clone workflow")
+        self.setWindowTitle("New blank workflow" if blank else "Clone workflow")
         self.setMinimumWidth(560)
         self.setStyleSheet(parent.window().styleSheet() if parent else "")
 
@@ -35,11 +38,15 @@ class CloneWorkflowDialog(QDialog):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(8)
 
-        title = QLabel(f"Copy of {src.name}")
+        title = QLabel(f"New workflow from template {src.name}" if blank else f"Copy of {src.name}")
         title.setStyleSheet(f"color: {COLORS['accent_hover']}; font-weight: bold; font-size: 12pt;")
         layout.addWidget(title)
-        blurb = QLabel("The original is left untouched — the copy is selected when you close this "
-                       "dialog, so anything you change and save from here on lands in the copy.")
+        blurb = QLabel(
+            "Starts with every prompt empty, every LoRA switched off and no history. The template "
+            "is left untouched, and the new workflow is selected when you close this dialog."
+            if blank else
+            "The original is left untouched — the copy is selected when you close this "
+            "dialog, so anything you change and save from here on lands in the copy.")
         blurb.setWordWrap(True)
         blurb.setStyleSheet(f"color: {COLORS['fg_secondary']};")
         layout.addWidget(blurb)
@@ -81,6 +88,11 @@ class CloneWorkflowDialog(QDialog):
                                       "Off: the clone starts with an empty history (the original's is "
                                       "still readable from the History dialog).")
         layout.addWidget(self._with_history)
+        if blank:
+            self._with_edits.setChecked(False)
+            self._with_edits.setVisible(False)
+            self._with_history.setChecked(False)
+            self._with_history.setVisible(False)
 
         self._status = QLabel("")
         self._status.setWordWrap(True)
@@ -88,13 +100,14 @@ class CloneWorkflowDialog(QDialog):
 
         self._buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
                                          | QDialogButtonBox.StandardButton.Cancel)
-        self._buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Create clone")
+        self._buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Create" if blank else "Create clone")
         self._buttons.accepted.connect(self.accept)
         self._buttons.rejected.connect(self.reject)
         layout.addWidget(self._buttons)
 
-        suggested = unique_workflow_path(workflow_dir / src_folder, f"{src.stem} copy").stem \
-            if workflow_dir.is_dir() else f"{src.stem} copy"
+        base = "New workflow" if blank else f"{src.stem} copy"
+        suggested = unique_workflow_path(workflow_dir / src_folder, base).stem \
+            if workflow_dir.is_dir() else base
         self._name.setText(suggested)
         self._name.setFocus()
         self._name.selectAll()

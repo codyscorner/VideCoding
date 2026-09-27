@@ -146,7 +146,7 @@ class PodControl(QWidget):
         self._pod_id = ""              # the pod currently in use (shown in the header)
         self._skip: set[str] = set()   # pods the launch chooser said to leave alone this session
         self._stopped_at_launch: set[str] = set()
-        self._owned = False            # did THIS app start it? governs auto-stop only
+        self._owned = False            # did THIS app start it? governs spend-limit auto-stop only
         self._start_worker: PodStartWorker | None = None
         self._stop_worker: PodStopWorker | None = None
         self._progress: QProgressDialog | None = None
@@ -205,7 +205,7 @@ class PodControl(QWidget):
     @property
     def owned(self) -> bool:
         """True only when THIS app started the pod, so only then may it be
-        stopped automatically."""
+        stopped automatically (spend limit). The quit prompt asks either way."""
         return self._owned
 
     def _session_path(self) -> Path:
@@ -392,7 +392,7 @@ class PodControl(QWidget):
             self._adopt(pod_id, runpod_api.proxy_url(pod_id), owned=owned)
             self.log.emit(
                 f"RunPod: using {name}, already running ({runpod_api.spend_summary(pod)})"
-                + ("" if owned else " — started outside the app, so it won't be stopped on exit")
+                + ("" if owned else " — started outside the app, so it won't be stopped automatically")
                 + (f". Connection switched from {configured or 'the previous URL'} to this pod."
                    if pod_id != configured else ""))
         elif choice == "start":
@@ -765,9 +765,9 @@ class PodControl(QWidget):
         if self._start_worker is not None:
             self._start_worker.cancel()
             self._start_worker.wait(3000)
-        if not self._pod_id or not self._owned:
-            return          # never stop a pod someone started outside the app
-        if not self._config.get("runpod_auto_stop_on_exit", True):
+        # Only called after the user answers Yes on the quit prompt, so an
+        # adopted pod (started outside the app) is stopped too — their call.
+        if not self._pod_id:
             return
         runpod_api.stop_pod(self._pod_id)
         self._forget()

@@ -598,11 +598,16 @@ class MainWindow(QMainWindow):
                 return
             self._worker.cancel()
             self._worker.wait(5000)
-        if self._pod.pod_id and self._pod.owned and self.config.get("runpod_auto_stop_on_exit", True):
+        # Ask about any pod this session is connected to — one adopted from the
+        # launch chooser too, not only one this app started.
+        if self._pod.pod_id and self.config.get("runpod_auto_stop_on_exit", True):
             ans = QMessageBox.question(
                 self, "Stop the pod?",
-                f"Stop RunPod pod {self._pod.pod_id} before quitting?\n\n"
-                "Leaving it running keeps billing until you stop it in the console.",
+                f"RunPod pod {self._pod.pod_id} is still running.\n\n"
+                "Yes — stop the pod, then quit. GPU billing ends.\n"
+                "No — quit and leave the pod running. It keeps billing until you "
+                "stop it in the RunPod console. Can reconnect if still running on "
+                "next app launch.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Yes,
