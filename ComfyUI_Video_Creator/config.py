@@ -32,6 +32,7 @@ class ConfigManager:
         "runpod_auto_prompt": True,            # offer to start a pod on launch
         "runpod_auto_stop_on_exit": True,      # ask to stop the connected pod when quitting
         "runpod_spend_limit": 0.0,             # USD per pod run; 0 = no limit
+        "runpod_idle_stop_min": 0,             # stop the pod this long after the queue finishes; 0 = off
         "runpod_spend_warn_fraction": 0.8,
         # "Keep trying" when every pod is busy
         "runpod_retry_interval_min": 10,       # minutes between sweeps of the pod list
@@ -47,6 +48,16 @@ class ConfigManager:
         "archive_dir": "",                     # where the Library's Archive button moves videos to
         "library_sort": "Newest First",
         "loras_dir": "P:/AI/ComfyLocal/ComfyUI_windows_portable/ComfyUI/models/loras",
+        # Model check & sync against the RunPod volume (model_sync.py). Before a
+        # RunPod run every model file the workflow names is looked for locally and
+        # on the volume; whatever is missing on one side is copied from the other.
+        "model_check_enabled": True,
+        "models_dir": "",                      # ComfyUI/models root; blank = parent of loras_dir
+        "s3_profile_name": "runpod-s3",        # profile in %USERPROFILE%\.aws\credentials
+        "s3_region": "",
+        "s3_endpoint_url": "",
+        "s3_bucket_name": "",
+        "s3_models_prefix": "runpod-slim/ComfyUI/models/",
         # Staging for workflows that read a whole folder (LoadImageListFromDir)
         "staging_dir_local": "",
         "runpod_input_dir": "/workspace/runpod-slim/ComfyUI/input",

@@ -157,6 +157,10 @@ class PodControl(QWidget):
         self._retry_timer = QTimer(self)
         self._retry_timer.setSingleShot(True)
         self._retry_timer.timeout.connect(self._retry_tick)
+        self._idle_deadline = 0.0       # epoch seconds the idle stop fires; 0 = not counting
+        self._idle_timer = QTimer(self)
+        self._idle_timer.setSingleShot(True)
+        self._idle_timer.timeout.connect(self._idle_tick)
         self._balance_worker = None     # BalanceWorker in flight, or None
         self._balance: dict = {}        # last account_balance() result
 
@@ -233,6 +237,8 @@ class PodControl(QWidget):
     def _forget(self):
         self._pod_id = ""
         self._owned = False
+        self._idle_timer.stop()
+        self._idle_deadline = 0.0
         try:
             self._session_path().unlink(missing_ok=True)
         except OSError:
@@ -303,6 +309,20 @@ class PodControl(QWidget):
             return (session.get("pod_id") or "").strip(), bool(session.get("left_running"))
         except (OSError, ValueError, AttributeError):
             return "", False
+
+    def _skipped_still_running(self) -> dict | None:
+        """The first pod the launch chooser set aside ("start another") that is
+        still up with a GPU, or None."""
+        if not self._skip:
+            return None
+        try:
+            pods = runpod_api.list_pods()
+        except runpod_api.RunPodError:
+            return None
+        for pod in pods:
+            if pod.get("id") in self._skip and runpod_api.gpu_state(pod) == "ok":
+                return pod
+        return None
 
     def _running_pods(self, pods: list[dict], session_id: str) -> list[dict]:
         """Every pod that is up with a GPU — this app's pod first, then the one
@@ -580,26 +600,51 @@ class PodControl(QWidget):
                  "WARNING: no spend limit is set, so a pod found while you're away will "
                  "run until you stop it. Set one in Settings first.")
 
+        # "Start another" from the launch chooser left the running pod(s) out of
+        # the sweep. Nothing else came up, so offer the one that's still there
+        # rather than leaving the app with no pod until a restart.
+        fallback = self._skipped_still_running()
+        fb_name = (fallback or {}).get("name") or (fallback or {}).get("id", "")
+        keep = f"every {interval} min for the next {window // 60}h {window % 60:02d}m"
+
         box = QMessageBox(self)
         box.setWindowTitle("No pods available")
         box.setIcon(QMessageBox.Icon.Question)
-        box.setText(
-            "None of your current pods are available to start.\n\n"
-            "This usually means the machines they're pinned to have their GPUs "
-            "rented out right now.\n\n"
-            f"Keep trying every {interval} min for the next "
-            f"{window // 60}h {window % 60:02d}m, and alert you if one frees up?\n\n{guard}")
+        if fallback:
+            box.setText(
+                "None of your other pods are available to start — the machines they're "
+                "pinned to have their GPUs rented out right now.\n\n"
+                f"{fb_name} is still running ({runpod_api.spend_summary(fallback)}).\n\n"
+                f"Use {fb_name} — connect to it now.\n"
+                f"Keep Trying — look for another pod {keep}, and alert you if one frees up.\n\n"
+                f"{guard}")
+        else:
+            box.setText(
+                "None of your current pods are available to start.\n\n"
+                "This usually means the machines they're pinned to have their GPUs "
+                "rented out right now.\n\n"
+                f"Keep trying {keep}, and alert you if one frees up?\n\n{guard}")
         if summary:
             # Per-pod reasons, so "nothing available" can be told apart from
             # "every attempt failed for the same unexpected reason".
             box.setDetailedText(summary)
+        use_btn = (box.addButton(f"Use {fb_name}", QMessageBox.ButtonRole.YesRole)
+                   if fallback else None)
         retry_btn = box.addButton("Keep Trying", QMessageBox.ButtonRole.AcceptRole)
         local_btn = box.addButton("Switch to Local", QMessageBox.ButtonRole.DestructiveRole)
         box.addButton("Close", QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(retry_btn)
+        box.setDefaultButton(use_btn or retry_btn)
         box.exec()
 
-        if box.clickedButton() is retry_btn:
+        if use_btn is not None and box.clickedButton() is use_btn:
+            pod_id = fallback.get("id")
+            self._skip.discard(pod_id)
+            session_id, _left = self._read_session()
+            owned = pod_id == session_id
+            self._adopt(pod_id, runpod_api.proxy_url(pod_id), owned=owned)
+            self.log.emit(f"RunPod: nothing else free — using {fb_name}, already running "
+                          f"({runpod_api.spend_summary(fallback)})")
+        elif box.clickedButton() is retry_btn:
             self.begin_retry()
         elif box.clickedButton() is local_btn:
             self._config.set("mode", "local")
@@ -673,6 +718,8 @@ class PodControl(QWidget):
                         if left else f" / ${limit:.2f}  |  limit reached")
         if self._balance:
             summary += f"  |  balance ${self._balance['balance']:.2f}"
+        if self._idle_deadline:
+            summary += "  |  idle, stops " + time.strftime("%H:%M", time.localtime(self._idle_deadline))
         self._status_dot.setText(f"<span style='color:{dot}'>●</span>")
         self._spend_lbl.setText(f"<span style='color:{COLORS['fg_primary']}'>{summary}</span>")
 
@@ -753,6 +800,40 @@ class PodControl(QWidget):
             self.stop_pod(quiet=True)
 
     # ------------------------------------------------------------------ #
+    # Idle stop
+    # ------------------------------------------------------------------ #
+
+    def start_idle_timer(self):
+        """The last run finished and nothing is queued (the progress bar reads
+        DONE): count down the Settings idle time, then stop the pod so an
+        overnight queue that ends early doesn't bill for hours. Applies to any
+        connected pod — it's an opt-in setting, like answering Yes on quit."""
+        minutes = int(self._config.get("runpod_idle_stop_min", 0) or 0)
+        if minutes <= 0 or not self._pod_id or self._is_busy():
+            return
+        self._idle_deadline = time.time() + minutes * 60
+        self._idle_timer.start(minutes * 60_000)
+        self.log.emit(f"RunPod: queue finished — the pod stops at "
+                      f"{time.strftime('%H:%M', time.localtime(self._idle_deadline))} "
+                      f"({minutes} min) unless another run starts")
+
+    def cancel_idle_timer(self):
+        """A run started, so the pod is working again."""
+        if not self._idle_deadline:
+            return
+        self._idle_timer.stop()
+        self._idle_deadline = 0.0
+        self.log.emit("RunPod: new run started — idle stop cancelled")
+
+    def _idle_tick(self):
+        self._idle_deadline = 0.0
+        if not self._pod_id or self._is_busy():
+            return
+        minutes = int(self._config.get("runpod_idle_stop_min", 0) or 0)
+        self.log.emit(f"RunPod: idle for {minutes} min — stopping {self._pod_id}")
+        self.stop_pod(quiet=True)
+
+    # ------------------------------------------------------------------ #
     # Exit
     # ------------------------------------------------------------------ #
 
@@ -761,6 +842,7 @@ class PodControl(QWidget):
         be torn down before it ever sent the request."""
         self._timer.stop()
         self._retry_timer.stop()
+        self._idle_timer.stop()
         self._retry_deadline = 0.0
         if self._start_worker is not None:
             self._start_worker.cancel()

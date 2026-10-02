@@ -4,10 +4,12 @@ from pathlib import Path
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
-    QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QSplitter,
+    QHBoxLayout, QLabel, QMainWindow, QMessageBox, QProgressDialog, QPushButton, QSplitter,
     QTabWidget, QVBoxLayout, QWidget,
 )
 
+import alerts
+import model_sync
 from config import ConfigManager
 from media_tools import extract_thumbnail, resolve_ffmpeg
 from run_worker import RunRequest, RunWorker, _base_stem, _workflow_labels
@@ -21,6 +23,7 @@ from ui.settings_dialog import SettingsDialog
 from ui.styles import COLORS, STYLESHEET
 from ui.video_player import VideoPlayerDialog
 from ui.widgets import THUMB_SIZE, MediaBrowser
+from workflow_tools import analyze, apply_inputs, apply_turbo_toggle, load_workflow
 
 # Width that shows exactly two thumbnail columns: two grid cells plus the
 # grid spacing, the list padding, the frame and a scrollbar.
@@ -39,7 +42,17 @@ class MainWindow(QMainWindow):
         self._active_panel: RunPanel | None = None
         self._active_req: RunRequest | None = None
         self._queue: list[RunRequest] = []
+        self._batch_runs = 0            # runs since the app was last idle; 2+ = a queue, alerted on finish
         self._queue_dlg: QueueDialog | None = None
+        # Model check & sync (RunPod mode): requests wait here while the
+        # workflow's model files are compared with the pod volume and any
+        # missing ones copied across; then they go through _start_checked.
+        self._model_queue: list[RunRequest] = []
+        self._model_batch: list[RunRequest] = []
+        self._model_check: model_sync.ModelCheckWorker | None = None
+        self._model_check_scheduled = False
+        self._transfer: model_sync.TransferWorker | None = None
+        self._transfer_dlg: QProgressDialog | None = None
         self._player: VideoPlayerDialog | None = None
         self._tab_splitters: list[QSplitter] = []
         self._splits_initialised = False
@@ -191,7 +204,10 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(200, self._pod.check_on_launch)
 
     def _generation_running(self) -> bool:
-        return self._worker is not None and self._worker.isRunning()
+        # A model transfer counts: the pod is about to be used, so the idle
+        # stop and the spend-limit stop must wait for it like a run.
+        return ((self._worker is not None and self._worker.isRunning())
+                or self._transfer is not None)
 
     def _log_everywhere(self, msg: str):
         """Pod progress isn't tied to any one tab, so it goes to every log."""
@@ -286,6 +302,20 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No output folder", "Set the Output folder in Settings first.")
             return
         self.config.save()
+        if self.config.is_runpod() and model_sync.check_enabled(self.config.get_all()):
+            # Hold the request until the workflow's model files are confirmed
+            # on the pod (and copied there / back here if not). Requests that
+            # arrive in the same event-loop turn — a multi-select queues one
+            # per image — are checked together, in one pass.
+            self._model_queue.append(req)
+            if not self._model_check_scheduled:
+                self._model_check_scheduled = True
+                QTimer.singleShot(0, self._run_model_check)
+            return
+        self._start_checked(req)
+
+    def _start_checked(self, req: RunRequest):
+        """Queue or launch a request whose models are known to be in place."""
         if self._worker is not None and self._worker.isRunning():
             # ComfyUI only works one prompt at a time - hold this one and run
             # it automatically once whatever's running now finishes.
@@ -296,11 +326,186 @@ class MainWindow(QMainWindow):
             return
         self._launch(req)
 
+    # ------------------------------------------------------------------ #
+    # Model check & sync (RunPod)
+    # ------------------------------------------------------------------ #
+
+    def _run_model_check(self):
+        self._model_check_scheduled = False
+        if self._model_check is not None or self._transfer is not None or not self._model_queue:
+            return
+        batch, self._model_queue = self._model_queue, []
+        refs: dict[model_sync.ModelRef, None] = {}
+        for req in batch:
+            try:
+                wf = load_workflow(req.workflow_path)
+                if req.lora_edits:
+                    apply_inputs(wf, req.lora_edits)
+                if req.turbo_enabled is not None:
+                    a = analyze(wf)
+                    if a.turbo is not None:
+                        apply_turbo_toggle(wf, a.turbo, req.turbo_enabled)
+            except Exception as e:  # noqa: BLE001
+                self._panel_for(req).append_log(f"Model check: couldn't read {req.workflow_path.name} ({e}) — the run will report it")
+                continue
+            for r in model_sync.models_in_workflow(wf):
+                refs.setdefault(r, None)
+        if not refs:
+            self._release_batch(batch)
+            return
+        self._model_batch = batch
+        self._pod.cancel_idle_timer()
+        panel = self._panel_for(batch[0])
+        panel.append_log(f"Model check: comparing {len(refs)} model file(s) between the local models folder and the pod volume…")
+        self._model_check = model_sync.ModelCheckWorker(self.config.get_all(), list(refs))
+        self._model_check.done.connect(self._on_model_plan)
+        self._model_check.finished.connect(self._model_check_finished)
+        self._model_check.start()
+
+    def _model_check_finished(self):
+        self._model_check = None
+        # Anything that arrived while the check ran (and no transfer followed)
+        if self._transfer is None and self._model_queue:
+            QTimer.singleShot(0, self._run_model_check)
+
+    def _release_batch(self, batch: list[RunRequest]):
+        for req in batch:
+            self._start_checked(req)
+
+    def _drop_batch(self, batch: list[RunRequest], why: str):
+        if batch:
+            self._panel_for(batch[0]).append_log(
+                f"{len(batch)} run{'s' if len(batch) != 1 else ''} not started — {why}")
+        self._update_queue_label()
+
+    def _on_model_plan(self, plan: model_sync.SyncPlan):
+        batch, self._model_batch = self._model_batch, []
+        panel = self._panel_for(batch[0]) if batch else self._image_panel
+        if plan.error:
+            ans = QMessageBox.question(
+                self, "Couldn't check the pod's models",
+                f"The pod volume could not be listed:\n\n{plan.error}\n\n"
+                "Start the run anyway? A model the pod lacks will fail on the server.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            panel.append_log(f"Model check failed: {plan.error}")
+            if ans == QMessageBox.StandardButton.Yes:
+                self._release_batch(batch)
+            else:
+                self._drop_batch(batch, "model check failed (see Settings > Models)")
+            return
+        for ref, actual in plan.case_mismatch.items():
+            panel.append_log(f"Model check: {ref.rel} is spelled {actual} on disk — the Linux pod is case-sensitive")
+        for ref, (lsize, rsize) in plan.size_mismatch.items():
+            panel.append_log(f"Model check: {ref.rel} differs in size (local {model_sync.fmt_size(lsize)}, pod {model_sync.fmt_size(rsize)}) — not touched")
+        if plan.clean:
+            panel.append_log("Model check: every model file is on the pod")
+            self._release_batch(batch)
+            return
+
+        lines = []
+        if plan.uploads:
+            lines.append(f"Upload to the pod ({model_sync.fmt_size(sum(j.size for j in plan.uploads))}):")
+            lines += [f"    ↑ {j.label}  ({model_sync.fmt_size(j.size)})" for j in plan.uploads]
+        if plan.downloads:
+            lines.append(f"Download to {plan.local_root} ({model_sync.fmt_size(sum(j.size for j in plan.downloads))}):")
+            lines += [f"    ↓ {j.label}  ({model_sync.fmt_size(j.size)})" for j in plan.downloads]
+        if plan.nowhere:
+            lines.append("Not found on the pod OR locally — the run will fail on the server unless the pod has them outside the volume:")
+            lines += [f"    ✗ {r.kind}: {r.rel}" for r in plan.nowhere]
+        body = "\n".join(lines)
+        for ln in lines:
+            panel.append_log("Model check: " + ln.strip())
+
+        if plan.jobs:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle("Sync models with the pod?")
+            box.setText(f"{len(plan.jobs)} model file(s) are missing on one side "
+                        f"({model_sync.fmt_size(plan.total_bytes)} to move).")
+            box.setInformativeText(body + "\n\nCopy them now? The run starts automatically once every file is verified.")
+            yes = box.addButton("Sync, then run", QMessageBox.ButtonRole.AcceptRole)
+            anyway = box.addButton("Run without syncing", QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(yes)
+            box.exec()
+            if box.clickedButton() is yes:
+                self._start_transfer(plan, batch)
+            elif box.clickedButton() is anyway:
+                self._release_batch(batch)
+            else:
+                self._drop_batch(batch, "model sync cancelled")
+            return
+
+        ans = QMessageBox.question(
+            self, "Models not found",
+            body + "\n\nStart the run anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ans == QMessageBox.StandardButton.Yes:
+            self._release_batch(batch)
+        else:
+            self._drop_batch(batch, "model files missing on both sides")
+
+    def _start_transfer(self, plan: model_sync.SyncPlan, batch: list[RunRequest]):
+        self._model_batch = batch
+        panel = self._panel_for(batch[0])
+        self._transfer_dlg = QProgressDialog("Starting…", "Cancel", 0, 1000, self)
+        self._transfer_dlg.setWindowTitle("Syncing models with the pod")
+        self._transfer_dlg.setMinimumWidth(560)
+        self._transfer_dlg.setMinimumDuration(0)
+        self._transfer_dlg.setAutoClose(False)
+        self._transfer_dlg.setAutoReset(False)
+        self._transfer_dlg.canceled.connect(self._cancel_transfer)
+        self._transfer = model_sync.TransferWorker(self.config.get_all(), plan.jobs)
+        self._transfer.log.connect(panel.append_log)
+        self._transfer.progress.connect(self._on_transfer_progress)
+        self._transfer.finished_ok.connect(self._on_transfer_done)
+        self._transfer.finished.connect(self._transfer_finished)
+        self._transfer.start()
+
+    def _cancel_transfer(self):
+        if self._transfer is not None:
+            self._transfer.cancel()
+            if self._transfer_dlg is not None:
+                self._transfer_dlg.setLabelText("Cancelling after the current file…")
+
+    def _on_transfer_progress(self, done: int, total: int, label: str, files_done: int, files_total: int):
+        if self._transfer_dlg is None:
+            return
+        self._transfer_dlg.setValue(int(done * 1000 / total) if total else 0)
+        self._transfer_dlg.setLabelText(
+            f"{label}\n{model_sync.fmt_size(done)} of {model_sync.fmt_size(total)}  —  file {min(files_done + 1, files_total)} of {files_total}")
+
+    def _on_transfer_done(self, errors: list):
+        batch, self._model_batch = self._model_batch, []
+        if self._transfer_dlg is not None:
+            self._transfer_dlg.close()
+            self._transfer_dlg = None
+        panel = self._panel_for(batch[0]) if batch else self._image_panel
+        if errors:
+            text = "\n".join(f"• {name}: {err}" for name, err in errors[:12])
+            QMessageBox.critical(self, "Model sync failed",
+                                 f"{len(errors)} file(s) did not transfer:\n\n{text}\n\nThe run was not started.")
+            self._drop_batch(batch, "model sync failed")
+            return
+        panel.append_log("Model sync: every file verified — starting the run")
+        # A downloaded LoRA should show up in the dropdowns straight away.
+        self._image_panel.reload_loras_from_folder(quiet=True)
+        self._release_batch(batch)
+
+    def _transfer_finished(self):
+        self._transfer = None
+        if self._model_queue:
+            QTimer.singleShot(0, self._run_model_check)
+
     def _launch(self, req: RunRequest):
         panel = self._panel_for(req)
         self._active_panel = panel
         self._active_req = req
         panel.set_running(True, active=True)
+        self._pod.cancel_idle_timer()
+        self._batch_runs += 1
 
         cfg = self.config.get_all()
         self._worker = RunWorker(cfg, req)
@@ -419,6 +624,13 @@ class MainWindow(QMainWindow):
         # A deferred "stop when the spend limit is hit" lands here, once the
         # run it was waiting for has actually finished.
         self._pod.run_finished()
+        if self._worker is None:        # nothing launched after it: the queue is done
+            if self._batch_runs >= 2 and self.config.get("alert_sound_enabled", True):
+                # Same sound as "a pod is available" — worth walking back to the desk for.
+                if alerts.play(self.config.get("alert_sound_path", "")):
+                    self._log_everywhere(f"Queue finished ({self._batch_runs} runs) — alert sound played")
+            self._batch_runs = 0
+            self._pod.start_idle_timer()
 
     # ------------------------------------------------------------------ #
     # Player
@@ -598,6 +810,9 @@ class MainWindow(QMainWindow):
                 return
             self._worker.cancel()
             self._worker.wait(5000)
+        if self._transfer is not None:
+            self._transfer.cancel()
+            self._transfer.wait(3000)
         # Ask about any pod this session is connected to — one adopted from the
         # launch chooser too, not only one this app started.
         if self._pod.pod_id and self.config.get("runpod_auto_stop_on_exit", True):
