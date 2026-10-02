@@ -2,6 +2,7 @@ COLORS = {
     'bg_dark':      '#0d0d1a',
     'bg_medium':    '#1a1a2e',
     'bg_light':     '#16213e',
+    'bg_input':     '#12122a',
     'fg_primary':   '#e0e0ff',
     'fg_secondary': '#9090cc',
     'fg_dim':       '#505080',
@@ -181,5 +182,49 @@ QScrollBar::handle:vertical {{
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0px;
+}}
+QLabel#status_dim {{
+    color: {COLORS['fg_secondary']};
+    font-size: 9pt;
+}}
+QPushButton#small_btn {{
+    padding: 5px 10px;
+    font-size: 10pt;
+}}
+QPushButton#secondary_btn {{
+    background-color: {COLORS['bg_light']};
+    color: {COLORS['fg_primary']};
+    border: 1px solid {COLORS['border']};
+    padding: 5px 12px;
+    font-size: 10pt;
+}}
+QPushButton#secondary_btn:hover {{
+    background-color: {COLORS['accent_dark']};
+    border: 1px solid {COLORS['accent']};
+}}
+QTabWidget::pane {{
+    border: 1px solid {COLORS['border']};
+    border-radius: 4px;
+    top: -1px;
+}}
+QTabBar::tab {{
+    background-color: {COLORS['bg_medium']};
+    color: {COLORS['fg_secondary']};
+    border: 1px solid {COLORS['border']};
+    border-bottom: none;
+    border-top-left-radius: 5px;
+    border-top-right-radius: 5px;
+    padding: 9px 26px;
+    font-size: 11pt;
+    font-weight: bold;
+    margin-right: 2px;
+}}
+QTabBar::tab:selected {{
+    background-color: {COLORS['accent']};
+    color: white;
+}}
+QTabBar::tab:hover:!selected {{
+    background-color: {COLORS['bg_light']};
+    color: {COLORS['fg_primary']};
 }}
 """

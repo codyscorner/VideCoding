@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
 from config import ConfigManager
 from ui.styles import COLORS
 from ui.widgets import NoScrollComboBox
+from workflow_tools import list_workflows
 
 
 class SettingsDialog(QDialog):
@@ -133,6 +134,24 @@ class SettingsDialog(QDialog):
         edl.addWidget(self._font_spin)
         edl.addStretch()
         prompt_tab.addWidget(ed_group)
+
+        # ── Blank workflow templates ─────────────────────────────────────
+        blank_group = QGroupBox("New blank workflow")
+        bl = QVBoxLayout(blank_group)
+        bl.setSpacing(10)
+        blank_note = QLabel("The ✚ New button on the Image → Video and Text → Video tabs copies the "
+                            "workflow picked here under a new name, with every prompt emptied and every "
+                            "LoRA switched off. The template itself is never changed.")
+        blank_note.setWordWrap(True)
+        blank_note.setObjectName("status_dim")
+        bl.addWidget(blank_note)
+        wf_rels = list_workflows(Path(config.get("workflow_dir", "") or "")) \
+            if (config.get("workflow_dir", "") or "").strip() else []
+        self._blank_image = self._template_row(bl, "Image → Video:", wf_rels,
+                                               config.get("image_blank_template", ""))
+        self._blank_text = self._template_row(bl, "Text → Video:", wf_rels,
+                                              config.get("text_blank_template", ""))
+        prompt_tab.addWidget(blank_group)
 
         # ── AI Prompt Rewriter ──────────────────────────────────────────
         rw_group = QGroupBox("AI Prompt Rewriter (local LM Studio)")
@@ -294,7 +313,7 @@ class SettingsDialog(QDialog):
         self._pod_prompt.setToolTip("Offer to start a pod each time the app opens")
         self._pod_prompt.setChecked(bool(config.get("runpod_auto_prompt", True)))
         self._pod_autostop = QCheckBox("Stop pod on exit")
-        self._pod_autostop.setToolTip("Stop the pod this app started when quitting")
+        self._pod_autostop.setToolTip("When quitting with a pod connected, ask whether to stop it or leave it running")
         self._pod_autostop.setChecked(bool(config.get("runpod_auto_stop_on_exit", True)))
         checks = QHBoxLayout()
         checks.addWidget(self._pod_prompt)
@@ -347,6 +366,20 @@ class SettingsDialog(QDialog):
         row.addWidget(edit, stretch=1)
         parent.addLayout(row)
         return edit
+
+    def _template_row(self, parent, label, rels: list[str], current: str) -> NoScrollComboBox:
+        row = QHBoxLayout()
+        row.addWidget(self._label(label))
+        combo = NoScrollComboBox()
+        combo.addItem("No template selected — please select a workflow (JSON) file for ✚ New", "")
+        for rel in rels:
+            combo.addItem(rel, rel)
+        if current and combo.findData(current) < 0:
+            combo.addItem(f"{current}  (missing)", current)
+        combo.setCurrentIndex(max(combo.findData(current or ""), 0))
+        row.addWidget(combo, stretch=1)
+        parent.addLayout(row)
+        return combo
 
     def _folder_row(self, parent, label, value, placeholder) -> QLineEdit:
         row = QHBoxLayout()
@@ -662,6 +695,8 @@ class SettingsDialog(QDialog):
         c.set("runpod_input_dir", self._runpod_input.text().strip())
         c.set("ffmpeg_path", self._ffmpeg.text().strip())
         c.set("prompt_font_size", int(self._font_spin.value()))
+        c.set("image_blank_template", self._blank_image.currentData() or "")
+        c.set("text_blank_template", self._blank_text.currentData() or "")
         c.set("rewriter_base_url", self._rewriter_url.text().strip())
         c.set("rewriter_model", self._rewriter_model.currentText().strip())
         c.set("runpod_gpu_order", self._current_gpu_order())

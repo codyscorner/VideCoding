@@ -30,7 +30,7 @@ class ConfigManager:
         "runpod_gpu_order": [],                # GPU models, best first; outranks runpod_pod_order
         "runpod_pod_order": [],                # pod IDs, best first within a GPU model
         "runpod_auto_prompt": True,            # offer to start a pod on launch
-        "runpod_auto_stop_on_exit": True,      # stop the pod this app started when quitting
+        "runpod_auto_stop_on_exit": True,      # ask to stop the connected pod when quitting
         "runpod_spend_limit": 0.0,             # USD per pod run; 0 = no limit
         "runpod_spend_warn_fraction": 0.8,
         # "Keep trying" when every pod is busy
@@ -56,6 +56,9 @@ class ConfigManager:
         "image_workflow": "",
         "video_workflow": "",
         "text_workflow": "",
+        # "✚ New" copies these (relative to workflow_dir) with prompts + LoRAs cleared
+        "image_blank_template": "",
+        "text_blank_template": "",
         "text_output_name": "",                # Text → Video: base name for the saved clip (blank = T2V)
         "image_sort": "Name A→Z",
         "video_sort": "Newest First",
