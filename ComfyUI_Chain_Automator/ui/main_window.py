@@ -3,7 +3,6 @@ from pathlib import Path
 import json
 import re
 import subprocess
-import threading
 import os
 import zlib
 
@@ -34,6 +33,8 @@ from ui.generate_tab import GenerateTab
 from ui.prompt_writer_tab import PromptWriterTab
 from ui.video_settings_dialog import VideoSettingsDialog
 from ui.widgets import ThumbnailGrid, THUMB_SIZE
+from ui.pod_control import PodControl
+import alerts
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv"}
@@ -492,6 +493,22 @@ class MainWindow(QMainWindow):
         self._refresh_chain_folders()
         self._populate_images()
 
+    def _generation_running(self) -> bool:
+        """PodControl asks this: a running batch (or a LoRA upload that will
+        start one) means the pod is working, so a spend-limit stop waits and
+        the idle countdown never arms."""
+        if self._worker is not None and self._worker.isRunning():
+            return True
+        return bool(self._lora_upload_worker and self._lora_upload_worker.isRunning())
+
+    def _on_server_changed(self):
+        """A pod came up (or went away) and PodControl rewrote mode/runpod_url:
+        refresh the mode badges and re-run the pod-side LoRA check."""
+        self._generate_tab.refresh_mode()
+        self._prompt_writer_tab.refresh_mode()
+        if not (self._worker is not None and self._worker.isRunning()):
+            self._validate_active_chain(show_dialog=False, remote=True)
+
     @property
     def _seg_count(self) -> int:
         folder = self.config.get("active_chain_folder", "")
@@ -603,6 +620,13 @@ class MainWindow(QMainWindow):
         """)
         settings_btn.clicked.connect(self._open_settings)
 
+        # RunPod pod control (copied from ComfyUI Video Creator): spend
+        # readout + Start/Stop Pod button. It owns everything pod-related;
+        # the window only answers "is a batch running right now?".
+        self._pod = PodControl(self.config, self._generation_running, self)
+        self._pod.server_changed.connect(self._on_server_changed)
+        self._pod.log.connect(self._on_log)
+
         header_row.addWidget(self._chain_btn)
         header_row.addSpacing(4)
         header_row.addWidget(self._library_btn)
@@ -613,6 +637,8 @@ class MainWindow(QMainWindow):
         header_row.addStretch()
         header_row.addWidget(header)
         header_row.addStretch()
+        header_row.addWidget(self._pod)
+        header_row.addSpacing(8)
         header_row.addWidget(settings_btn)
         root.addLayout(header_row)
 
@@ -1488,6 +1514,9 @@ class MainWindow(QMainWindow):
             if self._chain_errors:
                 # Let the window paint first, then explain what is wrong.
                 QTimer.singleShot(0, lambda: self._report_chain_validation(startup=True))
+            # After the window is actually on screen, so the pod prompt has
+            # a parent to centre on rather than appearing behind it.
+            QTimer.singleShot(200, self._pod.check_on_launch)
 
     def _on_chain_folder_changed(self, _idx: int):
         folder = self._chain_folder_combo.currentText()
@@ -1911,6 +1940,18 @@ class MainWindow(QMainWindow):
                 self._auto_stop_requested = False
                 self._update_auto_buttons()
             return
+        if self._pod.over_limit():
+            limit = float(self.config.get("runpod_spend_limit", 0) or 0)
+            if self._auto_mode:
+                self._auto_mode = False
+                self._auto_stop_requested = False
+                self._update_auto_buttons()
+            QMessageBox.warning(
+                self, "Spend limit reached",
+                f"This pod has hit the ${limit:.2f} session limit, so no new batches are "
+                "being started. It will stop once the current batch finishes.\n\n"
+                "Raise the limit in Settings > RunPod to keep going.")
+            return
         if self._pod_missing_jobs:
             names = "\n  ".join(f"{j.name} ({j.size / 1e6:.0f} MB)" for j in self._pod_missing_jobs)
             total_mb = sum(j.size for j in self._pod_missing_jobs) / 1e6
@@ -1968,6 +2009,7 @@ class MainWindow(QMainWindow):
         self._worker.all_done.connect(self._on_batch_done)
         self._worker.error.connect(self._on_error)
         self._worker.finished.connect(self._on_worker_finished)
+        self._pod.cancel_idle_timer()
         self._worker.start()
         self._seg_dots[0].set_active()
         self.progress_label.setText(f"Batch: {len(keys)} images — Segment 1/{self._seg_count}...")
@@ -2107,28 +2149,12 @@ class MainWindow(QMainWindow):
         else:
             self.progress_label.setText("Stitching all videos...")
 
-    def _play_completion_sound(self):
-        if not self.config.get("completion_sound_enabled", False):
+    def _alert(self):
+        """The one alert sound (Settings > Prompts & Sound), shared with the
+        pod chain's "pod found" / "gave up" alerts."""
+        if not self.config.get("alert_sound_enabled", True):
             return
-        path = self.config.get("completion_sound_path", "").strip()
-        if not path:
-            return
-        sound_path = Path(path)
-        if not sound_path.exists():
-            return
-
-        def _do_play():
-            try:
-                if sound_path.suffix.lower() == ".wav":
-                    import winsound
-                    winsound.PlaySound(str(sound_path), winsound.SND_FILENAME)
-                else:
-                    import os
-                    os.startfile(str(sound_path))
-            except Exception:
-                pass
-
-        threading.Thread(target=_do_play, daemon=True).start()
+        alerts.play(self.config.get("alert_sound_path", ""))
 
     def _on_batch_done(self, final_paths: list):
         n = len(final_paths)
@@ -2163,13 +2189,15 @@ class MainWindow(QMainWindow):
                 self._write_daily_log(
                     f"=== Auto mode ended — {remaining} image(s) left in grid ==="
                 )
+                # Overnight runs end here — worth walking back for.
+                self._alert()
                 self._auto_mode = False
                 self._auto_stop_requested = False
                 self._update_auto_buttons()
             return
 
         # ── Normal mode: ask to play ──────────────────────────────────────
-        self._play_completion_sound()
+        self._alert()
         msg = "\n".join(Path(p).name for p in final_paths)
         reply = QMessageBox.question(
             self, "Batch Complete",
@@ -2209,6 +2237,11 @@ class MainWindow(QMainWindow):
             self._update_auto_buttons()
         self._update_start_enabled()
         self.cancel_btn.setEnabled(False)
+        # A deferred "stop when the spend limit is hit" lands here, once the
+        # batch it was waiting for has actually finished; otherwise the idle
+        # countdown (Settings > RunPod > Idle stop) arms.
+        self._pod.run_finished()
+        self._pod.start_idle_timer()
 
     # ------------------------------------------------------------------ #
     # Daily log
@@ -2263,6 +2296,27 @@ class MainWindow(QMainWindow):
         if self._worker and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(3000)
+        # Ask about any pod this session is connected to — one adopted from the
+        # launch chooser too, not only one this app started.
+        if self._pod.pod_id and self.config.get("runpod_auto_stop_on_exit", True):
+            ans = QMessageBox.question(
+                self, "Stop the pod?",
+                f"RunPod pod {self._pod.pod_id} is still running.\n\n"
+                "Yes — stop the pod, then quit. GPU billing ends.\n"
+                "No — quit and leave the pod running. It keeps billing until you "
+                "stop it in the RunPod console. Can reconnect if still running on "
+                "next app launch.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+            if ans == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            if ans == QMessageBox.StandardButton.Yes:
+                self._pod.shutdown()
+            else:
+                self._pod.leave_running()
         self.config.set("input_dir", self._input_dir_edit.text().strip())
         self.config.set("active_chain_folder", self._chain_folder_combo.currentText())
         self.config.save()

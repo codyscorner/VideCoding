@@ -1,6 +1,6 @@
 # ComfyUI Workflow Chain Automator
 
-Version: 3.10.5
+Version: 3.11.0
 
 Automates a chain of ComfyUI segments (up to 10), stitching the outputs into a single final video. Supports both local ComfyUI and RunPod deployments.
 
@@ -21,10 +21,11 @@ Automates a chain of ComfyUI segments (up to 10), stitching the outputs into a s
 - Cancel interrupts the job on the ComfyUI server (no orphaned RunPod generations)
 - Daily log file (`ComfyUI_Chain_Log_mm_dd_yyyy.txt`) written to final video folder — run separator, per-image list, segment times, zip info
 - RunPod support — batch images uploaded via ComfyUI upload API, videos downloaded automatically
+- **RunPod pod control** (v3.11.0, ported from ComfyUI Video Creator): start/stop your own pods from the app — launch prompt or chooser for pods already running, GPU-model-first priority order, Keep Trying when every pod is busy, header spend/balance readout, per-run spend limit, idle stop after the last batch, quit prompt. API key in `api_keys.json` next to the EXE (`{"runpod_api_key": "..."}`); the pod chain is logged to `runpod_pod.log`. Modules: `runpod_api.py`, `alerts.py`, `ui/pod_control.py`, `ui/pod_worker.py`
 - FFmpeg local last-frame extraction (`-sseof -0.1`) for smooth segment transitions
 - Final video stitched with FFmpeg and archived as a zip
 - Built-in video player with playlist — plays all batch results back-to-back after completion
-- Completion sound (optional, configurable in Settings)
+- Alert sound (optional, Settings > Prompts & Sound) — plays when a batch or Auto Run finishes and for RunPod pod events
 - Library tab with video browser, sort options, multi-select, **Play Selected** playlist, and delete
 - **Settings button in Library**: re-embeds each segment's ComfyUI prompt graph into the final stitched video (ffmpeg concat normally strips it) and shows prompts/sampler/model settings per segment for a single selected video
 - Every batch zip includes a `prompts.txt` — plain-text summary of every segment's prompts/sampler/video settings, readable in Notepad without opening any file individually
@@ -81,6 +82,13 @@ Edit `main_config.json` or use the ⚙ Settings button in the app.
 | `batch_dir_local` | Local folder for staging batch images (local mode) |
 | `batch_dir_runpod` | RunPod path for batch output reference |
 | `runpod_input_dir` | Absolute path to ComfyUI's input folder on RunPod |
+| `runpod_gpu_order` / `runpod_pod_order` | Pod start preference: GPU models best first, then pod ids within a model (a preference, never a whitelist — every pod is still tried) |
+| `runpod_spend_limit` / `runpod_idle_stop_min` | Per-run spend limit in USD (0 = off) and idle-stop minutes after the last batch (0 = off) |
+| `runpod_retry_interval_min` / `runpod_retry_window_min` | Keep Trying sweep interval and give-up window |
+| `runpod_auto_prompt` / `runpod_auto_stop_on_exit` | Ask to start a pod on launch; ask to stop the connected pod on quit |
+| `alert_sound_path` / `alert_sound_enabled` | The one alert sound (batch done, Auto Run done, pod found, gave up) |
+
+The RunPod **API key** is not in this file: put `{"runpod_api_key": "..."}` in `api_keys.json` next to the EXE (or set `RUNPOD_API_KEY`). The pod this app started is remembered in `runpod_session.json`, and the pod chain is logged to `runpod_pod.log`, both next to the EXE.
 
 ### Workflow segment definition
 
