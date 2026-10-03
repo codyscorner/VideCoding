@@ -1,5 +1,10 @@
 # Changelog — ComfyUI Video Creator
 
+### v2.13.3
+- **The sync now tells you what it is doing.** When a model exists on the pod but not on this PC you get a **Model missing locally** box naming each file and its size, saying plainly that the pod run can start without it and that the download is only for running the workflow on local ComfyUI, with **Download, then run** / **Run on the pod without downloading** (default) / Cancel. "Run on the pod" is remembered for the session. Settings → Models → *Always download pod-only models without asking* skips the box
+- **Progress dialog says the direction and destination** — `↓ Downloading to this PC — text encoder: text_encoders/…` or `↑ Uploading to the pod — …` — with bytes done of total, **MB/s and time remaining** (rate restarts per file and per retry so a retry is obvious), file N of M, and a note that Cancel stops the transfer now. The window title follows suit (Downloading models to this PC / Uploading models to the pod / Syncing models — N up, M down)
+- Downloads the user just agreed to start straight away instead of going through a second "Sync models?" box
+
 ### v2.13.2
 - **Fixed: a model that exists only on the pod was being downloaded to this PC before every run — and Cancel didn't stop it.** The Flux2 workflows name a 35.58 GB text encoder that lives only on the volume; the sync dutifully started pulling it down, the Cancel button only took effect *after* the current file, and every retry (or re-launch) started the same download again from zero — which looked like "the same file over and over, never the same size"
   - **Downloads are now opt-in** (Settings → Models → *Download pod-only models to this PC as well*, off by default). A pod run only needs the file on the pod, so pod-only files are logged (`N file(s) exist only on the pod (size) — the run uses them there`) and the run starts; uploads of files the pod lacks still happen as before

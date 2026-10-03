@@ -367,8 +367,8 @@ class SettingsDialog(QDialog):
         self._sync_enabled = QCheckBox("Check and sync models before each RunPod run")
         self._sync_enabled.setChecked(bool(config.get(ms.CFG_MODEL_CHECK, True)))
         syl.addWidget(self._sync_enabled)
-        self._sync_download = QCheckBox("Download pod-only models to this PC as well "
-                                        "(off: a pod run only needs them on the pod — large base models stay there)")
+        self._sync_download = QCheckBox("Always download pod-only models to this PC without asking "
+                                        "(off: you are asked each time — the pod run works either way)")
         self._sync_download.setChecked(bool(config.get(ms.CFG_DOWNLOAD, False)))
         syl.addWidget(self._sync_download)
         self._models_dir = self._folder_row(syl, "Models folder:", config.get(ms.CFG_MODELS_DIR, ""),

@@ -394,7 +394,7 @@ class SyncPlan:
     uploads: list[TransferJob] = field(default_factory=list)
     downloads: list[TransferJob] = field(default_factory=list)
     nowhere: list[ModelRef] = field(default_factory=list)         # missing on both sides
-    pod_only: list[tuple[ModelRef, int]] = field(default_factory=list)  # on the pod, not local, downloads off: (ref, size)
+    optional_downloads: list[TransferJob] = field(default_factory=list)  # on the pod, not local; only run if the user says so
     size_mismatch: dict[ModelRef, tuple[int, int]] = field(default_factory=dict)  # (local, pod)
     case_mismatch: dict[ModelRef, str] = field(default_factory=dict)
     error: str = ""                                               # pod could not be checked
@@ -435,18 +435,33 @@ def plan_sync(config: dict, refs: list[ModelRef]) -> SyncPlan:
             p = local.present[ref]
             plan.uploads.append(TransferJob("upload", ref, local.folder_of[ref], p, p.stat().st_size))
         elif there:
-            if not config.get(CFG_DOWNLOAD, False):
-                plan.pod_only.append((ref, remote.present[ref]))   # the run has what it needs
-                continue
             if local.root is None:
                 plan.nowhere.append(ref)        # nowhere to put it
                 continue
             folder = remote.folder_of[ref]
-            plan.downloads.append(TransferJob("download", ref, folder,
-                                              local.root / folder / Path(ref.rel), remote.present[ref]))
+            job = TransferJob("download", ref, folder, local.root / folder / Path(ref.rel), remote.present[ref])
+            # The pod run has what it needs either way. The download only
+            # matters for running the workflow locally, so unless the user
+            # asked for it always, it is offered rather than started.
+            (plan.downloads if config.get(CFG_DOWNLOAD, False) else plan.optional_downloads).append(job)
         else:
             plan.nowhere.append(ref)
     return plan
+
+
+def fmt_rate(bps: float) -> str:
+    return f"{bps / 1e6:.1f} MB/s" if bps >= 1e6 else f"{bps / 1e3:.0f} KB/s"
+
+
+def fmt_eta(seconds: float) -> str:
+    if seconds < 0 or seconds != seconds:
+        return "—"
+    s = int(seconds)
+    if s < 90:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60} min"
+    return f"{s // 3600}h {(s % 3600) // 60:02d}m"
 
 
 def fmt_size(n: int) -> str:
@@ -523,7 +538,9 @@ class TransferWorker(QThread):
                     break
                 sent = 0
                 merge_logged = False
-                shown = job.label if attempt == 1 else f"{job.label}  (attempt {attempt} of {TRANSFER_RETRY_ATTEMPTS} — restarted from 0)"
+                shown = ("↓ Downloading to this PC — " if job.direction == "download" else "↑ Uploading to the pod — ") + job.label
+                if attempt > 1:
+                    shown += f"   (attempt {attempt} of {TRANSFER_RETRY_ATTEMPTS} — restarted from 0)"
 
                 def cb(chunk: int, _job=job, _shown=shown):
                     nonlocal sent, merge_logged

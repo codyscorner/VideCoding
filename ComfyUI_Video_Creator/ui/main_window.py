@@ -54,6 +54,8 @@ class MainWindow(QMainWindow):
         self._model_check_scheduled = False
         self._transfer: model_sync.TransferWorker | None = None
         self._transfer_dlg: QProgressDialog | None = None
+        self._xfer_mark: tuple[str, float, int] = ("", 0.0, 0)   # (label, t0, bytes) for the rate readout
+        self._pod_only_declined: set[str] = set()                # "run on the pod" answers, this session
         self._player: VideoPlayerDialog | None = None
         self._tab_splitters: list[QSplitter] = []
         self._splits_initialised = False
@@ -410,15 +412,44 @@ class MainWindow(QMainWindow):
             self._sync_log(panel, f"Model check: {ref.rel} is spelled {actual} on disk — the Linux pod is case-sensitive")
         for ref, (lsize, rsize) in plan.size_mismatch.items():
             self._sync_log(panel, f"Model check: {ref.rel} differs in size (local {model_sync.fmt_size(lsize)}, pod {model_sync.fmt_size(rsize)}) — not touched")
-        if plan.pod_only:
-            total = sum(sz for _, sz in plan.pod_only)
-            self._sync_log(panel, f"Model check: {len(plan.pod_only)} file(s) exist only on the pod "
-                           f"({model_sync.fmt_size(total)}) — the run uses them there. Turn on "
-                           "'Download pod-only models' in Settings > Models to copy them to this PC")
-            for ref, sz in plan.pod_only:
-                self._sync_log(panel, f"Model check:     pod only: {ref.kind}: {ref.rel} ({model_sync.fmt_size(sz)})")
-        if plan.clean:
-            self._sync_log(panel, "Model check: every model file is on the pod")
+
+        # Models the pod has but this PC doesn't. The pod run is fine without
+        # them, so say exactly that and offer the download for local use —
+        # a 35 GB text encoder must never start pulling down unannounced.
+        offered = [j for j in plan.optional_downloads if j.ref.rel not in self._pod_only_declined]
+        if offered:
+            total = sum(j.size for j in offered)
+            names = "\n".join(f"    • {j.ref.kind}: {j.ref.rel}  ({model_sync.fmt_size(j.size)})" for j in offered)
+            self._sync_log(panel, f"Model check: {len(offered)} model(s) are on the pod but not on this PC ({model_sync.fmt_size(total)})")
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setWindowTitle("Model missing locally")
+            box.setText(f"{len(offered)} model file(s) exist on the pod but not on this PC "
+                        f"({model_sync.fmt_size(total)}):")
+            box.setInformativeText(
+                names + "\n\n"
+                "This run goes to the pod, which already has them, so it can start right away.\n"
+                "You only need the download if you also want to run this workflow on local ComfyUI.\n\n"
+                f"Download to {plan.local_root}? The download runs first, then the run starts.\n"
+                "(Settings > Models can download these automatically without asking.)")
+            dl = box.addButton("Download, then run", QMessageBox.ButtonRole.AcceptRole)
+            pod = box.addButton("Run on the pod without downloading", QMessageBox.ButtonRole.ActionRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(pod)
+            box.exec()
+            if box.clickedButton() is dl:
+                plan.downloads.extend(offered)
+                self._sync_log(panel, f"Model check: downloading {len(offered)} pod-only model(s) to this PC first")
+            elif box.clickedButton() is pod:
+                for j in offered:
+                    self._pod_only_declined.add(j.ref.rel)
+                self._sync_log(panel, "Model check: running on the pod without the local copies (not asked again this session)")
+            else:
+                self._drop_batch(batch, "cancelled at the missing-locally prompt")
+                return
+
+        if plan.clean and not plan.downloads:
+            self._sync_log(panel, "Model check: every model file the run needs is on the pod")
             self._release_batch(batch)
             return
 
@@ -437,23 +468,26 @@ class MainWindow(QMainWindow):
             self._sync_log(panel, "Model check: " + ln.strip())
 
         if plan.jobs:
-            box = QMessageBox(self)
-            box.setIcon(QMessageBox.Icon.Question)
-            box.setWindowTitle("Sync models with the pod?")
-            box.setText(f"{len(plan.jobs)} model file(s) are missing on one side "
-                        f"({model_sync.fmt_size(plan.total_bytes)} to move).")
-            box.setInformativeText(body + "\n\nCopy them now? The run starts automatically once every file is verified.")
-            yes = box.addButton("Sync, then run", QMessageBox.ButtonRole.AcceptRole)
-            anyway = box.addButton("Run without syncing", QMessageBox.ButtonRole.DestructiveRole)
-            box.addButton(QMessageBox.StandardButton.Cancel)
-            box.setDefaultButton(yes)
-            box.exec()
-            if box.clickedButton() is yes:
-                self._start_transfer(plan, batch)
-            elif box.clickedButton() is anyway:
-                self._release_batch(batch)
-            else:
-                self._drop_batch(batch, "model sync cancelled")
+            if plan.uploads or plan.nowhere:
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Icon.Question)
+                box.setWindowTitle("Sync models with the pod?")
+                box.setText(f"{len(plan.jobs)} model file(s) to copy "
+                            f"({model_sync.fmt_size(plan.total_bytes)} to move).")
+                box.setInformativeText(body + "\n\nCopy them now? The run starts automatically once every file is verified.")
+                yes = box.addButton("Sync, then run", QMessageBox.ButtonRole.AcceptRole)
+                anyway = box.addButton("Run without syncing", QMessageBox.ButtonRole.DestructiveRole)
+                box.addButton(QMessageBox.StandardButton.Cancel)
+                box.setDefaultButton(yes)
+                box.exec()
+                if box.clickedButton() is yes:
+                    self._start_transfer(plan, batch)
+                elif box.clickedButton() is anyway:
+                    self._release_batch(batch)
+                else:
+                    self._drop_batch(batch, "model sync cancelled")
+                return
+            self._start_transfer(plan, batch)        # downloads the user just said yes to
             return
 
         ans = QMessageBox.question(
@@ -469,8 +503,14 @@ class MainWindow(QMainWindow):
     def _start_transfer(self, plan: model_sync.SyncPlan, batch: list[RunRequest]):
         self._model_batch = batch
         panel = self._panel_for(batch[0])
+        ups, downs = len([j for j in plan.jobs if j.direction == "upload"]), len([j for j in plan.jobs if j.direction == "download"])
+        size = model_sync.fmt_size(plan.total_bytes)
+        title = (f"Downloading {downs} model file(s) to this PC — {size} total" if not ups else
+                 f"Uploading {ups} model file(s) to the pod — {size} total" if not downs else
+                 f"Syncing models — {ups} up, {downs} down — {size} total")
+        self._xfer_mark = ("", time.time(), 0)
         self._transfer_dlg = QProgressDialog("Starting…", "Cancel", 0, 1000, self)
-        self._transfer_dlg.setWindowTitle("Syncing models with the pod")
+        self._transfer_dlg.setWindowTitle(title)
         self._transfer_dlg.setMinimumWidth(560)
         self._transfer_dlg.setMinimumDuration(0)
         self._transfer_dlg.setAutoClose(False)
@@ -492,9 +532,20 @@ class MainWindow(QMainWindow):
     def _on_transfer_progress(self, done: int, total: int, label: str, files_done: int, files_total: int):
         if self._transfer_dlg is None:
             return
+        now = time.time()
+        mark_label, t0, b0 = self._xfer_mark
+        if label != mark_label:                 # new file (or a retry): rate restarts
+            self._xfer_mark = (label, now, done)
+            t0, b0 = now, done
+        elapsed = now - t0
+        rate = (done - b0) / elapsed if elapsed > 0.5 else 0.0
+        eta = model_sync.fmt_eta((total - done) / rate) if rate > 0 else "—"
         self._transfer_dlg.setValue(int(done * 1000 / total) if total else 0)
         self._transfer_dlg.setLabelText(
-            f"{label}\n{model_sync.fmt_size(done)} of {model_sync.fmt_size(total)}  —  file {min(files_done + 1, files_total)} of {files_total}")
+            f"{label}\n"
+            f"{model_sync.fmt_size(done)} of {model_sync.fmt_size(total)}"
+            + (f"   ·   {model_sync.fmt_rate(rate)}   ·   about {eta} left" if rate > 0 else "")
+            + f"\nfile {min(files_done + 1, files_total)} of {files_total}   ·   Cancel stops the transfer now")
 
     def _on_transfer_done(self, errors: list):
         batch, self._model_batch = self._model_batch, []
