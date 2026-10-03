@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
 from config import ConfigManager
 from ui.styles import COLORS
 from ui.widgets import NoScrollComboBox
+from workflow_tools import list_workflows
 
 
 class SettingsDialog(QDialog):
@@ -44,6 +45,7 @@ class SettingsDialog(QDialog):
         folders_tab = page("Folders")
         runpod_tab = page("RunPod")
         prompt_tab = page("Prompts")
+        models_tab = page("Models")
 
         # ── ComfyUI Server ───────────────────────────────────────────────
         server_group = QGroupBox("ComfyUI Server")
@@ -133,6 +135,24 @@ class SettingsDialog(QDialog):
         edl.addWidget(self._font_spin)
         edl.addStretch()
         prompt_tab.addWidget(ed_group)
+
+        # ── Blank workflow templates ─────────────────────────────────────
+        blank_group = QGroupBox("New blank workflow")
+        bl = QVBoxLayout(blank_group)
+        bl.setSpacing(10)
+        blank_note = QLabel("The ✚ New button on the Image → Video and Text → Video tabs copies the "
+                            "workflow picked here under a new name, with every prompt emptied and every "
+                            "LoRA switched off. The template itself is never changed.")
+        blank_note.setWordWrap(True)
+        blank_note.setObjectName("status_dim")
+        bl.addWidget(blank_note)
+        wf_rels = list_workflows(Path(config.get("workflow_dir", "") or "")) \
+            if (config.get("workflow_dir", "") or "").strip() else []
+        self._blank_image = self._template_row(bl, "Image → Video:", wf_rels,
+                                               config.get("image_blank_template", ""))
+        self._blank_text = self._template_row(bl, "Text → Video:", wf_rels,
+                                              config.get("text_blank_template", ""))
+        prompt_tab.addWidget(blank_group)
 
         # ── AI Prompt Rewriter ──────────────────────────────────────────
         rw_group = QGroupBox("AI Prompt Rewriter (local LM Studio)")
@@ -247,6 +267,23 @@ class SettingsDialog(QDialog):
         limit_row.addStretch()
         pl.addLayout(limit_row)
 
+        idle_row = QHBoxLayout()
+        idle_row.addWidget(self._label("Idle stop:"))
+        self._idle_stop = QSpinBox()
+        self._idle_stop.setRange(0, 600)
+        self._idle_stop.setSingleStep(10)
+        self._idle_stop.setSuffix(" min")
+        self._idle_stop.setSpecialValueText("off")
+        self._idle_stop.setValue(int(config.get("runpod_idle_stop_min", 0) or 0))
+        self._idle_stop.setToolTip(
+            "When the last run finishes (DONE) and nothing is queued, stop the connected pod "
+            "after this long.\n"
+            "A new run cancels the countdown. Only works while the app is running.")
+        idle_row.addWidget(self._idle_stop)
+        idle_row.addWidget(QLabel("after the queue finishes — 0 = off"))
+        idle_row.addStretch()
+        pl.addLayout(idle_row)
+
         # As a tooltip rather than a label: the right column is full at 1080p,
         # and a wrapped note here pushes the group past its allocation.
         self._spend_limit.setToolTip(
@@ -276,7 +313,7 @@ class SettingsDialog(QDialog):
         import alerts
         self._alert_sound = self._file_row(
             pl, "Alert sound:", config.get("alert_sound_path", ""),
-            "Played when a pod is found, and when giving up (.wav plays inline)…",
+            "Played when a pod is found, when giving up, and when a queue of 2+ runs finishes (.wav plays inline)…",
             caption="Select an alert sound", filt=alerts.WAV_FILTER)
         sound_row = QHBoxLayout()
         self._alert_enabled = QCheckBox("Play alert sound")
@@ -294,7 +331,7 @@ class SettingsDialog(QDialog):
         self._pod_prompt.setToolTip("Offer to start a pod each time the app opens")
         self._pod_prompt.setChecked(bool(config.get("runpod_auto_prompt", True)))
         self._pod_autostop = QCheckBox("Stop pod on exit")
-        self._pod_autostop.setToolTip("Stop the pod this app started when quitting")
+        self._pod_autostop.setToolTip("When quitting with a pod connected, ask whether to stop it or leave it running")
         self._pod_autostop.setChecked(bool(config.get("runpod_auto_stop_on_exit", True)))
         checks = QHBoxLayout()
         checks.addWidget(self._pod_prompt)
@@ -316,7 +353,55 @@ class SettingsDialog(QDialog):
         runpod_tab.addWidget(pod_group)
         self._load_pod_order()
 
-        for lay in (server_tab, folders_tab, runpod_tab, prompt_tab):
+        # ── Model check & sync (RunPod volume via S3) ─────────────────────
+        import model_sync as ms
+        sync_group = QGroupBox("Model check && sync — RunPod volume via S3")
+        syl = QVBoxLayout(sync_group)
+        syl.setSpacing(10)
+        syl.addWidget(self._caption(
+            "Before a RunPod run, every model file the workflow names (checkpoints, diffusion models, "
+            "VAEs, text encoders, CLIP vision, upscalers, LoRAs) is looked for in the local models folder "
+            "and on the pod's volume. Files the pod lacks are uploaded from here before the run starts "
+            "(and, if the box below is ticked, files only on the pod are downloaded to this PC). "
+            "Same S3 access as the S3 Browser app and the Chain Automator."))
+        self._sync_enabled = QCheckBox("Check and sync models before each RunPod run")
+        self._sync_enabled.setChecked(bool(config.get(ms.CFG_MODEL_CHECK, True)))
+        syl.addWidget(self._sync_enabled)
+        self._sync_download = QCheckBox("Always download pod-only models to this PC without asking "
+                                        "(off: you are asked each time — the pod run works either way)")
+        self._sync_download.setChecked(bool(config.get(ms.CFG_DOWNLOAD, False)))
+        syl.addWidget(self._sync_download)
+        self._models_dir = self._folder_row(syl, "Models folder:", config.get(ms.CFG_MODELS_DIR, ""),
+                                            "ComfyUI/models root — blank = the parent of the LoRAs folder…")
+        self._s3_profile = self._text_row(syl, "AWS profile:", config.get(ms.CFG_S3_PROFILE, "runpod-s3"),
+                                          "Profile in %USERPROFILE%\\.aws\\credentials holding the RunPod S3 keys (e.g. runpod-s3)…")
+        self._s3_endpoint = self._text_row(syl, "Endpoint URL:", config.get(ms.CFG_S3_ENDPOINT, ""),
+                                           "https://s3api-<datacenter>.runpod.io")
+        self._s3_region = self._text_row(syl, "Region:", config.get(ms.CFG_S3_REGION, ""),
+                                         "RunPod datacenter id (e.g. us-ks-2)")
+        self._s3_bucket = self._text_row(syl, "Bucket:", config.get(ms.CFG_S3_BUCKET, ""),
+                                         "Network volume id (e.g. pjez3nxwp9)")
+        self._s3_prefix = self._text_row(syl, "Models prefix:", config.get(ms.CFG_S3_MODELS_PREFIX, ""),
+                                         "Path of ComfyUI's models folder inside the bucket (e.g. runpod-slim/ComfyUI/models/)")
+        s3_btn_row = QHBoxLayout()
+        s3_btn_row.addStretch()
+        s3_import = QPushButton("Import from S3 Browser config…")
+        s3_import.setObjectName("secondary_btn")
+        s3_import.setToolTip("Copy profile / endpoint / region / bucket from the S3 Browser app's config.json")
+        s3_import.clicked.connect(self._import_s3_browser)
+        s3_btn_row.addWidget(s3_import)
+        s3_test = QPushButton("Test connection")
+        s3_test.setObjectName("secondary_btn")
+        s3_test.clicked.connect(self._test_s3)
+        s3_btn_row.addWidget(s3_test)
+        syl.addLayout(s3_btn_row)
+        self._s3_status = QLabel("")
+        self._s3_status.setWordWrap(True)
+        self._s3_status.setObjectName("status_dim")
+        syl.addWidget(self._s3_status)
+        models_tab.addWidget(sync_group)
+
+        for lay in (server_tab, folders_tab, runpod_tab, prompt_tab, models_tab):
             lay.addStretch()
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -347,6 +432,20 @@ class SettingsDialog(QDialog):
         row.addWidget(edit, stretch=1)
         parent.addLayout(row)
         return edit
+
+    def _template_row(self, parent, label, rels: list[str], current: str) -> NoScrollComboBox:
+        row = QHBoxLayout()
+        row.addWidget(self._label(label))
+        combo = NoScrollComboBox()
+        combo.addItem("No template selected — please select a workflow (JSON) file for ✚ New", "")
+        for rel in rels:
+            combo.addItem(rel, rel)
+        if current and combo.findData(current) < 0:
+            combo.addItem(f"{current}  (missing)", current)
+        combo.setCurrentIndex(max(combo.findData(current or ""), 0))
+        row.addWidget(combo, stretch=1)
+        parent.addLayout(row)
+        return combo
 
     def _folder_row(self, parent, label, value, placeholder) -> QLineEdit:
         row = QHBoxLayout()
@@ -416,6 +515,60 @@ class SettingsDialog(QDialog):
                 self._rewriter_model.setEditText(current)
         self._rewriter_status.setText(f"Found {len(models)} model(s).")
         self._rewriter_status.setStyleSheet(f"color: {COLORS['success']};")
+
+    # ── Model check & sync ──────────────────────────────────────────────
+
+    def _s3_config_from_fields(self) -> dict:
+        import model_sync as ms
+        return {
+            ms.CFG_S3_PROFILE: self._s3_profile.text().strip(),
+            ms.CFG_S3_ENDPOINT: self._s3_endpoint.text().strip(),
+            ms.CFG_S3_REGION: self._s3_region.text().strip(),
+            ms.CFG_S3_BUCKET: self._s3_bucket.text().strip(),
+            ms.CFG_S3_MODELS_PREFIX: self._s3_prefix.text().strip() or ms.S3_DEFAULTS[ms.CFG_S3_MODELS_PREFIX],
+        }
+
+    def _import_s3_browser(self):
+        import model_sync as ms
+        start = Path(r"P:/Apps/VibeCoded/S3 Browser/config.json")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select the S3 Browser config.json",
+            str(start if start.exists() else Path.home()), "JSON (*.json);;All Files (*)")
+        if not path:
+            return
+        try:
+            values = ms.import_s3_browser_config(path)
+        except Exception as e:  # noqa: BLE001
+            self._s3_status.setText(f"Could not read {path}: {e}")
+            self._s3_status.setStyleSheet(f"color: {COLORS['error']};")
+            return
+        self._s3_profile.setText(values.get(ms.CFG_S3_PROFILE, self._s3_profile.text()))
+        self._s3_endpoint.setText(values.get(ms.CFG_S3_ENDPOINT, self._s3_endpoint.text()))
+        self._s3_region.setText(values.get(ms.CFG_S3_REGION, self._s3_region.text()))
+        self._s3_bucket.setText(values.get(ms.CFG_S3_BUCKET, self._s3_bucket.text()))
+        self._s3_status.setText(f"Imported {len(values)} value(s) from {Path(path).name}. Press Test connection to verify.")
+        self._s3_status.setStyleSheet(f"color: {COLORS['fg_dim']};")
+
+    def _test_s3(self):
+        import model_sync as ms
+        self._s3_status.setText("Connecting…")
+        self._s3_status.setStyleSheet(f"color: {COLORS['fg_dim']};")
+        self._s3_status.repaint()
+        try:
+            store = ms.S3ModelStore(self._s3_config_from_fields())
+            store.test_connection()
+            folders = store.list_folders()
+            local = ms.local_models_dir({**self._config.get_all(), ms.CFG_MODELS_DIR: self._models_dir.text().strip()})
+            self._s3_status.setText(
+                f"OK — {len(folders)} model folder(s) under {store.prefix}: {', '.join(folders[:12])}"
+                f"{'…' if len(folders) > 12 else ''}\nLocal models folder: {local or '(not set — set the LoRAs or Models folder)'}")
+            self._s3_status.setStyleSheet(f"color: {COLORS['success']};")
+        except ImportError:
+            self._s3_status.setText("boto3 is not installed in the Python running this app — use the built EXE or the repo .venv")
+            self._s3_status.setStyleSheet(f"color: {COLORS['error']};")
+        except Exception as e:  # noqa: BLE001
+            self._s3_status.setText(f"Failed: {type(e).__name__}: {e}")
+            self._s3_status.setStyleSheet(f"color: {COLORS['error']};")
 
     # ── RunPod pod control ───────────────────────────────────────────────
 
@@ -662,16 +815,25 @@ class SettingsDialog(QDialog):
         c.set("runpod_input_dir", self._runpod_input.text().strip())
         c.set("ffmpeg_path", self._ffmpeg.text().strip())
         c.set("prompt_font_size", int(self._font_spin.value()))
+        c.set("image_blank_template", self._blank_image.currentData() or "")
+        c.set("text_blank_template", self._blank_text.currentData() or "")
         c.set("rewriter_base_url", self._rewriter_url.text().strip())
         c.set("rewriter_model", self._rewriter_model.currentText().strip())
         c.set("runpod_gpu_order", self._current_gpu_order())
         c.set("runpod_pod_order", self._current_pod_order())
         c.set("runpod_spend_limit", float(self._spend_limit.value()))
+        c.set("runpod_idle_stop_min", int(round(self._idle_stop.value() / 10) * 10))
         c.set("runpod_auto_prompt", bool(self._pod_prompt.isChecked()))
         c.set("runpod_auto_stop_on_exit", bool(self._pod_autostop.isChecked()))
         c.set("runpod_retry_interval_min", int(self._retry_interval.value()))
         c.set("runpod_retry_window_min", int(self._retry_window.value()))
         c.set("alert_sound_path", self._alert_sound.text().strip())
         c.set("alert_sound_enabled", bool(self._alert_enabled.isChecked()))
+        import model_sync as ms
+        c.set(ms.CFG_MODEL_CHECK, bool(self._sync_enabled.isChecked()))
+        c.set(ms.CFG_DOWNLOAD, bool(self._sync_download.isChecked()))
+        c.set(ms.CFG_MODELS_DIR, self._models_dir.text().strip())
+        for key, value in self._s3_config_from_fields().items():
+            c.set(key, value)
         c.save()
         self.accept()

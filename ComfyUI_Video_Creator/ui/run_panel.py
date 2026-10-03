@@ -29,7 +29,7 @@ from ui.styles import COLORS
 from ui.widgets import ElidedLabel, FilterComboBox, NoScrollComboBox
 from workflow_tools import (
     Analysis, LoraSlot, WorkflowError, analyze, apply_inputs, apply_megapixels, apply_steps,
-    apply_value, list_loras, list_workflows, load_workflow, save_workflow,
+    apply_value, blank_workflow, list_loras, list_workflows, load_workflow, save_workflow,
 )
 
 VIDEO_INPUT_MODES = [
@@ -190,6 +190,15 @@ class RunPanel(QWidget):
                                    "original stays exactly as it is")
         self._clone_btn.clicked.connect(self._clone_workflow)
         row.addWidget(self._clone_btn)
+        # Blank workflows exist for the two "create from scratch" tabs only;
+        # Extend always starts from an existing video's workflow.
+        if kind in ("image", "text"):
+            self._new_btn = QPushButton("✚ New")
+            self._new_btn.setObjectName("secondary_btn")
+            self._new_btn.setToolTip("Create a new workflow from the blank template picked in "
+                                     "Settings → Prompts, with every prompt empty and every LoRA off")
+            self._new_btn.clicked.connect(self._new_blank_workflow)
+            row.addWidget(self._new_btn)
         wf_layout.addLayout(row)
         self._wf_status = QLabel("")
         self._wf_status.setObjectName("status_dim")
@@ -982,6 +991,49 @@ class RunPanel(QWidget):
         self.reload_workflows()
         detail = " with the edits shown here" if dlg.with_edits() and self._analysis is not None else ""
         self.append_log(f"Cloned {source_name} → {rel}{detail} — now editing the clone")
+        self.workflows_changed.emit()
+
+    def _new_blank_workflow(self):
+        """Copy the Settings template for this tab under a new name, with every
+        prompt emptied and every LoRA off, and select it."""
+        wf_dir = Path((self._cfg.get("workflow_dir", "") or "").strip())
+        tab = "Image → Video" if self.kind == "image" else "Text → Video"
+        template_rel = (self._cfg.get(f"{self.kind}_blank_template", "") or "").strip()
+        if not template_rel or not wf_dir.is_dir():
+            QMessageBox.information(
+                self, "New blank workflow",
+                f"No blank template is set for the {tab} tab.\n\n"
+                f"Pick one in Settings → Prompts → New blank workflow.")
+            return
+        template = wf_dir / template_rel
+        if not template.exists():
+            QMessageBox.warning(
+                self, "New blank workflow",
+                f"The {tab} blank template {template_rel} is no longer in the Workflows folder.\n\n"
+                f"Pick another in Settings → Prompts → New blank workflow.")
+            return
+
+        dlg = CloneWorkflowDialog(wf_dir, template_rel, False, self, blank=True)
+        if dlg.exec() != CloneWorkflowDialog.DialogCode.Accepted:
+            return
+        target = dlg.result_path()
+        if target is None:
+            return
+
+        try:
+            wf = load_workflow(template)
+            prompts, loras = blank_workflow(wf)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            save_workflow(target, wf)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "New workflow failed", f"Could not create {target.name}:\n{e}")
+            return
+
+        rel = target.relative_to(wf_dir).as_posix()
+        self._cfg.set(self._config_key(), rel)
+        self.reload_workflows()
+        self.append_log(f"New workflow {rel} from template {template_rel} — "
+                        f"{prompts} prompt(s) emptied, {loras} LoRA(s) switched off")
         self.workflows_changed.emit()
 
     # ------------------------------------------------------------------ #

@@ -27,7 +27,8 @@ EXCLUDES = [
     "torch", "torchvision", "torchaudio", "tensorflow", "transformers", "cv2",
     "scipy", "pandas", "matplotlib", "onnx", "onnxruntime", "triton", "IPython",
     "jupyter", "sklearn", "numba", "jax", "safetensors", "tokenizers", "einops",
-    "av", "soundfile", "boto3", "botocore", "playwright", "numpy",
+    "av", "soundfile", "playwright", "numpy",
+    # boto3/botocore are NOT excluded any more: model_sync.py needs them (v2.13.0)
 ]
 
 VENV_PY = ROOT.parent / ".venv" / "Scripts" / "python.exe"
@@ -60,6 +61,7 @@ def main():
         "--hidden-import", "requests",
         "--hidden-import", "websocket",
         "--hidden-import", "PIL",
+        "--hidden-import", "boto3",
     ]
     for mod in EXCLUDES:
         cmd += ["--exclude-module", mod]
