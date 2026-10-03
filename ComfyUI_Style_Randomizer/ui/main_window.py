@@ -11,20 +11,26 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QSplitter, QStackedWidget,
     QFileDialog, QAbstractItemView, QPlainTextEdit, QCheckBox,
     QStatusBar, QComboBox, QMessageBox, QDialog, QSizePolicy,
-    QSpinBox,
+    QSpinBox, QProgressDialog,
 )
 
 import csv
 
 from config import ConfigManager
 from worker import (
-    BatchStyleWorker, load_prompts, log_prompt_used, PromptEntry,
+    BatchStyleWorker, append_daily_log, load_prompts, log_prompt_used, PromptEntry,
     IMAGE_EXTS, OUTPUT_EXTS, PROMPT_LOG_NAME,
 )
 from ui.styles import COLORS
 from ui.settings_dialog import SettingsDialog
 from ui.prompt_editor import PromptEditorDialog
 from ui.pin_dialog import PinPromptDialog
+from ui.pod_control import PodControl
+import alerts
+import json
+import time
+import model_sync
+import textwrap
 
 THUMB_SIZE = 120
 
@@ -532,9 +538,21 @@ class MainWindow(QMainWindow):
         self._auto_current_batch: list[Path] = []
         self._last_auto_prompt_idx: int = -1
         self._auto_prompt_cursor: int = 0  # cursor for sequential/evens_odds auto mode
+        # Model check & sync: the (workflow, server) pair whose models were last
+        # confirmed on the pod, so Auto Run checks once, not once per batch.
+        self._models_ok_key: tuple | None = None
+        self._pending = None  # (proceed, on_drop, key) while a model check/sync runs
+        self._model_check: model_sync.ModelCheckWorker | None = None
+        self._transfer: model_sync.TransferWorker | None = None
+        self._transfer_dlg: QProgressDialog | None = None
+        self._xfer_mark: tuple[str, float, int] = ("", 0.0, 0)   # (label, t0, bytes) for the rate readout
+        self._pod_only_declined: set[str] = set()                # "run on the pod" answers, this session
 
         self._build_ui()
         self._load_initial_state()
+        # After the window is actually on screen, so the pod prompt has a
+        # parent to centre on rather than appearing behind it.
+        QTimer.singleShot(200, self._pod.check_on_launch)
 
     # ------------------------------------------------------------------ #
     # UI construction
@@ -580,6 +598,16 @@ class MainWindow(QMainWindow):
         self._mode_lbl = QLabel("● Local")
         self._mode_lbl.setStyleSheet(f"color: {COLORS['success']}; font-weight: bold;")
         hdr_row.addWidget(self._mode_lbl)
+
+        # RunPod pod control (copied from ComfyUI Video Creator): spend readout
+        # + Start/Stop Pod button. It owns everything pod-related; the window
+        # only answers "is a run going right now?".
+        self._pod = PodControl(self._config, self._generation_running, self)
+        self._pod.server_changed.connect(self._on_server_changed)
+        self._pod.log.connect(self._append_log)
+        hdr_row.addSpacing(8)
+        hdr_row.addWidget(self._pod)
+        hdr_row.addSpacing(8)
         settings_btn = QPushButton("⚙ Settings")
         settings_btn.setObjectName("small_btn")
         settings_btn.setFixedWidth(100)
@@ -956,9 +984,21 @@ class MainWindow(QMainWindow):
             label = f"{i+1}.  {preview}"
             if entry.weight != 1.0:
                 label += f"   [{entry.weight:g}x]"
-            self._prompt_list.addItem(label)
+            item = QListWidgetItem(label)
+            item.setToolTip(self._prompt_tooltip(entry.text))
+            self._prompt_list.addItem(item)
         n = len(self._prompts)
         self._prompt_count_lbl.setText(f"{n} style prompt{'s' if n != 1 else ''} loaded")
+
+    @staticmethod
+    def _prompt_tooltip(text: str, width: int = 70) -> str:
+        """Full prompt text for the hover tooltip. Qt does not wrap plain-text
+        tooltips, so a long prompt would be one line running off the screen:
+        wrap it ourselves, keeping the prompt's own line breaks."""
+        lines = []
+        for para in text.strip().splitlines():
+            lines.extend(textwrap.wrap(para, width) or [""])
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------ #
     # Per-image prompt pinning
@@ -1154,6 +1194,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Re-roll", "No prompts loaded — configure a prompts file in Settings.")
             return
 
+        if self._spend_limit_blocked():
+            return
+
         reply = QMessageBox.question(
             self, "Re-roll",
             f"Re-process {out_path.name} with a new random style?\n\nThis will overwrite the current output.",
@@ -1176,6 +1219,12 @@ class MainWindow(QMainWindow):
         reroll_config = self._config.get_all()
         reroll_config["skip_existing"] = False
 
+        self._ensure_models(
+            lambda: self._launch_reroll(reroll_config, source, new_prompt, out_path),
+            on_drop=self._on_lib_selection_changed,
+        )
+
+    def _launch_reroll(self, reroll_config: dict, source: Path, new_prompt: str, out_path: Path):
         self._lib_reroll_btn.setEnabled(False)
         self._lib_delete_btn.setEnabled(False)
         self._lib_view_btn.setEnabled(False)
@@ -1192,6 +1241,8 @@ class MainWindow(QMainWindow):
         self._reroll_worker.log.connect(self._append_log)
         self._reroll_worker.all_done.connect(self._on_reroll_done)
         self._reroll_worker.error.connect(self._on_reroll_error)
+        self._reroll_worker.finished.connect(self._on_run_thread_finished)
+        self._pod.cancel_idle_timer()
         self._reroll_worker.start()
 
     def _on_reroll_done(self):
@@ -1225,6 +1276,260 @@ class MainWindow(QMainWindow):
             self._update_mode_label()
             self._update_status()
             self._reload_images()  # output_dir may have changed; refresh processed stems
+
+    # ------------------------------------------------------------------ #
+    # Model check & sync (RunPod) - copied from the Video Creator
+    # ------------------------------------------------------------------ #
+
+    def _sync_log(self, msg: str):
+        """Model check / sync lines go to the log pane AND logs/<today>.txt,
+        so a transfer that misbehaves overnight leaves evidence."""
+        self._append_log(msg)
+        try:
+            append_daily_log(self._base_dir, msg)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _ensure_models(self, proceed, on_drop):
+        """Run `proceed` once the workflow's model files are confirmed on the
+        pod (copied there / back here if they were not). Local mode, the check
+        switched off, or an already-confirmed (workflow, server) pair go
+        straight through. `on_drop` runs when the user backs out."""
+        cfg = self._config.get_all()
+        if not (self._config.is_runpod() and model_sync.check_enabled(cfg)):
+            proceed()
+            return
+        if self._model_check is not None or self._transfer is not None:
+            return  # already checking - a second click must not stack another
+        wf_path = Path(cfg.get("workflow_path", ""))
+        key = (str(wf_path), self._config.server_url())
+        if key == self._models_ok_key:
+            proceed()
+            return
+        try:
+            refs = model_sync.models_in_workflow(json.loads(wf_path.read_text(encoding="utf-8")))
+        except Exception as e:  # noqa: BLE001
+            self._sync_log(f"Model check: couldn't read {wf_path.name} ({e}) - the run will report it")
+            proceed()
+            return
+        if not refs:
+            self._models_ok_key = key
+            proceed()
+            return
+        self._pending = (proceed, on_drop, key)
+        self._start_btn.setEnabled(False)
+        self._auto_btn.setEnabled(False)
+        self._pod.cancel_idle_timer()
+        self._sync_log(f"Model check: comparing {len(refs)} model file(s) between the local "
+                         "models folder and the pod volume…")
+        self._model_check = model_sync.ModelCheckWorker(cfg, list(refs))
+        self._model_check.done.connect(self._on_model_plan)
+        self._model_check.finished.connect(self._model_check_finished)
+        self._model_check.start()
+
+    def _model_check_finished(self):
+        self._model_check = None
+
+    def _model_release(self):
+        proceed, _drop, key = self._pending
+        self._pending = None
+        self._models_ok_key = key
+        self._start_btn.setEnabled(True)
+        self._update_auto_buttons()
+        proceed()
+
+    def _model_release_unchecked(self):
+        """Run without the models confirmed: do not remember it, so the next
+        run asks again."""
+        proceed, _drop, _key = self._pending
+        self._pending = None
+        self._start_btn.setEnabled(True)
+        self._update_auto_buttons()
+        proceed()
+
+    def _model_drop(self, why: str):
+        _proceed, on_drop, _key = self._pending
+        self._pending = None
+        self._sync_log(f"Run not started - {why}")
+        self._start_btn.setEnabled(True)
+        self._update_auto_buttons()
+        on_drop()
+
+    def _model_check_dropped(self):
+        """A batch (possibly an Auto Run) was backed out of before it began."""
+        self._auto_mode = False
+        self._auto_stop_requested = False
+        self._auto_current_batch = []
+        self._last_auto_prompt_idx = -1
+        self._auto_prompt_cursor = 0
+        self._update_auto_buttons()
+
+    def _on_model_plan(self, plan: model_sync.SyncPlan):
+        if plan.error:
+            ans = QMessageBox.question(
+                self, "Couldn't check the pod's models",
+                f"The pod volume could not be listed:\n\n{plan.error}\n\n"
+                "Start the run anyway? A model the pod lacks will fail on the server.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            self._sync_log(f"Model check failed: {plan.error}")
+            if ans == QMessageBox.StandardButton.Yes:
+                self._model_release_unchecked()
+            else:
+                self._model_drop("model check failed (see Settings > Models)")
+            return
+        for ref, actual in plan.case_mismatch.items():
+            self._sync_log(f"Model check: {ref.rel} is spelled {actual} on disk — the Linux pod is case-sensitive")
+        for ref, (lsize, rsize) in plan.size_mismatch.items():
+            self._sync_log(f"Model check: {ref.rel} differs in size (local {model_sync.fmt_size(lsize)}, pod {model_sync.fmt_size(rsize)}) — not touched")
+
+        # Models the pod has but this PC doesn't. The pod run is fine without
+        # them, so say exactly that and offer the download for local use —
+        # a 35 GB text encoder must never start pulling down unannounced.
+        offered = [j for j in plan.optional_downloads if j.ref.rel not in self._pod_only_declined]
+        if offered:
+            total = sum(j.size for j in offered)
+            names = "\n".join(f"    • {j.ref.kind}: {j.ref.rel}  ({model_sync.fmt_size(j.size)})" for j in offered)
+            self._sync_log(f"Model check: {len(offered)} model(s) are on the pod but not on this PC ({model_sync.fmt_size(total)})")
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setWindowTitle("Model missing locally")
+            box.setText(f"{len(offered)} model file(s) exist on the pod but not on this PC "
+                        f"({model_sync.fmt_size(total)}):")
+            box.setInformativeText(
+                names + "\n\n"
+                "This run goes to the pod, which already has them, so it can start right away.\n"
+                "You only need the download if you also want to run this workflow on local ComfyUI.\n\n"
+                f"Download to {plan.local_root}? The download runs first, then the run starts.\n"
+                "(Settings > Models can download these automatically without asking.)")
+            dl = box.addButton("Download, then run", QMessageBox.ButtonRole.AcceptRole)
+            pod = box.addButton("Run on the pod without downloading", QMessageBox.ButtonRole.ActionRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(pod)
+            box.exec()
+            if box.clickedButton() is dl:
+                plan.downloads.extend(offered)
+                self._sync_log(f"Model check: downloading {len(offered)} pod-only model(s) to this PC first")
+            elif box.clickedButton() is pod:
+                for j in offered:
+                    self._pod_only_declined.add(j.ref.rel)
+                self._sync_log("Model check: running on the pod without the local copies (not asked again this session)")
+            else:
+                self._model_drop("cancelled at the missing-locally prompt")
+                return
+
+        if plan.clean and not plan.downloads:
+            self._sync_log("Model check: every model file the run needs is on the pod")
+            self._model_release()
+            return
+
+        lines = []
+        if plan.uploads:
+            lines.append(f"Upload to the pod ({model_sync.fmt_size(sum(j.size for j in plan.uploads))}):")
+            lines += [f"    ↑ {j.label}  ({model_sync.fmt_size(j.size)})" for j in plan.uploads]
+        if plan.downloads:
+            lines.append(f"Download to {plan.local_root} ({model_sync.fmt_size(sum(j.size for j in plan.downloads))}):")
+            lines += [f"    ↓ {j.label}  ({model_sync.fmt_size(j.size)})" for j in plan.downloads]
+        if plan.nowhere:
+            lines.append("Not found on the pod OR locally — the run will fail on the server unless the pod has them outside the volume:")
+            lines += [f"    ✗ {r.kind}: {r.rel}" for r in plan.nowhere]
+        body = "\n".join(lines)
+        for ln in lines:
+            self._sync_log("Model check: " + ln.strip())
+
+        if plan.jobs:
+            if plan.uploads or plan.nowhere:
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Icon.Question)
+                box.setWindowTitle("Sync models with the pod?")
+                box.setText(f"{len(plan.jobs)} model file(s) to copy "
+                            f"({model_sync.fmt_size(plan.total_bytes)} to move).")
+                box.setInformativeText(body + "\n\nCopy them now? The run starts automatically once every file is verified.")
+                yes = box.addButton("Sync, then run", QMessageBox.ButtonRole.AcceptRole)
+                anyway = box.addButton("Run without syncing", QMessageBox.ButtonRole.DestructiveRole)
+                box.addButton(QMessageBox.StandardButton.Cancel)
+                box.setDefaultButton(yes)
+                box.exec()
+                if box.clickedButton() is yes:
+                    self._start_transfer(plan)
+                elif box.clickedButton() is anyway:
+                    self._model_release_unchecked()
+                else:
+                    self._model_drop("model sync cancelled")
+                return
+            self._start_transfer(plan)        # downloads the user just said yes to
+            return
+
+        ans = QMessageBox.question(
+            self, "Models not found",
+            body + "\n\nStart the run anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ans == QMessageBox.StandardButton.Yes:
+            self._model_release_unchecked()
+        else:
+            self._model_drop("model files missing on both sides")
+
+    def _start_transfer(self, plan: model_sync.SyncPlan):
+        ups, downs = len([j for j in plan.jobs if j.direction == "upload"]), len([j for j in plan.jobs if j.direction == "download"])
+        size = model_sync.fmt_size(plan.total_bytes)
+        title = (f"Downloading {downs} model file(s) to this PC — {size} total" if not ups else
+                 f"Uploading {ups} model file(s) to the pod — {size} total" if not downs else
+                 f"Syncing models — {ups} up, {downs} down — {size} total")
+        self._xfer_mark = ("", time.time(), 0)
+        self._transfer_dlg = QProgressDialog("Starting…", "Cancel", 0, 1000, self)
+        self._transfer_dlg.setWindowTitle(title)
+        self._transfer_dlg.setMinimumWidth(560)
+        self._transfer_dlg.setMinimumDuration(0)
+        self._transfer_dlg.setAutoClose(False)
+        self._transfer_dlg.setAutoReset(False)
+        self._transfer_dlg.canceled.connect(self._cancel_transfer)
+        self._transfer = model_sync.TransferWorker(self._config.get_all(), plan.jobs)
+        self._transfer.log.connect(self._sync_log)
+        self._transfer.progress.connect(self._on_transfer_progress)
+        self._transfer.finished_ok.connect(self._on_transfer_done)
+        self._transfer.finished.connect(self._transfer_finished)
+        self._transfer.start()
+
+    def _cancel_transfer(self):
+        if self._transfer is not None:
+            self._transfer.cancel()
+            if self._transfer_dlg is not None:
+                self._transfer_dlg.setLabelText("Cancelling after the current file…")
+
+    def _on_transfer_progress(self, done: int, total: int, label: str, files_done: int, files_total: int):
+        if self._transfer_dlg is None:
+            return
+        now = time.time()
+        mark_label, t0, b0 = self._xfer_mark
+        if label != mark_label:                 # new file (or a retry): rate restarts
+            self._xfer_mark = (label, now, done)
+            t0, b0 = now, done
+        elapsed = now - t0
+        rate = (done - b0) / elapsed if elapsed > 0.5 else 0.0
+        eta = model_sync.fmt_eta((total - done) / rate) if rate > 0 else "—"
+        self._transfer_dlg.setValue(int(done * 1000 / total) if total else 0)
+        self._transfer_dlg.setLabelText(
+            f"{label}\n"
+            f"{model_sync.fmt_size(done)} of {model_sync.fmt_size(total)}"
+            + (f"   ·   {model_sync.fmt_rate(rate)}   ·   about {eta} left" if rate > 0 else "")
+            + f"\nfile {min(files_done + 1, files_total)} of {files_total}   ·   Cancel stops the transfer now")
+
+    def _on_transfer_done(self, errors: list):
+        if self._transfer_dlg is not None:
+            self._transfer_dlg.close()
+            self._transfer_dlg = None
+        if errors:
+            text = "\n".join(f"• {name}: {err}" for name, err in errors[:12])
+            QMessageBox.critical(self, "Model sync failed",
+                                 f"{len(errors)} file(s) did not transfer:\n\n{text}\n\nThe run was not started.")
+            self._model_drop("model sync failed")
+            return
+        self._sync_log("Model sync: every file verified - starting the run")
+        self._model_release()
+
+    def _transfer_finished(self):
+        self._transfer = None
 
     # ------------------------------------------------------------------ #
     # Auto mode
@@ -1299,6 +1604,8 @@ class MainWindow(QMainWindow):
 
     def _start(self, images: list[Path] | None = None, clear_log: bool = True,
                fixed_prompt: str | None = None):
+        if self._spend_limit_blocked():
+            return
         if clear_log:
             self._log_view.clear()
         if images is None:
@@ -1317,6 +1624,12 @@ class MainWindow(QMainWindow):
             return
 
         self._config.save()
+        self._ensure_models(
+            lambda: self._launch_batch(images, fixed_prompt),
+            on_drop=self._model_check_dropped,
+        )
+
+    def _launch_batch(self, images: list[Path], fixed_prompt: str | None):
         self._progress.setValue(0)
         self._progress.setMaximum(len(images))
         self._start_btn.setEnabled(False)
@@ -1338,6 +1651,8 @@ class MainWindow(QMainWindow):
         self._worker.log.connect(self._append_log)
         self._worker.all_done.connect(self._on_done)
         self._worker.error.connect(self._on_error)
+        self._worker.finished.connect(self._on_run_thread_finished)
+        self._pod.cancel_idle_timer()
         self._worker.start()
 
     def _cancel(self):
@@ -1373,8 +1688,10 @@ class MainWindow(QMainWindow):
                     return
                 # Grid exhausted
                 self._append_log("Auto mode complete — no images remaining.")
+                self._alert()
             else:
                 self._append_log("Auto mode stopped after batch.")
+                self._alert()
 
             self._auto_mode = False
             self._auto_stop_requested = False
@@ -1385,6 +1702,8 @@ class MainWindow(QMainWindow):
             self._reload_images()
             return
 
+        if self._worker is None or not self._worker.cancelled:
+            self._alert()
         self._reload_images()
 
     def _on_error(self, msg: str):
@@ -1396,6 +1715,13 @@ class MainWindow(QMainWindow):
         self._update_auto_buttons()
         self._start_btn.setEnabled(True)
         self._cancel_btn.setEnabled(False)
+        # The run stopped itself because ComfyUI cannot make images (missing
+        # model, rejected workflow...). Someone may be away from the desk.
+        self._alert()
+        self._reload_images()
+        QMessageBox.critical(
+            self, "Run stopped",
+            f"The run was stopped - no more images will be attempted.\n\n{msg}")
 
     # ------------------------------------------------------------------ #
     # UI helpers
@@ -1404,6 +1730,54 @@ class MainWindow(QMainWindow):
     def _append_log(self, msg: str):
         now = datetime.now().strftime("%H:%M:%S")
         self._log_view.appendPlainText(f"[{now}] {msg}")
+
+    def _generation_running(self) -> bool:
+        """PodControl asks this: a running batch or re-roll means the pod is
+        working, so a spend-limit stop waits and the idle countdown never arms."""
+        return any(w is not None and w.isRunning()
+                   for w in (self._worker, self._reroll_worker, self._transfer))
+
+    def _on_server_changed(self):
+        """A pod came up (or went away) and PodControl rewrote mode/runpod_url."""
+        self._models_ok_key = None  # a different pod's volume may differ
+        self._update_mode_label()
+        self._update_status()
+
+    def _on_run_thread_finished(self):
+        """A worker thread has really ended (all_done fires while it is still
+        winding down). A deferred spend-limit stop lands here, or the idle
+        countdown arms - but not between Auto Run batches, where the next
+        batch is already running."""
+        if self._generation_running() or self._auto_mode:
+            return
+        self._pod.run_finished()
+        self._pod.start_idle_timer()
+
+    def _alert(self):
+        """The one alert sound (Settings > RunPod), shared with the pod
+        chain's "pod found" / "gave up" alerts."""
+        if self._config.get("alert_sound_enabled", True):
+            alerts.play(self._config.get("alert_sound_path", ""))
+
+    def _spend_limit_blocked(self) -> bool:
+        """True (after telling the user) when the pod has hit its spend limit."""
+        if not self._pod.over_limit():
+            return False
+        limit = float(self._config.get("runpod_spend_limit", 0) or 0)
+        if self._auto_mode:
+            self._auto_mode = False
+            self._auto_stop_requested = False
+            self._auto_current_batch = []
+            self._last_auto_prompt_idx = -1
+            self._auto_prompt_cursor = 0
+            self._update_auto_buttons()
+            self._reload_images()
+        QMessageBox.warning(
+            self, "Spend limit reached",
+            f"This pod has hit the ${limit:.2f} session limit, so no new runs are "
+            "being started. It will stop once the current run finishes.\n\n"
+            "Raise the limit in Settings > RunPod to keep going.")
+        return True
 
     def _update_mode_label(self):
         mode = self._config.get("mode", "local")
@@ -1422,6 +1796,28 @@ class MainWindow(QMainWindow):
         self._status.showMessage(f"ComfyUI:  {url}")
 
     def closeEvent(self, event):
+        # Ask about any pod this session is connected to - one adopted from the
+        # launch chooser too, not only one this app started. Asked first, so
+        # Cancel leaves everything running.
+        stop_pod = False
+        if self._pod.pod_id and self._config.get("runpod_auto_stop_on_exit", True):
+            ans = QMessageBox.question(
+                self, "Stop the pod?",
+                f"RunPod pod {self._pod.pod_id} is still running.\n\n"
+                "Yes — stop the pod, then quit. GPU billing ends.\n"
+                "No — quit and leave the pod running. It keeps billing until you "
+                "stop it in the RunPod console. Can reconnect if still running on "
+                "next app launch.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+            if ans == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            stop_pod = ans == QMessageBox.StandardButton.Yes
+            if not stop_pod:
+                self._pod.leave_running()
         if self._loader:
             self._loader.cancel()
         if self._lib_loader and self._lib_loader.isRunning():
@@ -1431,5 +1827,10 @@ class MainWindow(QMainWindow):
             self._worker.cancel()
         if self._reroll_worker:
             self._reroll_worker.cancel()
+        if self._transfer is not None:
+            self._transfer.cancel()
+            self._transfer.wait(5000)
+        if stop_pod:
+            self._pod.shutdown()
         self._config.save()
         super().closeEvent(event)
