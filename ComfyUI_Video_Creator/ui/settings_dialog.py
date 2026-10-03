@@ -361,12 +361,16 @@ class SettingsDialog(QDialog):
         syl.addWidget(self._caption(
             "Before a RunPod run, every model file the workflow names (checkpoints, diffusion models, "
             "VAEs, text encoders, CLIP vision, upscalers, LoRAs) is looked for in the local models folder "
-            "and on the pod's volume. Whatever is missing on one side is copied from the other — uploads "
-            "to the pod, downloads to local — and the run starts when the copies are verified. "
+            "and on the pod's volume. Files the pod lacks are uploaded from here before the run starts "
+            "(and, if the box below is ticked, files only on the pod are downloaded to this PC). "
             "Same S3 access as the S3 Browser app and the Chain Automator."))
         self._sync_enabled = QCheckBox("Check and sync models before each RunPod run")
         self._sync_enabled.setChecked(bool(config.get(ms.CFG_MODEL_CHECK, True)))
         syl.addWidget(self._sync_enabled)
+        self._sync_download = QCheckBox("Download pod-only models to this PC as well "
+                                        "(off: a pod run only needs them on the pod — large base models stay there)")
+        self._sync_download.setChecked(bool(config.get(ms.CFG_DOWNLOAD, False)))
+        syl.addWidget(self._sync_download)
         self._models_dir = self._folder_row(syl, "Models folder:", config.get(ms.CFG_MODELS_DIR, ""),
                                             "ComfyUI/models root — blank = the parent of the LoRAs folder…")
         self._s3_profile = self._text_row(syl, "AWS profile:", config.get(ms.CFG_S3_PROFILE, "runpod-s3"),
@@ -827,6 +831,7 @@ class SettingsDialog(QDialog):
         c.set("alert_sound_enabled", bool(self._alert_enabled.isChecked()))
         import model_sync as ms
         c.set(ms.CFG_MODEL_CHECK, bool(self._sync_enabled.isChecked()))
+        c.set(ms.CFG_DOWNLOAD, bool(self._sync_download.isChecked()))
         c.set(ms.CFG_MODELS_DIR, self._models_dir.text().strip())
         for key, value in self._s3_config_from_fields().items():
             c.set(key, value)

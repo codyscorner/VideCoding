@@ -1,4 +1,5 @@
 import tempfile
+import time
 from pathlib import Path
 
 from PyQt6.QtGui import QKeySequence, QShortcut
@@ -330,6 +331,17 @@ class MainWindow(QMainWindow):
     # Model check & sync (RunPod)
     # ------------------------------------------------------------------ #
 
+    def _sync_log(self, panel, msg: str):
+        """Model check / sync lines go to the tab's log AND the run log file,
+        so a transfer that misbehaves overnight leaves evidence."""
+        panel.append_log(msg)
+        try:
+            path = Path(self.config.get("_base_dir", str(Path(__file__).resolve().parent.parent))) / "video_creator_run.log"
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%H:%M:%S')} SYNC {msg}\n")
+        except OSError:
+            pass
+
     def _run_model_check(self):
         self._model_check_scheduled = False
         if self._model_check is not None or self._transfer is not None or not self._model_queue:
@@ -346,7 +358,7 @@ class MainWindow(QMainWindow):
                     if a.turbo is not None:
                         apply_turbo_toggle(wf, a.turbo, req.turbo_enabled)
             except Exception as e:  # noqa: BLE001
-                self._panel_for(req).append_log(f"Model check: couldn't read {req.workflow_path.name} ({e}) — the run will report it")
+                self._sync_log(self._panel_for(req), f"Model check: couldn't read {req.workflow_path.name} ({e}) — the run will report it")
                 continue
             for r in model_sync.models_in_workflow(wf):
                 refs.setdefault(r, None)
@@ -356,7 +368,7 @@ class MainWindow(QMainWindow):
         self._model_batch = batch
         self._pod.cancel_idle_timer()
         panel = self._panel_for(batch[0])
-        panel.append_log(f"Model check: comparing {len(refs)} model file(s) between the local models folder and the pod volume…")
+        self._sync_log(panel, f"Model check: comparing {len(refs)} model file(s) between the local models folder and the pod volume…")
         self._model_check = model_sync.ModelCheckWorker(self.config.get_all(), list(refs))
         self._model_check.done.connect(self._on_model_plan)
         self._model_check.finished.connect(self._model_check_finished)
@@ -388,18 +400,25 @@ class MainWindow(QMainWindow):
                 "Start the run anyway? A model the pod lacks will fail on the server.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No)
-            panel.append_log(f"Model check failed: {plan.error}")
+            self._sync_log(panel, f"Model check failed: {plan.error}")
             if ans == QMessageBox.StandardButton.Yes:
                 self._release_batch(batch)
             else:
                 self._drop_batch(batch, "model check failed (see Settings > Models)")
             return
         for ref, actual in plan.case_mismatch.items():
-            panel.append_log(f"Model check: {ref.rel} is spelled {actual} on disk — the Linux pod is case-sensitive")
+            self._sync_log(panel, f"Model check: {ref.rel} is spelled {actual} on disk — the Linux pod is case-sensitive")
         for ref, (lsize, rsize) in plan.size_mismatch.items():
-            panel.append_log(f"Model check: {ref.rel} differs in size (local {model_sync.fmt_size(lsize)}, pod {model_sync.fmt_size(rsize)}) — not touched")
+            self._sync_log(panel, f"Model check: {ref.rel} differs in size (local {model_sync.fmt_size(lsize)}, pod {model_sync.fmt_size(rsize)}) — not touched")
+        if plan.pod_only:
+            total = sum(sz for _, sz in plan.pod_only)
+            self._sync_log(panel, f"Model check: {len(plan.pod_only)} file(s) exist only on the pod "
+                           f"({model_sync.fmt_size(total)}) — the run uses them there. Turn on "
+                           "'Download pod-only models' in Settings > Models to copy them to this PC")
+            for ref, sz in plan.pod_only:
+                self._sync_log(panel, f"Model check:     pod only: {ref.kind}: {ref.rel} ({model_sync.fmt_size(sz)})")
         if plan.clean:
-            panel.append_log("Model check: every model file is on the pod")
+            self._sync_log(panel, "Model check: every model file is on the pod")
             self._release_batch(batch)
             return
 
@@ -415,7 +434,7 @@ class MainWindow(QMainWindow):
             lines += [f"    ✗ {r.kind}: {r.rel}" for r in plan.nowhere]
         body = "\n".join(lines)
         for ln in lines:
-            panel.append_log("Model check: " + ln.strip())
+            self._sync_log(panel, "Model check: " + ln.strip())
 
         if plan.jobs:
             box = QMessageBox(self)
@@ -458,7 +477,7 @@ class MainWindow(QMainWindow):
         self._transfer_dlg.setAutoReset(False)
         self._transfer_dlg.canceled.connect(self._cancel_transfer)
         self._transfer = model_sync.TransferWorker(self.config.get_all(), plan.jobs)
-        self._transfer.log.connect(panel.append_log)
+        self._transfer.log.connect(lambda m, p=panel: self._sync_log(p, m))
         self._transfer.progress.connect(self._on_transfer_progress)
         self._transfer.finished_ok.connect(self._on_transfer_done)
         self._transfer.finished.connect(self._transfer_finished)
@@ -489,7 +508,7 @@ class MainWindow(QMainWindow):
                                  f"{len(errors)} file(s) did not transfer:\n\n{text}\n\nThe run was not started.")
             self._drop_batch(batch, "model sync failed")
             return
-        panel.append_log("Model sync: every file verified — starting the run")
+        self._sync_log(panel, "Model sync: every file verified — starting the run")
         # A downloaded LoRA should show up in the dropdowns straight away.
         self._image_panel.reload_loras_from_folder(quiet=True)
         self._release_batch(batch)

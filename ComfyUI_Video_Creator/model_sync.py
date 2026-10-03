@@ -40,9 +40,14 @@ CFG_S3_REGION = "s3_region"
 CFG_S3_ENDPOINT = "s3_endpoint_url"
 CFG_S3_BUCKET = "s3_bucket_name"
 CFG_S3_MODELS_PREFIX = "s3_models_prefix"   # ComfyUI/models inside the bucket
+# Off by default: a pod run only needs the file ON THE POD. Base models that
+# live only on the volume (a 35 GB Flux2 text encoder, say) must not be pulled
+# down to the PC before every run unless the user asked for local copies.
+CFG_DOWNLOAD = "model_sync_download"
 
 S3_DEFAULTS = {
     CFG_MODEL_CHECK: True,
+    CFG_DOWNLOAD: False,
     CFG_MODELS_DIR: "",
     CFG_S3_PROFILE: "runpod-s3",
     CFG_S3_REGION: "",
@@ -389,6 +394,7 @@ class SyncPlan:
     uploads: list[TransferJob] = field(default_factory=list)
     downloads: list[TransferJob] = field(default_factory=list)
     nowhere: list[ModelRef] = field(default_factory=list)         # missing on both sides
+    pod_only: list[tuple[ModelRef, int]] = field(default_factory=list)  # on the pod, not local, downloads off: (ref, size)
     size_mismatch: dict[ModelRef, tuple[int, int]] = field(default_factory=dict)  # (local, pod)
     case_mismatch: dict[ModelRef, str] = field(default_factory=dict)
     error: str = ""                                               # pod could not be checked
@@ -429,6 +435,9 @@ def plan_sync(config: dict, refs: list[ModelRef]) -> SyncPlan:
             p = local.present[ref]
             plan.uploads.append(TransferJob("upload", ref, local.folder_of[ref], p, p.stat().st_size))
         elif there:
+            if not config.get(CFG_DOWNLOAD, False):
+                plan.pod_only.append((ref, remote.present[ref]))   # the run has what it needs
+                continue
             if local.root is None:
                 plan.nowhere.append(ref)        # nowhere to put it
                 continue
@@ -463,9 +472,17 @@ class ModelCheckWorker(QThread):
         self.done.emit(plan_sync(self._config, self._refs))
 
 
+class TransferCancelled(Exception):
+    """Raised inside boto3's progress callback to abort the transfer in
+    flight. s3transfer propagates it out of upload_file / download_file within
+    a few seconds and tidies its own parts, which is the only way to stop a
+    35 GB download short of killing the process."""
+
+
 class TransferWorker(QThread):
     """Moves the planned files: uploads to the pod, downloads to the local
-    models folder. Each file is retried with backoff and its size verified."""
+    models folder. Each file is retried with backoff and its size verified.
+    Cancel aborts the file in flight (not just "after this file")."""
     log = pyqtSignal(str)
     progress = pyqtSignal(int, int, str, int, int)   # bytes_done, bytes_total, label, files_done, files_total
     finished_ok = pyqtSignal(list)                    # [(label, error)] — empty = all good
@@ -506,11 +523,14 @@ class TransferWorker(QThread):
                     break
                 sent = 0
                 merge_logged = False
+                shown = job.label if attempt == 1 else f"{job.label}  (attempt {attempt} of {TRANSFER_RETRY_ATTEMPTS} — restarted from 0)"
 
-                def cb(chunk: int, _job=job):
+                def cb(chunk: int, _job=job, _shown=shown):
                     nonlocal sent, merge_logged
+                    if self._cancelled:
+                        raise TransferCancelled()
                     sent += chunk
-                    self.progress.emit(done_bytes + sent, self._total, _job.label, i, n)
+                    self.progress.emit(done_bytes + sent, self._total, _shown, i, n)
                     if _job.direction == "upload" and not merge_logged and sent >= _job.size:
                         merge_logged = True
                         self.log.emit(f"  {_job.ref.rel}: all bytes sent, waiting for the pod to merge the upload...")
@@ -523,6 +543,15 @@ class TransferWorker(QThread):
                     last_error = None
                     break
                 except Exception as exc:  # noqa: BLE001
+                    if self._cancelled or isinstance(exc, TransferCancelled):
+                        last_error = TransferCancelled("cancelled")
+                        self.log.emit(f"  {job.ref.rel}: cancelled after {fmt_size(sent)}")
+                        if job.direction == "download":
+                            try:
+                                job.local_path.with_name(job.local_path.name + ".part").unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                        break
                     if job.direction == "upload":
                         # The final CompleteMultipartUpload can time out during
                         # RunPod's server-side merge even though the object landed.

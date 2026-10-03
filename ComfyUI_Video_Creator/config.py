@@ -52,6 +52,8 @@ class ConfigManager:
         # RunPod run every model file the workflow names is looked for locally and
         # on the volume; whatever is missing on one side is copied from the other.
         "model_check_enabled": True,
+        "model_sync_download": False,          # also pull pod-only files down to this PC (off: a pod run only needs them on the pod)
+        "model_sync_download": False,          # also pull pod-only files down to this PC (off: a pod run only needs them on the pod)
         "models_dir": "",                      # ComfyUI/models root; blank = parent of loras_dir
         "s3_profile_name": "runpod-s3",        # profile in %USERPROFILE%\.aws\credentials
         "s3_region": "",
