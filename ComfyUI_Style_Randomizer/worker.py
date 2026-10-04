@@ -77,6 +77,64 @@ def append_daily_log(base_dir: Path, text: str):
 PROMPT_MODES = ("random", "sequential", "evens_odds")
 
 
+class ComfyRunError(Exception):
+    """ComfyUI itself said it cannot make this image - a model/node it cannot
+    find, a workflow it rejected, a failure while executing. The next image
+    would hit the same wall, so the run stops instead of burning through the
+    rest of the list (and the pod's per-second billing) producing nothing."""
+
+
+def _short(text, limit: int = 300) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def describe_prompt_rejection(resp) -> str:
+    """Turn a failed POST /prompt into the reason ComfyUI gave.
+
+    A 400 carries {"error": {"message", "details"}, "node_errors": {id: {
+    "class_type", "errors": [{"message", "details"}]}}} - e.g. "Value not in
+    list: unet_name" when a model file is missing on the pod."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return f"HTTP {resp.status_code}: {_short(resp.text) or resp.reason}"
+    if not isinstance(data, dict):
+        return f"HTTP {resp.status_code}: {_short(data)}"
+    err = data.get("error")
+    if isinstance(err, dict):
+        head = err.get("message") or err.get("type") or "rejected"
+        if err.get("details"):
+            head += f" ({_short(err['details'])})"
+    else:
+        head = str(err) if err else f"HTTP {resp.status_code}"
+    parts = []
+    for node_id, info in (data.get("node_errors") or {}).items():
+        for e in (info.get("errors") or []):
+            msg = e.get("message", "")
+            if e.get("details"):
+                msg += f": {e['details']}"
+            parts.append(f"node {node_id} ({info.get('class_type', '?')}): {_short(msg)}")
+    return head + "".join(f"\n    {x}" for x in parts[:5])
+
+
+def describe_history_error(entry: dict) -> str | None:
+    """The failure recorded in a /history entry, or None if it did not fail."""
+    status = entry.get("status") or {}
+    if status.get("status_str") != "error":
+        return None
+    for kind, info in status.get("messages") or []:
+        if kind == "execution_error" and isinstance(info, dict):
+            return (f"{info.get('exception_type', 'Error')} in node {info.get('node_id', '?')} "
+                    f"({info.get('node_type', '?')}): {_short(info.get('exception_message', ''))}")
+    return "ComfyUI reported an execution error"
+
+
+# Anything that is not a ComfyUI verdict (network blip, timeout) is retried
+# on the next image, but not forever.
+MAX_CONSECUTIVE_FAILURES = 3
+
+
 class BatchStyleWorker(QThread):
     progress = pyqtSignal(int, int)   # current, total
     log      = pyqtSignal(str)
@@ -107,6 +165,10 @@ class BatchStyleWorker(QThread):
 
     def cancel(self):
         self._cancelled = True
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
 
     def _log(self, msg: str):
         self.log.emit(msg)
@@ -162,6 +224,7 @@ class BatchStyleWorker(QThread):
                 _seq = None  # weighted random per image
 
             seq_pos = 0  # cursor for sequential / evens_odds
+            failures = 0  # consecutive non-ComfyUI failures
 
             for i, img_path in enumerate(self._image_paths):
                 if self._cancelled:
@@ -237,8 +300,19 @@ class BatchStyleWorker(QThread):
                     saved = self._get_output(prompt_id, img_path)
                     self._log(f"  ✓ {saved.name}")
                     log_prompt_used(self._output_dir, saved.name, prompt_idx, prompt, weight_used, note)
+                    failures = 0
+                except ComfyRunError as exc:
+                    self._log(f"  ✗ {exc}")
+                    self._abort(f"{img_path.name}: {exc}", start_time)
+                    return
                 except Exception as exc:
                     self._log(f"  ✗ {exc}")
+                    failures += 1
+                    if failures >= MAX_CONSECUTIVE_FAILURES:
+                        self._abort(
+                            f"{failures} images in a row failed - last: {img_path.name}: {exc}",
+                            start_time)
+                        return
 
                 self.progress.emit(i + 1, total)
 
@@ -250,6 +324,14 @@ class BatchStyleWorker(QThread):
 
         except Exception as exc:
             self.error.emit(str(exc))
+
+    def _abort(self, msg: str, start_time: float):
+        """Stop the whole run: log it, tell the window (which shows the error)."""
+        elapsed = self._format_elapsed(time.time() - start_time)
+        self._log(f"STOPPED - run aborted after {elapsed}")
+        if self._base_dir:
+            append_daily_log(self._base_dir, f"=== STOPPED ({elapsed}): {msg} ===")
+        self.error.emit(msg)
 
     # ------------------------------------------------------------------ #
     # Workflow patching
@@ -305,6 +387,8 @@ class BatchStyleWorker(QThread):
             json={"prompt": workflow, "client_id": self._client_id},
             timeout=30,
         )
+        if resp.status_code == 400:
+            raise ComfyRunError("ComfyUI rejected the workflow - " + describe_prompt_rejection(resp))
         resp.raise_for_status()
         return resp.json()["prompt_id"]
 
@@ -323,6 +407,9 @@ class BatchStyleWorker(QThread):
                     continue
                 h = requests.get(f"{self._url}/history/{prompt_id}", timeout=10).json()
                 if prompt_id in h:
+                    why = describe_history_error(h[prompt_id])
+                    if why:
+                        raise ComfyRunError(f"ComfyUI failed while generating - {why}")
                     return
             except requests.RequestException as exc:
                 self._log(f"  Poll error: {exc}")
@@ -350,7 +437,9 @@ class BatchStyleWorker(QThread):
                     dest.write_bytes(dl.content)
                     return dest
 
-        raise RuntimeError("No output found in ComfyUI history")
+        raise ComfyRunError(
+            "ComfyUI finished but produced no image - does the workflow end in a "
+            "SaveImage node? (no output found in ComfyUI history)")
 
     def _output_exists(self, stem: str) -> bool:
         return any((self._output_dir / f"{stem}{ext}").exists() for ext in OUTPUT_EXTS)

@@ -13,6 +13,10 @@ Batch-process a folder of images through a single ComfyUI i2i workflow, randomly
 - **Library tab** — browse, view full-size, and delete output images; thumbnail cache makes reloads instant
 - **Image viewer** — full screen toggle, slideshow mode (4 s auto-advance, spacebar to skip), keyboard ← → navigation, ESC to stop/exit
 - Auto-detects workflow nodes: `LoadImage`, `PrimitiveStringMultiline`, `CLIPTextEncode`, `KSampler`
+- **RunPod pod control** — Start / Stop Pod button and live spend readout in the header, launch chooser, priority-ordered pod list with GPU ranking, spend limit, idle stop, keep-trying retry and an alert sound (see below)
+- **Model check & sync** — before a RunPod run, every model/LoRA file the workflow names is looked for locally and on the pod volume; missing files are uploaded/downloaded and verified first
+- **Stops on ComfyUI errors** — a missing model, rejected workflow or failed generation stops the run with the reason instead of grinding through every image
+- **Prompt tooltips** — hover any style prompt in the list to read its full text
 - Dark theme UI consistent with the Chain Automator
 
 ## Prompt File Format
@@ -68,6 +72,33 @@ Your ComfyUI workflow must be exported in **API format** (enable Dev Mode in Com
 | `PrimitiveStringMultiline` or first non-negative `CLIPTextEncode` | Injected with the randomly chosen style prompt |
 | `KSampler` / any node with `seed` or `noise_seed` | Randomized each image |
 
+## RunPod Pod Control
+
+Wakes one of your **existing** RunPod pods from inside the app (it never creates or terminates pods). Same feature, and the same code, as the ComfyUI Video Creator and Chain Automator.
+
+- **On launch** the app shows any pod that is already running (use it / start another / stop it) or offers to start one. Turn this off with *Settings > RunPod > Ask on launch*.
+- **Start Pod** walks your priority-ordered pod list (GPU model first, then pod order) and uses the first healthy pod; zero-GPU resumes are detected and skipped. The RunPod URL and mode are written for you.
+- **Header readout** shows what the pod has cost this session; an optional **spend limit** stops the pod once the current run finishes, and **idle stop** stops it N minutes after the last run.
+- **Keep trying** re-sweeps the list every N minutes when every pod is busy; the **alert sound** plays when a pod is found, when it gives up, and when a run finishes.
+- **On quit** you are asked whether to stop the connected pod.
+- The API key is read from `RUNPOD_API_KEY` or `api_keys.json` (`{"runpod_api_key": "..."}`) next to the EXE — never from the config file. `api_keys.json` is gitignored.
+
+## Model Check & Sync
+
+On a RunPod run the app reads the workflow, finds every model file it names (checkpoints, diffusion models, VAEs, text encoders, CLIP vision, upscalers, ControlNets, LoRAs) and compares your local ComfyUI `models` folder with the pod's network volume through RunPod's S3 API:
+
+- on your PC but not on the pod → uploaded to the matching folder on the volume
+- on the pod but not on your PC → a **Model missing locally** box names the file and size, says the pod run can start without it, and offers **Download, then run** (only needed to run the workflow on local ComfyUI — the Flux2 text encoder alone is 35 GB) or **Run on the pod without downloading**; Settings > Models can make the download automatic. The progress dialog shows direction, destination, MB/s and time left
+- nowhere → listed, and you choose whether to run anyway
+- sizes are verified after every transfer; files whose size differs between the two sides are reported, never overwritten
+- Cancel in the progress dialog aborts the file in flight (v1.8.2 — it used to wait for the current file, so a cancelled 35 GB download kept going); every check/sync line is also written to `logs/<today>.txt`
+
+The check runs once per workflow/pod (Auto Run does not re-check every batch). Set it up in **Settings > Models**: the local **Models folder** (the `ComfyUI/models` root) and the S3 fields — *Import from S3 Browser config…* fills profile/endpoint/region/bucket. The check stays off until the endpoint and bucket are filled in. Needs `boto3` (bundled in the EXE) and the `runpod-s3` AWS profile.
+
+## Stop on ComfyUI Errors
+
+If ComfyUI rejects the workflow (e.g. *Value not in list: unet_name* for a model the pod lacks), fails while generating (e.g. out of memory) or finishes without producing an image, the run stops immediately, shows the reason in a dialog and the log, and plays the alert sound. Connection hiccups are tolerated, but three images in a row failing stops the run too.
+
 ## Prompt Weighting
 
 Add an optional weight to a prompt block's separator to bias random selection: `---- PROMPT START x3 -----` makes that prompt 3x more likely to be picked than a default (1x) prompt. Weighting only affects the **Random** order mode (not Sequential or Evens → Odds). Weights show next to each prompt in the list as `[3x]`.
@@ -81,6 +112,20 @@ Double-click any thumbnail in the Randomizer grid to pin a specific style to tha
 Every successful generation appends a row to `prompt_log.csv` in the output folder: timestamp, output filename, prompt index, weight, note (e.g. `pinned`), and a preview of the prompt text used. Useful for auditing which prompt produced which output.
 
 ## Changelog
+
+### v1.8.1
+- Fix: Settings > RunPod showed empty GPU/pod lists (the list fetch was never started); lists and account balance now load when Settings opens
+
+### v1.8.0
+- **Stop on ComfyUI errors** — a rejected workflow (missing model etc.), an execution error or an image-less result stops the whole run with ComfyUI's own reason (node + message), an error dialog and the alert sound; three consecutive non-ComfyUI failures (network) also stop it. Previously every image failed one by one
+- **Model check & sync with the pod volume** — `model_sync.py` copied from the Video Creator; Settings > Models tab; runs before RunPod runs and re-rolls, once per workflow/pod, with Sync / Run anyway / Cancel choices and a verified transfer progress dialog. boto3 is back in the EXE
+
+### v1.7.0
+- **RunPod pod control ported from the Video Creator** — header Start/Stop Pod button + spend readout, launch chooser, GPU/pod priority order, spend limit, idle stop, keep-trying retry, alert sound, quit-time stop prompt. New files `runpod_api.py`, `alerts.py`, `ui/pod_worker.py`, `ui/pod_control.py` are copies (no shared code — port future pod fixes to every app)
+- **Settings is tabbed** (Server & Paths / RunPod / AI Scene Generator) so the pod lists fit a 1080p screen
+- A run past the pod's spend limit is refused (Auto Run stops cleanly) and the pod stops when the current run ends
+- Alert sound when a Start run or Auto Run finishes (not on Cancel)
+- **Prompt list tooltips** — hovering a style prompt shows its full text, wrapped; tooltip styled to match the dark theme
 
 ### v1.6.3
 - **Daily processing log** — every run now also writes to `logs/YYYY-MM-DD.txt` next to the EXE (created automatically), with a run-start header (image/prompt counts), one line per image recording the filename and the full prompt used, and a Done/Cancelled footer with elapsed time. Uses the same frozen-EXE-aware base directory as `csr_config.json`, so it always lands next to the EXE regardless of PyInstaller's working directory quirks.
