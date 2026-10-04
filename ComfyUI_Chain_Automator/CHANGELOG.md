@@ -1,5 +1,8 @@
 # Changelog — ComfyUI Workflow Chain Automator
 
+### v3.11.4
+- Fix: in a multi-image batch the segments could swap between videos (video A's segment 2 attached to video B and vice versa). Outputs are paired back to images by position, but the Inspire `LoadImageListFromDir` node in the batch workflows was set to `sort_method: None`, which returns raw directory-listing order — arbitrary on the pod's Linux filesystem — so on a segment the pod listed `002_...` before `001_...` and every output after it was matched to the wrong image. The batch run now forces the loader to `Alphabetical (ASC)` (staged files are zero-padded `001_`, `002_`, ...), whatever the workflow JSON says. Not specific to MiniMax; WAN chains could hit it too
+
 ### v3.11.3
 - **The video player loads the whole clip into memory before playing it**, so the first play no longer skips and pauses. Streaming an MP4 straight off disk makes the decoder seek between the index and the audio/video chunks; on a hard drive or a just-written file that stutters until the OS has cached it. The player now reads the file sequentially on a background thread (shows "Loading…"), then plays from RAM, and reads the next clip in a playlist while the current one plays so the changeover is smooth too. Files over 1 GB or unreadable ones fall back to streaming. Playing from memory also means the player no longer holds the video file open
 

@@ -22,6 +22,7 @@ logger.setLevel(logging.DEBUG)
 LIST_LOADER_TYPE = "LoadImageListFromDir //Inspire"
 LIST_LOADER_TITLE = "Load Image List From Dir (Inspire)"
 BATCH_FILE_GLOB = "workflow_segment_*_batch.json"
+LIST_LOADER_SORT = "Alphabetical (ASC)"   # Inspire sort_method; names are zero-padded
 
 # Stitch audio: one common format so segments with different sample rates /
 # channel layouts can still be concatenated (same values as Video Creator).
@@ -408,6 +409,12 @@ class BatchChainWorker(QThread):
         for node in workflow.values():
             if node.get("class_type") == self._LIST_LOADER_TYPE:
                 node["inputs"]["directory"] = directory
+                # Outputs are paired back to images by position, so the loader
+                # must return 001_, 002_, ... in name order. With the node's
+                # default sort_method "None" it returns raw os.listdir order,
+                # which on the pod's Linux filesystem is arbitrary and swapped
+                # the segments between videos.
+                node["inputs"]["sort_method"] = LIST_LOADER_SORT
                 return
 
     def _check_batch_wiring(self, workflow: dict, json_file: str):
