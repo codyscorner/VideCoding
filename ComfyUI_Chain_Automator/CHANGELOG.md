@@ -1,5 +1,8 @@
 # Changelog — ComfyUI Workflow Chain Automator
 
+### v3.11.2
+- The app now always starts on top. Qt's `raise_()`/`activateWindow()` are silently ignored by Windows' foreground lock when the launch came from a shortcut/Stream Deck, so the window opened behind others. Startup now uses the same Alt-tap + `SetForegroundWindow` helper as ComfyUI Video Creator, re-applied at 0 / 200 / 800 ms so the startup pod prompt can't leave it behind
+
 ### v3.11.1
 - Fix: stitching MiniMax H3 segments (video + audio) failed with "Media type mismatch between the 'Parsed_format' filter output pad 0 (video) and the 'Parsed_concat' filter input pad 1 (audio)". Two causes, both in `_stitch`:
   - ffmpeg's concat filter needs its inputs interleaved per segment (`[v0][a0][v1][a1]`); the stitch passed every video pad followed by every audio pad (Video Creator's `concat_videos` already did it right). Silent WAN chains were unaffected
