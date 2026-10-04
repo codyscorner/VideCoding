@@ -57,6 +57,9 @@ pyinstaller FileFinder.spec
 
 ## Recent Changes
 
+### v1.2.1
+- Fix: "Open Containing Folder" opened the default Explorer folder instead of the file's folder. Result paths mixed separators (`P:/dir\sub\file`) because Qt's folder picker returns forward slashes; all paths (roots, results, loaded presets) are now normalised to Windows backslashes, and Explorer is called as `explorer /select,"path"`
+
 ### v1.2.0
 - Search file contents (text match) as an option — matches the search term against each file's text content (first ~2 MB); binary files are detected and skipped automatically
 - Right-click actions on results: Open, Open Containing Folder, Copy Path, Delete File (with confirmation)
