@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDate, QPoint
 from PyQt6.QtGui import QIcon
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 CONTENT_MAX_BYTES = 2_000_000  # only the first ~2MB of a file is searched for content matches
 
@@ -90,6 +90,9 @@ class SearchThread(QThread):
         for root in roots:
             if not self.is_running:
                 break
+            # Qt dialogs hand back "P:/dir"; scandir then appends "\name", giving
+            # mixed separators. Normalise once here so every result is all-backslash.
+            root = os.path.normpath(root)
             self.status_update.emit(f"Scanning {root}...")
             self.scan_directory(root)
         if self.is_running:
@@ -128,7 +131,7 @@ class SearchThread(QThread):
                                 continue
                             if self.date_before is not None and mtime > self.date_before:
                                 continue
-                        self.file_found.emit(item.path)
+                        self.file_found.emit(os.path.normpath(item.path))
                 except (PermissionError, OSError):
                     continue
         except (PermissionError, OSError):
@@ -322,6 +325,7 @@ class FileFinderApp(QMainWindow):
     def _add_root_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Add Root Folder", str(Path.home()))
         if folder:
+            folder = os.path.normpath(folder)
             existing = [self.roots_list.item(i).text() for i in range(self.roots_list.count())]
             if folder not in existing:
                 self.roots_list.addItem(folder)
@@ -456,13 +460,17 @@ class FileFinderApp(QMainWindow):
 
     def _open_path(self, path):
         try:
-            os.startfile(path)
+            os.startfile(os.path.normpath(path))
         except OSError as e:
             QMessageBox.critical(self, "Open Failed", f"Could not open file:\n{e}")
 
     def _open_containing_folder(self, path):
+        # Explorer's /select, only accepts all-backslash paths; anything else
+        # silently opens the default folder. Passed as a raw command string so
+        # argv-quoting can't split the switch from the path.
+        norm = os.path.normpath(path)
         try:
-            subprocess.run(['explorer', '/select,', path])
+            subprocess.run(f'explorer /select,"{norm}"')
         except OSError as e:
             QMessageBox.critical(self, "Open Failed", f"Could not open containing folder:\n{e}")
 
@@ -560,7 +568,8 @@ class FileFinderApp(QMainWindow):
         self.content_search_check.setChecked(p.get('content_search', False))
 
         self.roots_list.clear()
-        self.roots_list.addItems(p.get('root_folders', []))
+        # Older presets saved Qt-style "P:/dir" roots — normalise on load.
+        self.roots_list.addItems([os.path.normpath(r) for r in p.get('root_folders', [])])
         self.search_all_check.setChecked(p.get('search_all_drives', True))
 
         self.status_label.setText(f"Preset loaded: {name}")
