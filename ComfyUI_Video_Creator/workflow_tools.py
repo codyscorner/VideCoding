@@ -639,6 +639,28 @@ def set_output_prefix(workflow: dict, prefix: str) -> None:
                 node["inputs"]["filename_prefix"] = prefix
 
 
+def blank_workflow(workflow: dict) -> tuple[int, int]:
+    """Clear a template for the "New blank workflow" button: every prompt
+    (positive and negative) is emptied and every LoRA is switched off. Nodes
+    are never removed, so the graph stays valid — a stack slot goes to "None",
+    a single loader (whose name can't be "None") keeps its file at strength 0.
+    The MiniMax Turbo LoRA is left alone; the Turbo toggle owns it.
+    Returns (prompts cleared, LoRAs cleared)."""
+    a = analyze(workflow)
+    edits: dict[tuple[str, str], object] = {(pf.node_id, pf.key): "" for pf in a.prompts}
+    loras = 0
+    for slot in a.loras:
+        if workflow.get(slot.node_id, {}).get("class_type") == "MiniMaxH3TurboLoRA":
+            continue
+        if slot.allow_none:
+            edits[(slot.node_id, slot.name_key)] = "None"
+        for key in slot.strengths:
+            edits[(slot.node_id, key)] = 0.0
+        loras += 1
+    apply_inputs(workflow, edits)
+    return len(a.prompts), loras
+
+
 def save_workflow(path: Path, workflow: dict) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(workflow, f, indent=2, ensure_ascii=False)

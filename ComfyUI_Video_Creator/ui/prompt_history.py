@@ -215,6 +215,32 @@ def set_entry_flag(workflow_path: Path, entry: dict, key: str, value: bool) -> b
     return hit
 
 
+def set_entries_flag(workflow_path: Path, targets: list[dict], key: str, value: bool) -> int:
+    """``set_entry_flag`` for many entries of one workflow: one read, one
+    write. Returns how many of ``targets`` were found and updated."""
+    entries = load_history(workflow_path)
+    done = 0
+    for t in targets:
+        hit = False
+        for e in entries:
+            if entry_matches(e, t):
+                e[key] = bool(value)
+                hit = True
+        if hit:
+            t[key] = bool(value)          # keep the row the dialog holds in step
+            done += 1
+    if done:
+        save_history(workflow_path, entries)
+    return done
+
+
+def delete_entries(workflow_path: Path, targets: list[dict]) -> None:
+    """Remove every history entry matching one of ``targets`` — one read, one write."""
+    entries = load_history(workflow_path)
+    save_history(workflow_path, [e for e in entries
+                                 if not any(entry_matches(e, t) for t in targets)])
+
+
 def add_results(workflow_path: Path, index: int, results: list[str],
                 timing: dict | None = None, source: str = "") -> None:
     """Attach a finished run's output names — and how long it took — to
@@ -434,8 +460,9 @@ class PromptHistoryDialog(QDialog):
     current template or across every template's history.
 
     The file keeps everything ever run. These tabs decide what you look at:
-    star the prompts worth coming back to, untick the ones you never want to
-    see again, and nothing is deleted either way.
+    star the prompts worth coming back to, archive the ones you never want to
+    see again, and nothing is deleted either way. Ctrl/Shift-click (or Ctrl+A)
+    selects many rows; Archive and Delete act on all of them at once.
     """
     use_prompt = pyqtSignal(dict)        # entry — prompt text only
     use_all = pyqtSignal(dict)           # entry — prompt + settings
@@ -461,6 +488,7 @@ class PromptHistoryDialog(QDialog):
         self._filtered: list[tuple[str, Path, dict, str]] = []
         self._selected: tuple[str, Path, dict, str] | None = None
         self._favorites: list[dict] = []     # every favorite, for the star lookup
+        self._count_base = ""                # "N of M"; the selection count is appended to it
         self._load_rows()
 
         self.setWindowTitle(f"Prompt History — {workflow_path.name}")
@@ -529,7 +557,7 @@ class PromptHistoryDialog(QDialog):
             "            history never touches them\n"
             "Recent — the newest entries you haven't archived\n"
             "All — everything you haven't archived\n"
-            "Archived — tucked away, still in the file, tick to bring back")
+            "Archived — tucked away, still in the file; select and press Unarchive to bring back")
         for _key, label in self.VIEWS:
             self._tabs.addTab(label)
         self._tabs.currentChanged.connect(lambda _i: self._populate())
@@ -581,8 +609,11 @@ class PromptHistoryDialog(QDialog):
         self._list.setStyleSheet("QListWidget { font-family: 'Segoe UI'; font-size: 9.5pt; }")
         self._list.setWordWrap(True)
         self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Ctrl/Shift-click, drag, Ctrl+A. The preview follows the current row;
+        # Archive and Delete act on the whole selection.
+        self._list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self._list.currentRowChanged.connect(self._on_select)
-        self._list.itemChanged.connect(self._on_item_checked)
+        self._list.itemSelectionChanged.connect(self._update_buttons)
         split.addWidget(self._list)
         right = QWidget()
         rl = QVBoxLayout(right)
@@ -615,15 +646,16 @@ class PromptHistoryDialog(QDialog):
         brow.addWidget(self._fav_btn)
         self._hide_btn = QPushButton("Archive")
         self._hide_btn.setObjectName("secondary_btn")
-        self._hide_btn.setToolTip("Take this entry out of the list. It stays in the history "
-                                  "file and comes back from the Archived tab — same as the tick box.")
+        self._hide_btn.setToolTip("Take the selected entries out of the list (Ctrl/Shift-click or "
+                                  "Ctrl+A to select many). They stay in the history file and "
+                                  "come back from the Archived tab.")
         self._hide_btn.clicked.connect(self._toggle_hidden)
         brow.addWidget(self._hide_btn)
         del_btn = QPushButton("Delete")
         del_btn.setObjectName("secondary_btn")
         self._del_btn = del_btn
-        del_btn.setToolTip("Remove the entry from the history file for good (favorites are "
-                           "kept separately and are not affected). On the Favorites tab: "
+        del_btn.setToolTip("Remove the selected entries from the history file for good (favorites "
+                           "are kept separately and are not affected). On the Favorites tab: "
                            "remove the favorite only. To just get it out of the way, use Archive.")
         del_btn.clicked.connect(self._delete)
         brow.addWidget(del_btn)
@@ -789,7 +821,6 @@ class PromptHistoryDialog(QDialog):
         keep = self._selected
         bodies = [self._prompt_body(e) for _r, _p, e, _k in self._filtered]
         prefix = self._shared_prefix(bodies)
-        # Tick boxes are written here, and each write fires itemChanged.
         self._list.blockSignals(True)
         self._list.clear()
         for (rel, _p, e, kind), body in zip(self._filtered, bodies):
@@ -805,19 +836,10 @@ class PromptHistoryDialog(QDialog):
                 line += f"   → {Path(e['results'][-1]).name}"
             if describe_timing(e):
                 line += f"   ⏱ {describe_timing(e)}"
-            item = QListWidgetItem(line + "\n    " + preview)
-            if kind == "history":
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                # Ticked = shown in the list. Unticking archives without deleting.
-                item.setCheckState(Qt.CheckState.Unchecked if is_hidden(e) else Qt.CheckState.Checked)
-            self._list.addItem(item)
+            self._list.addItem(QListWidgetItem(line + "\n    " + preview))
         self._list.blockSignals(False)
 
-        self._count_lbl.setText(f"{len(self._filtered)} of {len(rows)}")
-        # Before the selection lands: _on_select disables Archive on a
-        # favorite row, and that must not be undone here afterwards.
-        for b in (self._use_btn, self._use_all_btn, self._fav_btn, self._hide_btn, self._del_btn):
-            b.setEnabled(bool(self._filtered))
+        self._count_base = f"{len(self._filtered)} of {len(rows)}"
         row = next((n for n, r in enumerate(self._filtered)
                     if keep is not None and r[1] == keep[1] and r[3] == keep[3]
                     and entry_matches(r[2], keep[2])), 0)
@@ -827,6 +849,7 @@ class PromptHistoryDialog(QDialog):
         else:
             self._selected = None
             self._preview.setPlainText("")
+        self._update_buttons()
 
     def _on_select(self, row: int):
         if row < 0 or row >= len(self._filtered):
@@ -839,46 +862,59 @@ class PromptHistoryDialog(QDialog):
         if kind == "favorite" and e.get("favorited"):
             head += f"Favorited: {e['favorited']}\n"
         self._preview.setPlainText(head + format_entry(e))
-        starred = kind == "favorite" or self._starred(e)
-        self._fav_btn.setText("★ Unfavorite" if starred else "★ Favorite")
-        self._hide_btn.setText("Unarchive" if is_hidden(e) else "Archive")
-        # A favorite is its own record: no archive tick box, no archive button.
-        self._hide_btn.setEnabled(kind == "history")
-        self._del_btn.setText("Remove favorite" if kind == "favorite" else "Delete")
+        self._update_buttons()
 
-    def _on_item_checked(self, item: QListWidgetItem):
-        """Ticked means visible, so an untick sets hidden."""
-        row = self._list.row(item)
-        if not (0 <= row < len(self._filtered)):
-            return
-        _rel, wf_path, entry, kind = self._filtered[row]
-        if kind != "history":
-            return
-        self._set_flag(wf_path, entry, "hidden",
-                       item.checkState() != Qt.CheckState.Checked)
+    def _picked(self) -> list[tuple[str, Path, dict, str]]:
+        """The selected rows, in list order."""
+        rows = sorted(i.row() for i in self._list.selectedIndexes())
+        return [self._filtered[r] for r in rows if 0 <= r < len(self._filtered)]
 
-    def _set_flag(self, wf_path: Path, entry: dict, key: str, value: bool):
-        if not set_entry_flag(wf_path, entry, key, value):
-            QMessageBox.warning(self, "Could not save",
-                                f"That entry is no longer in {wf_path.name}'s history file.")
-            self._load_rows()
-        self._populate()
+    def _update_buttons(self):
+        """Buttons follow the selection: Use/Favorite want exactly one row,
+        Archive and Delete take any number."""
+        picked = self._picked()
+        n = len(picked)
+        history = [r for r in picked if r[3] == "history"]
+        favorites = [r for r in picked if r[3] == "favorite"]
+        for b in (self._use_btn, self._use_all_btn, self._fav_btn):
+            b.setEnabled(n == 1)
+        if n == 1:
+            starred = picked[0][3] == "favorite" or self._starred(picked[0][2])
+            self._fav_btn.setText("★ Unfavorite" if starred else "★ Favorite")
+        # A favorite is its own record: no archive button for it.
+        self._hide_btn.setEnabled(bool(history))
+        all_hidden = bool(history) and all(is_hidden(r[2]) for r in history)
+        count = f" ({len(history)})" if len(history) > 1 else ""
+        self._hide_btn.setText(("Unarchive" if all_hidden else "Archive") + count)
+        self._del_btn.setEnabled(n > 0)
+        if favorites and not history:
+            self._del_btn.setText("Remove favorite" + (f"s ({n})" if n > 1 else ""))
+        else:
+            self._del_btn.setText("Delete" + (f" ({n})" if n > 1 else ""))
+        self._count_lbl.setText(self._count_base + (f" · {n} selected" if n > 1 else ""))
+
+    def _save_failed(self, wf_path: Path):
+        QMessageBox.warning(self, "Could not save",
+                            f"Some entries are no longer in {wf_path.name}'s history file.")
+        self._load_rows()
 
     # ------------------------------------------------------------------ #
     # Actions
     # ------------------------------------------------------------------ #
 
     def _emit(self, signal):
-        if self._selected is not None:
-            signal.emit(self._selected[2])
+        picked = self._picked()
+        if len(picked) == 1:
+            signal.emit(picked[0][2])
             self.close()
 
     def _toggle_favorite(self):
         """Star = copy into the favorites file; unstar = remove that copy.
         Either way the history file is left exactly as it was."""
-        if self._selected is None:
+        picked = self._picked()
+        if len(picked) != 1:
             return
-        _rel, wf_path, entry, kind = self._selected
+        _rel, wf_path, entry, kind = picked[0]
         if kind == "favorite" or self._starred(entry):
             remove_favorite(wf_path, entry)
         else:
@@ -890,38 +926,63 @@ class PromptHistoryDialog(QDialog):
         self._rebuild_date_values()
         self._populate()
 
+    def _after_bulk(self, first_row: int):
+        """Rebuild, then leave the cursor where the removed rows were so a
+        run of Archive clicks works down the list instead of jumping to the top."""
+        self._reload()
+        if self._filtered:
+            self._list.setCurrentRow(min(first_row, len(self._filtered) - 1))
+
+    def _by_workflow(self, rows) -> dict[Path, list[dict]]:
+        grouped: dict[Path, list[dict]] = {}
+        for _rel, wf_path, entry, _kind in rows:
+            grouped.setdefault(wf_path, []).append(entry)
+        return grouped
+
     def _toggle_hidden(self):
-        if self._selected is None:
+        """Archive every selected entry — or, when they are all archived
+        already, bring them all back."""
+        history = [r for r in self._picked() if r[3] == "history"]
+        if not history:
             return
-        _rel, wf_path, entry, kind = self._selected
-        if kind != "history":
-            return
-        self._set_flag(wf_path, entry, "hidden", not is_hidden(entry))
+        first_row = min(i.row() for i in self._list.selectedIndexes())
+        hide = not all(is_hidden(r[2]) for r in history)
+        failed = None
+        for wf_path, entries in self._by_workflow(history).items():
+            if set_entries_flag(wf_path, entries, "hidden", hide) != len(entries):
+                failed = wf_path
+        if failed is not None:
+            self._save_failed(failed)
+        self._after_bulk(first_row)
 
     def _delete(self):
-        if self._selected is None:
+        picked = self._picked()
+        if not picked:
             return
-        rel, wf_path, entry, kind = self._selected
-        if kind == "favorite":
+        first_row = min(i.row() for i in self._list.selectedIndexes())
+        n = len(picked)
+        favorites = [r for r in picked if r[3] == "favorite"]
+        history = [r for r in picked if r[3] == "history"]
+        if favorites and not history:
+            what = "this favorite" if n == 1 else f"these {n} favorites"
             if QMessageBox.question(
-                    self, "Remove favorite",
-                    f"Remove this favorite from {rel}?\n\n"
-                    f"Only the favorites file changes — the history entry it came "
-                    f"from (if it still exists) is not touched.") != QMessageBox.StandardButton.Yes:
+                    self, "Remove favorite" + ("s" if n > 1 else ""),
+                    f"Remove {what}?\n\n"
+                    f"Only the favorites file changes — the history entries they came "
+                    f"from (if they still exist) are not touched.") != QMessageBox.StandardButton.Yes:
                 return
-            remove_favorite(wf_path, entry)
-            self._reload()
+            for _rel, wf_path, entry, _kind in favorites:
+                remove_favorite(wf_path, entry)
+            self._after_bulk(first_row)
             return
+        what = "this history entry" if len(history) == 1 else f"these {len(history)} history entries"
         if QMessageBox.question(
-                self, "Delete entry",
-                f"Delete this history entry from {rel} for good?\n\n"
+                self, "Delete entry" if len(history) == 1 else "Delete entries",
+                f"Delete {what} for good?\n\n"
                 f"Favorites are kept in their own file and are not affected.\n"
-                f"To keep the record but take it out of the list, untick it "
-                f"(or press Archive) instead.") != QMessageBox.StandardButton.Yes:
+                f"To keep the records but take them out of the list, "
+                f"press Archive instead.") != QMessageBox.StandardButton.Yes:
             return
-        entries = load_history(wf_path)
-        entries = [x for x in entries if not (
-            x.get("timestamp") == entry.get("timestamp") and x.get("positive") == entry.get("positive")
-            and x.get("settings") == entry.get("settings"))]
-        save_history(wf_path, entries)
-        self._reload()
+        for wf_path, entries in self._by_workflow(history).items():
+            delete_entries(wf_path, entries)
+        self._after_bulk(first_row)

@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import QApplication
 from config import CONFIG_NAME, ConfigManager, app_dir
 from ui.main_window import MainWindow
 
-VERSION = "2.11.2"
+VERSION = "2.14.1"
 
 # Windows taskbar icon fix — must run before QApplication is created
 try:
@@ -58,6 +58,26 @@ def _find_icon() -> Path | None:
     return None
 
 
+def _force_taskbar_icon(window, icon_path: Path):
+    """Hand the .ico to the window directly (WM_SETICON big + small). Qt's
+    QIcon route alone sometimes leaves the taskbar button on the generic
+    default icon even though the title-bar/thumbnail icon is right."""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        user32.LoadImageW.restype = ctypes.c_void_p
+        hwnd = int(window.winId())
+        WM_SETICON, ICON_SMALL, ICON_BIG = 0x0080, 0, 1
+        IMAGE_ICON, LR_LOADFROMFILE = 1, 0x0010
+        for kind, size in ((ICON_SMALL, 16), (ICON_BIG, 32)):
+            hicon = user32.LoadImageW(None, str(icon_path), IMAGE_ICON,
+                                      size, size, LR_LOADFROMFILE)
+            if hicon:
+                user32.SendMessageW(hwnd, WM_SETICON, kind, ctypes.c_void_p(hicon))
+    except Exception:
+        pass
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("ComfyUI Video Creator")
@@ -72,6 +92,8 @@ def main():
 
     window = MainWindow(config, VERSION)
     window.show()
+    if icon:
+        _force_taskbar_icon(window, icon)
     _force_foreground(window)
     QTimer.singleShot(200, lambda: _force_foreground(window))
     sys.exit(app.exec())
