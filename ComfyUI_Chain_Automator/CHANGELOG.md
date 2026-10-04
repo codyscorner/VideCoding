@@ -1,5 +1,34 @@
 # Changelog — ComfyUI Workflow Chain Automator
 
+### v3.11.4
+- Fix: in a multi-image batch the segments could swap between videos (video A's segment 2 attached to video B and vice versa). Outputs are paired back to images by position, but the Inspire `LoadImageListFromDir` node in the batch workflows was set to `sort_method: None`, which returns raw directory-listing order — arbitrary on the pod's Linux filesystem — so on a segment the pod listed `002_...` before `001_...` and every output after it was matched to the wrong image. The batch run now forces the loader to `Alphabetical (ASC)` (staged files are zero-padded `001_`, `002_`, ...), whatever the workflow JSON says. Not specific to MiniMax; WAN chains could hit it too
+
+### v3.11.3
+- **The video player loads the whole clip into memory before playing it**, so the first play no longer skips and pauses. Streaming an MP4 straight off disk makes the decoder seek between the index and the audio/video chunks; on a hard drive or a just-written file that stutters until the OS has cached it. The player now reads the file sequentially on a background thread (shows "Loading…"), then plays from RAM, and reads the next clip in a playlist while the current one plays so the changeover is smooth too. Files over 1 GB or unreadable ones fall back to streaming. Playing from memory also means the player no longer holds the video file open
+
+### v3.11.2
+- The app now always starts on top. Qt's `raise_()`/`activateWindow()` are silently ignored by Windows' foreground lock when the launch came from a shortcut/Stream Deck, so the window opened behind others. Startup now uses the same Alt-tap + `SetForegroundWindow` helper as ComfyUI Video Creator, re-applied at 0 / 200 / 800 ms so the startup pod prompt can't leave it behind
+
+### v3.11.1
+- Fix: stitching MiniMax H3 segments (video + audio) failed with "Media type mismatch between the 'Parsed_format' filter output pad 0 (video) and the 'Parsed_concat' filter input pad 1 (audio)". Two causes, both in `_stitch`:
+  - ffmpeg's concat filter needs its inputs interleaved per segment (`[v0][a0][v1][a1]`); the stitch passed every video pad followed by every audio pad (Video Creator's `concat_videos` already did it right). Silent WAN chains were unaffected
+  - Segment size/fps normalization was silently skipped: it relied on `ffprobe`, which isn't shipped next to the EXE (only `ffmpeg.exe` is), so differently-sized segments (e.g. 832x640 then 896x704) reached concat unscaled. It now falls back to reading size/fps from `ffmpeg -i`
+- Stitch quality, matching Video Creator: segments with a different aspect are fitted inside the first segment's frame and padded with black instead of stretched, dimensions are forced even, and every segment's audio is resampled to one common 48 kHz stereo format before concat
+
+### v3.11.0
+- **RunPod pod control, ported from ComfyUI Video Creator (its v1.7.0 → v2.12.0 pod work, copied not shared).** The app now talks to RunPod's control plane itself (REST v2 via `requests`, no new dependency): on launch it offers to start a pod, tries your pods **GPU model first, then pod order**, and uses the first one that actually comes up, writing the proxy URL into `main_config.json` and switching to RunPod mode by itself. Only existing pods are started — nothing is created or terminated. New modules `runpod_api.py`, `alerts.py`, `ui/pod_worker.py`, `ui/pod_control.py`
+  - **Header readout + Start/Stop Pod button** between the title and ⚙: uptime, spend so far, account balance, with a coloured ● for the spend state (green / amber at 80% of the limit / red at the limit) and the idle-stop countdown when it is armed
+  - **Launch chooser when pods are already running** (yours from last time, or one the Video Creator / console started): Use selected, Start another, Stop selected, Skip — a pod this app didn't start is adopted but never auto-stopped
+  - **Keep Trying** when every pod is busy (every 10 min for 2 h by default), with the alert sound when a pod is found or the window expires; the window raises itself when a retry succeeds because the pod is billing from then on
+  - **Spend limit** per pod run: warns at 80%, blocks new batches at 100%, lets the running batch finish, then stops a pod the app started itself. **Idle stop**: a countdown that starts when a batch (or Auto Run) ends and nothing else starts, so an overnight run that finishes early does not bill for hours; a new batch cancels it
+  - **Quit prompt** for any connected pod — Yes stops it then quits, No leaves it running (recorded, so the next launch says "you left X running" rather than claiming a crash), Cancel stays
+  - All the hard-won rules survive the port: the zero-GPU resume trap (RUNNING + `gpu.count ≥ 1` + non-empty `runtime.gpus` or it is stopped and the next pod tried), 60 s grace for a RUNNING pod whose runtime block hasn't reported yet, 30 s grace before an EXITED reading is believed, only 401/403/429 abort the chain (a 400 on the action endpoint is capacity, a 404 only skips that pod), saved order is a preference never a whitelist, pod log in `runpod_pod.log` next to the EXE
+  - **API key** lives in `api_keys.json` next to the EXE (`{"runpod_api_key": "..."}`), gitignored repo-wide, or `RUNPOD_API_KEY` in the environment — never in `main_config.json`, which is copied around on deploy. Workflows still go to the pod with no key (the ComfyUI proxy is unauthenticated); the key is only for start/stop/list
+- **Settings is now tabbed** — Server (+ Batch Processing) / Folders (+ FFmpeg) / RunPod (pod control: account balance, GPU priority list, pod order list with ↻, spend limit, idle stop, keep-trying interval + window, ask-on-launch, stop-on-exit, Test API key; the pod list fills itself in on open, on a thread) / RunPod Volume (the S3 LoRA group, unchanged) / Prompts & Sound. The two-column layout of v3.10.1 had no room for the two pod lists; the dialog is 1120×735, well inside 1080p
+- **One alert sound.** The Completion Sound group is now **Alert Sound** and the same file plays when a batch finishes, when Auto Run ends (it used to finish silently), when a pod is found after Keep Trying, and when the app gives up looking. An existing `completion_sound_path` / `completion_sound_enabled` is migrated into `alert_sound_path` / `alert_sound_enabled` on first load and the old keys dropped. Test button added
+- When a pod comes up (or goes away) the Generate tab's mode badge refreshes and the pod-side LoRA check re-runs against the new pod, so the "missing on pod" list is right before the first batch
+- `_generation_running` counts a LoRA upload that will auto-start a batch as busy, so neither the spend-limit stop nor the idle stop can fire in the middle of one
+
 ### v3.10.5
 - The end-of-batch playback of fresh results now also closes itself after the last video, so every player in the app auto-closes
 
