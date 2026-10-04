@@ -1,5 +1,8 @@
 # Changelog — ComfyUI Workflow Chain Automator
 
+### v3.11.3
+- **The video player loads the whole clip into memory before playing it**, so the first play no longer skips and pauses. Streaming an MP4 straight off disk makes the decoder seek between the index and the audio/video chunks; on a hard drive or a just-written file that stutters until the OS has cached it. The player now reads the file sequentially on a background thread (shows "Loading…"), then plays from RAM, and reads the next clip in a playlist while the current one plays so the changeover is smooth too. Files over 1 GB or unreadable ones fall back to streaming. Playing from memory also means the player no longer holds the video file open
+
 ### v3.11.2
 - The app now always starts on top. Qt's `raise_()`/`activateWindow()` are silently ignored by Windows' foreground lock when the launch came from a shortcut/Stream Deck, so the window opened behind others. Startup now uses the same Alt-tap + `SetForegroundWindow` helper as ComfyUI Video Creator, re-applied at 0 / 200 / 800 ms so the startup pod prompt can't leave it behind
 
