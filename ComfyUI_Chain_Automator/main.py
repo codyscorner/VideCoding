@@ -13,7 +13,7 @@ from PyQt6.QtCore import QTimer
 from config import ConfigManager
 from ui.main_window import MainWindow
 
-VERSION = "3.11.0"
+VERSION = "3.11.1"
 
 # Windows taskbar icon fix — must be called before QApplication
 try:

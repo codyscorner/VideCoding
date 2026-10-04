@@ -1,5 +1,11 @@
 # Changelog — ComfyUI Workflow Chain Automator
 
+### v3.11.1
+- Fix: stitching MiniMax H3 segments (video + audio) failed with "Media type mismatch between the 'Parsed_format' filter output pad 0 (video) and the 'Parsed_concat' filter input pad 1 (audio)". Two causes, both in `_stitch`:
+  - ffmpeg's concat filter needs its inputs interleaved per segment (`[v0][a0][v1][a1]`); the stitch passed every video pad followed by every audio pad (Video Creator's `concat_videos` already did it right). Silent WAN chains were unaffected
+  - Segment size/fps normalization was silently skipped: it relied on `ffprobe`, which isn't shipped next to the EXE (only `ffmpeg.exe` is), so differently-sized segments (e.g. 832x640 then 896x704) reached concat unscaled. It now falls back to reading size/fps from `ffmpeg -i`
+- Stitch quality, matching Video Creator: segments with a different aspect are fitted inside the first segment's frame and padded with black instead of stretched, dimensions are forced even, and every segment's audio is resampled to one common 48 kHz stereo format before concat
+
 ### v3.11.0
 - **RunPod pod control, ported from ComfyUI Video Creator (its v1.7.0 → v2.12.0 pod work, copied not shared).** The app now talks to RunPod's control plane itself (REST v2 via `requests`, no new dependency): on launch it offers to start a pod, tries your pods **GPU model first, then pod order**, and uses the first one that actually comes up, writing the proxy URL into `main_config.json` and switching to RunPod mode by itself. Only existing pods are started — nothing is created or terminated. New modules `runpod_api.py`, `alerts.py`, `ui/pod_worker.py`, `ui/pod_control.py`
   - **Header readout + Start/Stop Pod button** between the title and ⚙: uptime, spend so far, account balance, with a coloured ● for the spend state (green / amber at 80% of the limit / red at the limit) and the idle-stop countdown when it is armed

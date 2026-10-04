@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import shutil
 import subprocess
 import threading
@@ -21,6 +22,14 @@ logger.setLevel(logging.DEBUG)
 LIST_LOADER_TYPE = "LoadImageListFromDir //Inspire"
 LIST_LOADER_TITLE = "Load Image List From Dir (Inspire)"
 BATCH_FILE_GLOB = "workflow_segment_*_batch.json"
+
+# Stitch audio: one common format so segments with different sample rates /
+# channel layouts can still be concatenated (same values as Video Creator).
+AUDIO_RATE = 48000
+AUDIO_NORM = (
+    "aresample=async=1:first_pts=0,"
+    f"aformat=sample_fmts=fltp:sample_rates={AUDIO_RATE}:channel_layouts=stereo"
+)
 
 
 def check_batch_workflow_wiring(workflow: dict, json_file: str) -> list[str]:
@@ -688,7 +697,27 @@ class BatchChainWorker(QThread):
         try:
             return self._probe_video_props(path, ffmpeg)
         except OSError:
+            # No ffprobe next to ffmpeg (the deployed app only ships ffmpeg.exe)
+            # — read the same numbers from ffmpeg's own stream dump instead.
+            return self._probe_video_props_ffmpeg(path, ffmpeg)
+
+    def _probe_video_props_ffmpeg(self, path: Path, ffmpeg: str) -> tuple[int, int, str]:
+        """(width, height, fps) parsed from `ffmpeg -i` output, or (0, 0, "")."""
+        try:
+            result = subprocess.run(
+                [ffmpeg, "-hide_banner", "-i", str(path)],
+                capture_output=True, text=True, errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except OSError:
             return 0, 0, ""
+        # Anchor on the "Stream #n:n...: Video:" line — embedded metadata
+        # (the ComfyUI prompt JSON) is dumped into the same output.
+        m = re.search(r"^\s*Stream #\d+:\d+.*?: Video:.*?,\s*(\d{2,5})x(\d{2,5})\b.*?(\d+(?:\.\d+)?) fps",
+                      result.stderr, re.MULTILINE)
+        if not m:
+            return 0, 0, ""
+        return int(m.group(1)), int(m.group(2)), m.group(3)
 
     def _stitch(self, videos: list[Path], img_name: str) -> tuple[Path, dict]:
         final_dir = Path(self._config.get("final_video_dir", self._config["output_base_dir"]))
@@ -721,12 +750,21 @@ class BatchChainWorker(QThread):
         # width/height/fps before concat.
         width, height, fps = self._probe_video_props_safe(videos[0], ffmpeg)
         if width and height and fps:
-            norm = f"scale={width}:{height}:flags=lanczos,setsar=1,fps={fps},format=yuv420p"
+            # Fit inside the first segment's frame and pad with black rather than
+            # stretching, so a segment saved at a slightly different aspect
+            # (e.g. 896x704 after 832x640) isn't distorted. libx264 + yuv420p
+            # need even dimensions.
+            width, height = width - width % 2, height - height % 2
+            norm = (
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+                f"setsar=1,fps={fps},format=yuv420p"
+            )
             filter_v = "".join(f"[{i}:v]{norm}[v{i}];" for i in range(n))
-            concat_v_inputs = "".join(f"[v{i}]" for i in range(n))
+            v_pads = [f"[v{i}]" for i in range(n)]
         else:
             filter_v = ""
-            concat_v_inputs = "".join(f"[{i}:v]" for i in range(n))
+            v_pads = [f"[{i}:v]" for i in range(n)]
 
         # MiniMax H3 segments generate their own synced audio track (unlike
         # WAN's video-only output) — concat it alongside video when every
@@ -734,12 +772,17 @@ class BatchChainWorker(QThread):
         # silent WAN chains keep working unchanged.
         has_audio = n > 0 and all(self._video_has_audio(v, ffmpeg) for v in videos)
         if has_audio:
-            filter_a = "".join(f"[{i}:a]" for i in range(n))
-            filter_complex = f"{filter_v}{concat_v_inputs}{filter_a}concat=n={n}:v=1:a=1[out][outa]"
+            # concat wants its inputs interleaved per segment (v0 a0 v1 a1 ...),
+            # not all video pads followed by all audio pads.
+            # Every segment's audio is resampled to one common format first —
+            # concat refuses inputs whose sample rate / channel layout differ.
+            filter_a = "".join(f"[{i}:a]{AUDIO_NORM}[a{i}];" for i in range(n))
+            concat_inputs = "".join(f"{v_pads[i]}[a{i}]" for i in range(n))
+            filter_complex = f"{filter_v}{filter_a}{concat_inputs}concat=n={n}:v=1:a=1[out][outa]"
             map_args = ["-map", "[out]", "-map", "[outa]"]
-            audio_args = ["-c:a", "aac", "-b:a", "192k"]
+            audio_args = ["-c:a", "aac", "-b:a", "192k", "-ar", str(AUDIO_RATE)]
         else:
-            filter_complex = f"{filter_v}{concat_v_inputs}concat=n={n}:v=1[out]"
+            filter_complex = f"{filter_v}{''.join(v_pads)}concat=n={n}:v=1[out]"
             map_args = ["-map", "[out]"]
             audio_args = ["-an"]
 
