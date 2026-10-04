@@ -1,6 +1,6 @@
 # ComfyUI Video Creator
 
-Version: 2.13.3
+Version: 2.14.1
 
 Single-shot ComfyUI API workflow runner with a dark red theme. Pick an image, a video to extend, or nothing but a prompt (text → video), pick a workflow JSON, press Run, and the finished video lands in a local folder — from a local ComfyUI or a RunPod pod.
 
@@ -35,7 +35,7 @@ This is a **separate app from the ComfyUI Workflow Chain Automator**. It shares 
 - Live step progress over the ComfyUI websocket (polling fallback), Cancel that interrupts the server, built-in video player, run log
 
 - **↻ Lists / F5** — rescans every list from disk and the server (workflow dropdowns on all tabs, LoRAs from folder and server, Image/Video folders, Library) so a file renamed while the app runs shows under its new name; a selected LoRA the list no longer has is flagged red until you pick its new name
-- **Prompt history you curate** — every run is recorded with the prompt, LoRAs, seed, steps and length it used, in `<workflow>.prompt_history.json` beside the workflow (the same sidecar the Chain Automator writes). The 📜 History window has four tabs — **★ Favorites / Recent / All / Archived** — with a tick box on every row: untick (or press Archive) to move an entry to Archived, tick it there to bring it back. **Nothing is ever removed from the file** unless you press Delete. **Favorites live in their own file**, `<workflow>.prompt_favorites.json`: starring copies the prompt + settings there, so deleting or archiving history never loses a favorite. Favorites are per template (the workflow JSON), with an *All templates* view across the lot. Row previews skip the boilerplate preamble a template's runs all share, so the preview shows what actually differs between runs
+- **Prompt history you curate** — every run is recorded with the prompt, LoRAs, seed, steps and length it used, in `<workflow>.prompt_history.json` beside the workflow (the same sidecar the Chain Automator writes). The 📜 History window has four tabs — **★ Favorites / Recent / All / Archived** — with a multi-select (Ctrl/Shift-click, Ctrl+A) then **Archive (N)** to move many entries to Archived at once, **Unarchive** there to bring them back; Delete works on the selection too. **Nothing is ever removed from the file** unless you press Delete. **Favorites live in their own file**, `<workflow>.prompt_favorites.json`: starring copies the prompt + settings there, so deleting or archiving history never loses a favorite. Favorites are per template (the workflow JSON), with an *All templates* view across the lot. Row previews skip the boilerplate preamble a template's runs all share, so the preview shows what actually differs between runs
 
 ## Requirements
 

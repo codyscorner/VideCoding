@@ -1,5 +1,13 @@
 # Changelog — ComfyUI Video Creator
 
+### v2.14.1
+- **The video player loads the whole clip into memory before playing it**, so the first play no longer skips and pauses. Streaming an MP4 straight off disk makes the decoder seek between the index and the audio/video chunks; on a hard drive or a just-written file that stutters until the OS has cached it. The player now reads the file sequentially on a background thread (shows "Loading…"), then plays from RAM, and reads the next clip in a playlist while the current one plays so the changeover is smooth too. Files over 1 GB or unreadable ones fall back to streaming. Playing from memory also means the player no longer holds the video file open
+
+### v2.14.0
+- **Prompt History: select many rows and Archive (or Delete) them in one go.** Ctrl-click, Shift-click, drag, or Ctrl+A in the list. The buttons follow the selection and say how many: **Archive (12)**, **Delete (12)**. On the Archived tab the same button reads **Unarchive (N)** and brings them all back. The count line shows `N selected`, and after a bulk action the cursor stays where the removed rows were so you can keep working down the list
+- **The tick boxes are gone.** They were the old one-at-a-time archive toggle (ticked = shown, unticked = archived) and in practice would not take a click. Archive / Unarchive on the buttons does the same job for one row or a hundred. Use prompt, Use prompt + settings and Favorite still need exactly one row and grey out otherwise
+- Bulk Archive/Delete read and write each history file once per action (`set_entries_flag`, `delete_entries`), not once per row
+
 ### v2.13.3
 - **The sync now tells you what it is doing.** When a model exists on the pod but not on this PC you get a **Model missing locally** box naming each file and its size, saying plainly that the pod run can start without it and that the download is only for running the workflow on local ComfyUI, with **Download, then run** / **Run on the pod without downloading** (default) / Cancel. "Run on the pod" is remembered for the session. Settings → Models → *Always download pod-only models without asking* skips the box
 - **Progress dialog says the direction and destination** — `↓ Downloading to this PC — text encoder: text_encoders/…` or `↑ Uploading to the pod — …` — with bytes done of total, **MB/s and time remaining** (rate restarts per file and per retry so a retry is obvious), file N of M, and a note that Cancel stops the transfer now. The window title follows suit (Downloading models to this PC / Uploading models to the pod / Syncing models — N up, M down)
