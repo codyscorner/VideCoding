@@ -1,11 +1,13 @@
-"""AI Image Studio v3.2.0"""
+"""AI Image Studio v3.3.0"""
 
 import json
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -13,19 +15,37 @@ from PyQt6.QtWidgets import (
     QGroupBox, QFileDialog, QProgressBar, QSizePolicy, QTabWidget,
     QScrollArea, QFrame, QMessageBox, QLineEdit, QStackedWidget,
     QGridLayout, QCheckBox, QListWidget, QListWidgetItem, QDialog,
-    QSplitter,
+    QSplitter, QProgressDialog, QStatusBar,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent
 
-VERSION = "3.2.0"
+import alerts
+import model_sync
+from config import ConfigManager, app_dir
+from ui.pod_control import PodControl
+from ui.settings_dialog import SettingsDialog
+from ui.styles import (
+    BG, BG_MED, BG_LT, ACCENT, ACCENT2, FG, FG_DIM, BORDER, SUCCESS, ERROR,
+    COLORS, POD_QSS,
+)
 
-SETTINGS_FILE = Path(__file__).parent / "settings.json"
-API_KEYS_FILE = Path(__file__).parent / "api_keys.json"
-HISTORY_FILE  = Path(__file__).parent / "generation_history.json"
-WORKFLOWS_DIR = Path(__file__).parent / "Comfy_Workflows"
-DROPPED_DIR   = Path(__file__).parent / "dropped_images"
-UPLOAD_DIR    = Path(__file__).parent / "upload_temp"
+VERSION = "3.3.0"
+
+# Next to the EXE, not Path(__file__): in a one-file build that is the temp
+# extraction folder, so settings, history and workflows vanished on exit.
+APP_DIR       = app_dir()
+SETTINGS_FILE = APP_DIR / "settings.json"
+HISTORY_FILE  = APP_DIR / "generation_history.json"
+WORKFLOWS_DIR = APP_DIR / "Comfy_Workflows"
+DROPPED_DIR   = APP_DIR / "dropped_images"
+UPLOAD_DIR    = APP_DIR / "upload_temp"
+
+# A cold pod loads Flux.2's ~35 GB of weights from the network volume on the
+# first run, which alone can take several minutes.
+GENERATION_TIMEOUT_S = 30 * 60
+
+NO_SERVER_MSG = "No ComfyUI URL — press Start Pod, or set one in ⚙ Settings > Server."
 
 for _d in (WORKFLOWS_DIR, DROPPED_DIR, UPLOAD_DIR):
     _d.mkdir(exist_ok=True)
@@ -40,8 +60,11 @@ SIZE_PRESETS = [
     ("1024 × 1024 — Square (standard)",    1024,  1024),
     ("768 × 1024  — Portrait (3:4)",        768,  1024),
     ("1024 × 1344 — Portrait (3:4 large)", 1024,  1344),
+    ("832 × 1248  — Portrait (2:3, Flux.2 character)", 832, 1248),
+    ("1024 × 1536 — Portrait (2:3, full body)",       1024, 1536),
     ("1024 × 768  — Landscape (4:3)",      1024,   768),
     ("1344 × 768  — Landscape (7:4)",      1344,   768),
+    ("1248 × 832  — Landscape (3:2, character sheet)", 1248, 832),
     ("1920 × 1080 — Full HD wallpaper",    1920,  1080),
     ("2560 × 1440 — 2K / QHD wallpaper",  2560,  1440),
     ("3840 × 2160 — 4K UHD wallpaper",    3840,  2160),
@@ -55,19 +78,8 @@ ASPECT_RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"]
 RESOLUTIONS   = ["1K", "2K", "4K"]
 
 # ------------------------------------------------------------------ #
-# Theme
+# Theme  (colour constants live in ui/styles.py, shared with the pod UI)
 # ------------------------------------------------------------------ #
-
-BG      = "#13131f"
-BG_MED  = "#1c1c2e"
-BG_LT   = "#252540"
-ACCENT  = "#6c5ce7"
-ACCENT2 = "#7d6ff0"
-FG      = "#e0e0f0"
-FG_DIM  = "#7070a0"
-BORDER  = "#2e2e50"
-SUCCESS = "#4caf8a"
-ERROR   = "#ff6b6b"
 
 STYLESHEET = f"""
     QMainWindow, QWidget {{
@@ -209,39 +221,19 @@ STYLESHEET = f"""
         min-height: 24px;
     }}
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-"""
+""" + POD_QSS
 
 # ------------------------------------------------------------------ #
 # Settings
 # ------------------------------------------------------------------ #
 
-def load_settings() -> dict:
-    if SETTINGS_FILE.exists():
-        try:
-            return json.loads(SETTINGS_FILE.read_text())
-        except Exception:
-            pass
-    return {}
+# Created by MainWindow. The tabs hold its live dict (CONFIG.data) as
+# self._settings, so save_settings() just writes that one dict out.
+CONFIG: ConfigManager | None = None
 
-def save_settings(s: dict):
-    try:
-        SETTINGS_FILE.write_text(json.dumps(s, indent=2))
-    except Exception:
-        pass
-
-def load_api_keys() -> dict:
-    if API_KEYS_FILE.exists():
-        try:
-            return json.loads(API_KEYS_FILE.read_text())
-        except Exception:
-            pass
-    return {}
-
-def save_api_keys(keys: dict):
-    try:
-        API_KEYS_FILE.write_text(json.dumps(keys, indent=2))
-    except Exception:
-        pass
+def save_settings(s: dict | None = None):
+    if CONFIG is not None:
+        CONFIG.save()
 
 # ------------------------------------------------------------------ #
 # Generation history  (prompt recall)
@@ -285,112 +277,181 @@ def _find_node_by_class(workflow: dict, class_type: str) -> tuple[str, dict] | N
             return k, v
     return None
 
-def _patch_workflow_t2i(workflow: dict, prompt: str, width: int, height: int,
-                         seed: int, steps: int) -> dict:
-    import random
-    if seed < 0:
-        seed = random.randint(0, 2**31)
-
-    for _, v in workflow.items():
+def _set_prompt(workflow: dict, prompt: str):
+    """A PrimitiveStringMultiline holds the prompt when the workflow has one;
+    otherwise the first CLIPTextEncode not titled as a negative."""
+    for v in workflow.values():
         if v.get("class_type") == "PrimitiveStringMultiline":
             v["inputs"]["value"] = prompt
-            break
-    else:
-        for _, v in workflow.items():
-            if v.get("class_type") == "CLIPTextEncode":
-                meta = v.get("_meta", {}).get("title", "").lower()
-                if "neg" not in meta:
-                    v["inputs"]["text"] = prompt
-                    break
+            return
+    for v in workflow.values():
+        if v.get("class_type") == "CLIPTextEncode":
+            meta = v.get("_meta", {}).get("title", "").lower()
+            if "neg" not in meta and isinstance(v["inputs"].get("text"), str):
+                v["inputs"]["text"] = prompt
+                return
 
-    for cls in ("EmptySD3LatentImage", "EmptyLatentImage"):
-        result = _find_node_by_class(workflow, cls)
-        if result:
-            _, node = result
-            node["inputs"]["width"] = width
-            node["inputs"]["height"] = height
-            break
 
-    result = _find_node_by_class(workflow, "KSampler")
-    if result:
-        _, node = result
-        node["inputs"]["seed"] = seed
-        node["inputs"]["steps"] = steps
+# Nodes whose width/height set the output size, with the multiple they need.
+# Flux.2 works in 16-px patches: EmptyFlux2LatentImage floors to it, so its
+# Flux2Scheduler twin must be given the same snapped numbers or the noise
+# schedule is computed for a slightly different image than the one sampled.
+_SIZE_NODES = {"EmptySD3LatentImage": 1, "EmptyLatentImage": 1,
+               "EmptyFlux2LatentImage": 16, "Flux2Scheduler": 16}
+# Nodes with a "steps" widget: classic KSampler, or the scheduler that feeds
+# SamplerCustomAdvanced in Flux.2-style graphs.
+_STEPS_NODES = ("KSampler", "Flux2Scheduler", "BasicScheduler")
 
+
+def _snap(value: int, step: int) -> int:
+    return max(step, int(round(value / step)) * step)
+
+
+def _has_size_node(workflow: dict) -> bool:
+    """True when the output size comes from a latent node rather than from
+    the first input image (Qwen edit, img2img)."""
+    return any(v.get("class_type") in _SIZE_NODES for v in workflow.values())
+
+
+def _patch_size_and_steps(workflow: dict, width: int | None, height: int | None, steps: int):
+    for v in workflow.values():
+        ct = v.get("class_type")
+        inp = v.get("inputs", {})
+        if width and height and ct in _SIZE_NODES and isinstance(inp.get("width"), int):
+            inp["width"] = _snap(width, _SIZE_NODES[ct])
+            inp["height"] = _snap(height, _SIZE_NODES[ct])
+        if ct in _STEPS_NODES and isinstance(inp.get("steps"), int):
+            inp["steps"] = steps
+
+
+def _workflow_steps(path: str | None) -> int | None:
+    """The step count a workflow file was saved with, if it has one."""
+    try:
+        wf = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    for v in wf.values():
+        if v.get("class_type") in _STEPS_NODES and isinstance(v.get("inputs", {}).get("steps"), int):
+            return v["inputs"]["steps"]
+    return None
+
+
+def _patch_seed(workflow: dict, seed: int):
     for v in workflow.values():
         inp = v.get("inputs", {})
-        if "noise_seed" in inp:
-            inp["noise_seed"] = seed
-
-    return workflow
-
-
-def _patch_workflow_edit(workflow: dict, prompt: str, seed: int, steps: int) -> dict:
-    import random
-    if seed < 0:
-        seed = random.randint(0, 2**31)
-
-    for _, v in workflow.items():
-        if v.get("class_type") == "PrimitiveStringMultiline":
-            v["inputs"]["value"] = prompt
-            break
-
-    result = _find_node_by_class(workflow, "KSampler")
-    if result:
-        _, node = result
-        node["inputs"]["seed"] = seed
-        node["inputs"]["steps"] = steps
-
-    for v in workflow.values():
-        inp = v.get("inputs", {})
-        if "noise_seed" in inp:
+        if "noise_seed" in inp and isinstance(inp["noise_seed"], int):
             inp["noise_seed"] = seed
         if "seed" in inp and isinstance(inp["seed"], int):
             inp["seed"] = seed
 
+
+def _resolve_seed(seed: int) -> int:
+    import random
+    return random.randint(0, 2**31) if seed < 0 else seed
+
+
+def _patch_workflow_t2i(workflow: dict, prompt: str, width: int, height: int,
+                         seed: int, steps: int) -> dict:
+    _set_prompt(workflow, prompt)
+    _patch_size_and_steps(workflow, width, height, steps)
+    _patch_seed(workflow, _resolve_seed(seed))
+    return workflow
+
+
+def _patch_workflow_edit(workflow: dict, prompt: str, seed: int, steps: int,
+                         width: int | None = None, height: int | None = None) -> dict:
+    """Scene Composer. Size only reaches workflows with a latent node
+    (Flux.2); Qwen edit takes its size from the resized first image."""
+    _set_prompt(workflow, prompt)
+    _patch_size_and_steps(workflow, width, height, steps)
+    _patch_seed(workflow, _resolve_seed(seed))
     return workflow
 
 
 def _patch_workflow_i2i(workflow: dict, prompt: str, seed: int, steps: int,
                         denoise: float) -> dict:
     """Patch an img2img workflow: prompt (if given), seed, steps, and denoise strength."""
-    import random
-    if seed < 0:
-        seed = random.randint(0, 2**31)
-
     if prompt:
-        for _, v in workflow.items():
-            if v.get("class_type") == "PrimitiveStringMultiline":
-                v["inputs"]["value"] = prompt
-                break
-        else:
-            for _, v in workflow.items():
-                if v.get("class_type") == "CLIPTextEncode":
-                    meta = v.get("_meta", {}).get("title", "").lower()
-                    if "neg" not in meta:
-                        v["inputs"]["text"] = prompt
-                        break
-
-    result = _find_node_by_class(workflow, "KSampler")
-    if result:
-        _, node = result
-        node["inputs"]["seed"] = seed
-        node["inputs"]["steps"] = steps
-
+        _set_prompt(workflow, prompt)
+    _patch_size_and_steps(workflow, None, None, steps)
+    _patch_seed(workflow, _resolve_seed(seed))
     for v in workflow.values():
         inp = v.get("inputs", {})
-        if "noise_seed" in inp:
-            inp["noise_seed"] = seed
-        if "seed" in inp and isinstance(inp["seed"], int):
-            inp["seed"] = seed
         if "denoise" in inp and isinstance(inp["denoise"], (int, float)):
             inp["denoise"] = round(denoise, 2)
-
     return workflow
+
+
+# Inputs that may be left unconnected. When a reference slot is empty its
+# LoadImage chain is cut out of the workflow; a node that loses one of these
+# keeps working without it, any other node that loses an input goes too.
+_OPTIONAL_INPUTS = {
+    "ReferenceLatent": {"latent"},                                # Flux.2 / Kontext reference chain
+    "TextEncodeQwenImageEditPlus": {"image1", "image2", "image3"},
+}
+_OUTPUT_NODES = ("SaveImage", "PreviewImage")
+
+
+def _node_order(node_id: str) -> tuple:
+    """Numeric order for ids like "78", "436" and "433:117" — as text "436"
+    sorts before "78", which put reference Image 1 into the second slot."""
+    return tuple(int(p) if p.isdigit() else 0 for p in str(node_id).split(":"))
+
+
+def _load_image_nodes(workflow: dict) -> list[str]:
+    ids = [k for k, v in workflow.items() if v.get("class_type") == "LoadImage"]
+    return sorted(ids, key=_node_order)
+
+
+def _prune_unused_images(workflow: dict, unused: list[str]) -> dict:
+    """Remove the LoadImage nodes no reference image was given for, plus
+    everything that only exists to process them."""
+    removed = set(unused)
+    changed = True
+    while changed:
+        changed = False
+        for nid, node in workflow.items():
+            if nid in removed:
+                continue
+            optional = _OPTIONAL_INPUTS.get(node.get("class_type"), set())
+            inputs = node.get("inputs", {})
+            for key, val in list(inputs.items()):
+                if isinstance(val, list) and len(val) == 2 and str(val[0]) in removed:
+                    if key in optional:
+                        del inputs[key]
+                    else:
+                        removed.add(nid)
+                        changed = True
+                        break
+    pruned = {k: v for k, v in workflow.items() if k not in removed}
+    if not any(v.get("class_type") in _OUTPUT_NODES for v in pruned.values()):
+        raise RuntimeError(
+            f"This workflow needs all {len(_load_image_nodes(workflow))} of its images — "
+            "add more reference images or pick a workflow that takes fewer.")
+    return pruned
 
 # ------------------------------------------------------------------ #
 # Local ComfyUI workers
 # ------------------------------------------------------------------ #
+
+def _comfy_rejection(resp) -> str:
+    """ComfyUI answers a bad workflow with HTTP 400 and a node_errors map
+    naming the node and input (missing model file, unknown node...). That
+    text is the whole diagnosis — a bare "400 Bad Request" says nothing."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return f"ComfyUI rejected the workflow (HTTP {resp.status_code}): {resp.text[:400]}"
+    lines = [f"ComfyUI rejected the workflow (HTTP {resp.status_code}):"]
+    err = body.get("error") or {}
+    if isinstance(err, dict) and err.get("message"):
+        lines.append(f"  {err['message']}" + (f" — {err['details']}" if err.get("details") else ""))
+    for nid, ne in (body.get("node_errors") or {}).items():
+        cls = ne.get("class_type", "?")
+        for e in ne.get("errors", []):
+            lines.append(f"  node {nid} ({cls}): {e.get('message', '')} {e.get('details', '')}".rstrip())
+    return "\n".join(lines)
+
 
 class ComfyWorker(QThread):
     status   = pyqtSignal(str)
@@ -422,7 +483,8 @@ class ComfyWorker(QThread):
                 json={"prompt": self._workflow, "client_id": self._client_id},
                 timeout=30,
             )
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                raise RuntimeError(_comfy_rejection(resp))
             prompt_id = resp.json()["prompt_id"]
 
             self.status.emit("Generating...")
@@ -430,8 +492,8 @@ class ComfyWorker(QThread):
             while True:
                 time.sleep(3)
                 elapsed += 3
-                if elapsed > 600:
-                    raise RuntimeError("Timed out after 10 minutes")
+                if elapsed > GENERATION_TIMEOUT_S:
+                    raise RuntimeError(f"Timed out after {GENERATION_TIMEOUT_S // 60} minutes")
 
                 try:
                     q = requests.get(f"{self._url}/queue", timeout=10).json()
@@ -521,16 +583,23 @@ class EditorWorker(ComfyWorker):
                 except Exception:
                     pass
 
-            load_nodes = [
-                (k, v) for k, v in self._workflow.items()
-                if v.get("class_type") == "LoadImage"
-            ]
-            load_nodes.sort(key=lambda x: x[0])
+            # Reference image N goes to the Nth LoadImage in numeric id order;
+            # slots left empty have their whole chain cut out, or ComfyUI
+            # rejects the workflow over a placeholder file it cannot find.
+            load_nodes = _load_image_nodes(self._workflow)
+            refs = self._ref_images[:len(load_nodes)]
+            if len(refs) < len(load_nodes):
+                self._workflow = _prune_unused_images(self._workflow, load_nodes[len(refs):])
 
             target_w, target_h = self._target_size
+            # Workflows that size the output from the first image (Qwen edit,
+            # img2img) get it resized to the chosen size. Flux.2 sets the size
+            # with its own latent node and scales references itself, so its
+            # images go up untouched (a resize would only distort them).
+            resize_first = not _has_size_node(self._workflow)
 
-            for i, img_path in enumerate(self._ref_images[:len(load_nodes)]):
-                node_id, _ = load_nodes[i]
+            for i, img_path in enumerate(refs):
+                node_id = load_nodes[i]
                 self.status.emit(f"Uploading image {i+1}...")
                 self.progress.emit(5 + i * 8)
 
@@ -539,7 +608,7 @@ class EditorWorker(ComfyWorker):
                 upload_path = UPLOAD_DIR / upload_name
 
                 img = PILImage.open(img_path).convert("RGB")
-                if i == 0:
+                if i == 0 and resize_first:
                     img = img.resize((target_w, target_h), PILImage.LANCZOS)
                 px = img.load()
                 r, g, b = px[0, 0]
@@ -747,98 +816,6 @@ class PreviewPanel(QWidget):
 # ------------------------------------------------------------------ #
 # Connection widget  (Local ComfyUI  /  RunPod Serverless)
 # ------------------------------------------------------------------ #
-
-class ConnectionWidget(QGroupBox):
-    """Toggle between Local ComfyUI and RunPod with the appropriate fields."""
-    changed = pyqtSignal()
-
-    def __init__(self, settings: dict, api_keys: dict, prefix: str, parent=None):
-        super().__init__("Connection", parent)
-        self._settings = settings
-        self._api_keys = api_keys
-        self._prefix = prefix
-        self._build_ui()
-
-    def _build_ui(self):
-        outer = QVBoxLayout(self)
-        outer.setSpacing(6)
-
-        mode_row = QHBoxLayout()
-        mode_lbl = QLabel("Mode:")
-        mode_lbl.setFixedWidth(42)
-        self._mode_combo = QComboBox()
-        self._mode_combo.addItem("Local ComfyUI", "local")
-        self._mode_combo.addItem("RunPod (Pod)", "runpod")
-        saved_mode = self._settings.get(f"{self._prefix}_conn_mode", "local")
-        idx = 1 if saved_mode == "runpod" else 0
-        self._mode_combo.setCurrentIndex(idx)
-        self._mode_combo.currentIndexChanged.connect(self._on_mode_change)
-        mode_row.addWidget(mode_lbl)
-        mode_row.addWidget(self._mode_combo, stretch=1)
-        outer.addLayout(mode_row)
-
-        # Local ComfyUI row (show/hide instead of stacked widget to avoid height reservation)
-        self._local_widget = QWidget()
-        ll = QHBoxLayout(self._local_widget)
-        ll.setContentsMargins(0, 0, 0, 0)
-        ll.setSpacing(6)
-        url_lbl = QLabel("URL:")
-        url_lbl.setFixedWidth(30)
-        self._url_edit = QLineEdit(self._settings.get(f"{self._prefix}_url",
-                                                       "http://127.0.0.1:8188"))
-        self._url_edit.textChanged.connect(self._on_change)
-        ll.addWidget(url_lbl)
-        ll.addWidget(self._url_edit)
-        outer.addWidget(self._local_widget)
-
-        # RunPod row — a Pod's proxy URL speaks the same ComfyUI HTTP API as
-        # local, so this just points the same worker classes at a different host
-        self._runpod_widget = QWidget()
-        rl = QHBoxLayout(self._runpod_widget)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.setSpacing(6)
-        pod_lbl = QLabel("URL:")
-        pod_lbl.setFixedWidth(30)
-        self._pod_url_edit = QLineEdit(self._settings.get(f"{self._prefix}_runpod_url", ""))
-        self._pod_url_edit.setPlaceholderText("https://<pod-id>-8188.proxy.runpod.net")
-        self._pod_url_edit.textChanged.connect(self._on_change)
-        rl.addWidget(pod_lbl)
-        rl.addWidget(self._pod_url_edit)
-        outer.addWidget(self._runpod_widget)
-
-        self._local_widget.setVisible(idx == 0)
-        self._runpod_widget.setVisible(idx == 1)
-
-    def _on_mode_change(self, idx: int):
-        self._local_widget.setVisible(idx == 0)
-        self._runpod_widget.setVisible(idx == 1)
-        self._on_change()
-
-    def _on_change(self):
-        mode = self._mode_combo.currentData()
-        self._settings[f"{self._prefix}_conn_mode"] = mode
-        self._settings[f"{self._prefix}_url"] = self._url_edit.text().strip()
-        self._settings[f"{self._prefix}_runpod_url"] = self._pod_url_edit.text().strip()
-        save_settings(self._settings)
-        self.changed.emit()
-
-    @property
-    def mode(self) -> str:
-        return self._mode_combo.currentData()
-
-    @property
-    def local_url(self) -> str:
-        return self._url_edit.text().strip()
-
-    @property
-    def runpod_url(self) -> str:
-        return self._pod_url_edit.text().strip()
-
-    @property
-    def active_url(self) -> str:
-        """The ComfyUI-compatible URL to use for the current mode (local or RunPod Pod)."""
-        return self.runpod_url if self.mode == "runpod" else self.local_url
-
 
 # ------------------------------------------------------------------ #
 # Library thumbnail card
@@ -1077,10 +1054,10 @@ class ImageViewerDialog(QDialog):
 # ------------------------------------------------------------------ #
 
 class TextToImageTab(QWidget):
-    def __init__(self, settings: dict, api_keys: dict, parent=None):
+    def __init__(self, settings: dict, host: "MainWindow", parent=None):
         super().__init__(parent)
         self._settings = settings
-        self._api_keys = api_keys
+        self._host = host
         self._worker: QThread | None = None
         self._queue: list[dict] = []
         self._queue_running = False
@@ -1108,9 +1085,6 @@ class TextToImageTab(QWidget):
         left_scroll.setMinimumWidth(280)
         left_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
-        # Connection (Local / RunPod)
-        self._conn = ConnectionWidget(self._settings, self._api_keys, "t2i")
-        left.addWidget(self._conn)
 
         # Workflow
         wf_group = QGroupBox("Workflow")
@@ -1122,6 +1096,7 @@ class TextToImageTab(QWidget):
         wf_reload.setToolTip("Reload workflows")
         wf_reload.clicked.connect(self._reload_workflows)
         wf_row.addWidget(self._wf_combo, stretch=1)
+        self._wf_combo.activated.connect(self._on_workflow_picked)
         wf_row.addWidget(wf_reload)
         left.addWidget(wf_group)
 
@@ -1257,6 +1232,15 @@ class TextToImageTab(QWidget):
         self._preview_panel = PreviewPanel()
         root.addWidget(self._preview_panel, stretch=2)
 
+    def _on_workflow_picked(self, _index: int):
+        """Picking a workflow loads its own step count (28 for Flux.2, 8 for
+        Turbo, 4 for Qwen Lightning): the slider always overrides the file,
+        so a value left over from another workflow would run silently wrong."""
+        steps = _workflow_steps(self._wf_combo.currentData())
+        if steps:
+            self._steps.setValue(steps)
+        self._save_state()
+
     def _reload_workflows(self):
         self._wf_combo.clear()
         workflows = sorted(WORKFLOWS_DIR.glob("t2i_*.json"))
@@ -1330,9 +1314,9 @@ class TextToImageTab(QWidget):
                                         seed, job["steps"])
 
         out = Path(job["output_dir"])
-        url = self._conn.active_url
+        url = self._host.server_url()
         if not url:
-            self._status.setText("Enter a ComfyUI URL (local or RunPod Pod).")
+            self._status.setText(NO_SERVER_MSG)
             return False
         self._worker = ComfyWorker(url, workflow, out, "t2i")
 
@@ -1346,18 +1330,21 @@ class TextToImageTab(QWidget):
         self._worker.progress.connect(self._progress.setValue)
         self._worker.done.connect(self._on_done)
         self._worker.error.connect(self._on_error)
+        self._host.run_started(self._worker)
         self._worker.start()
         return True
 
+    def is_busy(self) -> bool:
+        return self._queue_running or bool(self._worker and self._worker.isRunning())
+
     def _generate(self):
-        if self._worker and self._worker.isRunning():
+        if self.is_busy():
             return
         job = self._collect_job()
         if not job:
             return
-        self._queue_running = False
         self._save_state()
-        self._start_job(job)
+        self._host.before_run([job["workflow_path"]], lambda: self._start_job(job))
 
     # ---- Batch queue ---------------------------------------------- #
 
@@ -1392,10 +1379,18 @@ class TextToImageTab(QWidget):
         self._refresh_queue_list()
 
     def _run_queue(self):
-        if self._worker and self._worker.isRunning():
+        if self.is_busy():
             return
         if not self._queue:
             self._status.setText("Queue is empty — add jobs first.")
+            return
+        # Every workflow the queue uses is checked once up front, so the
+        # model check never interrupts the queue halfway through.
+        workflows = list(dict.fromkeys(j["workflow_path"] for j in self._queue))
+        self._host.before_run(workflows, self._begin_queue)
+
+    def _begin_queue(self):
+        if not self._queue:
             return
         self._queue_running = True
         self._queue_total = len(self._queue)
@@ -1407,6 +1402,11 @@ class TextToImageTab(QWidget):
         if not self._queue:
             self._finish_queue()
             return
+        if self._host.over_limit():
+            # The pod hit its spend limit mid-queue: stop starting jobs so
+            # PodControl can stop the pod; what's left stays queued.
+            self._finish_queue(stopped="spend limit reached — remaining jobs left in the queue")
+            return
         job = self._queue.pop(0)
         self._refresh_queue_list()
         self._status.setText(f"Queue: job {self._queue_done + self._queue_failed + 1} "
@@ -1415,14 +1415,17 @@ class TextToImageTab(QWidget):
             self._queue_failed += 1
             self._start_next_queued()
 
-    def _finish_queue(self):
+    def _finish_queue(self, stopped: str = ""):
         self._queue_running = False
         self._gen_btn.setEnabled(True)
         self._run_q_btn.setEnabled(True)
-        msg = f"Queue complete — {self._queue_done} done"
+        msg = f"Queue {'stopped' if stopped else 'complete'} — {self._queue_done} done"
         if self._queue_failed:
             msg += f", {self._queue_failed} failed"
+        if stopped:
+            msg += f" ({stopped})"
         self._status.setText(msg)
+        self._host.run_ended()
 
     # ---- Completion ------------------------------------------------ #
 
@@ -1449,6 +1452,7 @@ class TextToImageTab(QWidget):
             self._gen_btn.setEnabled(True)
             self._run_q_btn.setEnabled(True)
             self._status.setText(f"Done! {Path(path).name}")
+            self._host.run_ended()
 
     def _on_error(self, msg: str):
         self._progress.setValue(0)
@@ -1461,6 +1465,7 @@ class TextToImageTab(QWidget):
             self._run_q_btn.setEnabled(True)
             self._status.setText("Error — see preview panel")
             self._preview_panel.set_message(f"Error:\n{msg[:400]}")
+            self._host.run_ended()
 
     # ---- Prompt recall --------------------------------------------- #
 
@@ -1491,10 +1496,10 @@ class TextToImageTab(QWidget):
 # ------------------------------------------------------------------ #
 
 class SceneComposerTab(QWidget):
-    def __init__(self, settings: dict, api_keys: dict, parent=None):
+    def __init__(self, settings: dict, host: "MainWindow", parent=None):
         super().__init__(parent)
         self._settings = settings
-        self._api_keys = api_keys
+        self._host = host
         self._worker: QThread | None = None
         self._build_ui()
         self._reload_workflows()
@@ -1516,9 +1521,6 @@ class SceneComposerTab(QWidget):
         left_scroll.setMinimumWidth(280)
         left_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
-        # Connection (Local / RunPod)
-        self._conn = ConnectionWidget(self._settings, self._api_keys, "edit")
-        left.addWidget(self._conn)
 
         # Workflow
         wf_group = QGroupBox("Workflow")
@@ -1530,6 +1532,7 @@ class SceneComposerTab(QWidget):
         wf_reload.setToolTip("Reload workflows")
         wf_reload.clicked.connect(self._reload_workflows)
         wf_row.addWidget(self._wf_combo, stretch=1)
+        self._wf_combo.activated.connect(self._on_workflow_picked)
         wf_row.addWidget(wf_reload)
         left.addWidget(wf_group)
 
@@ -1659,6 +1662,15 @@ class SceneComposerTab(QWidget):
         self._preview_panel = PreviewPanel()
         root.addWidget(self._preview_panel, stretch=2)
 
+    def _on_workflow_picked(self, _index: int):
+        """Picking a workflow loads its own step count (28 for Flux.2, 8 for
+        Turbo, 4 for Qwen Lightning): the slider always overrides the file,
+        so a value left over from another workflow would run silently wrong."""
+        steps = _workflow_steps(self._wf_combo.currentData())
+        if steps:
+            self._steps.setValue(steps)
+        self._save_state()
+
     def _reload_workflows(self):
         self._wf_combo.clear()
         workflows = sorted(WORKFLOWS_DIR.glob("edit_*.json"))
@@ -1695,7 +1707,12 @@ class SceneComposerTab(QWidget):
         for slot in self._slots:
             slot.clear_image()
 
+    def is_busy(self) -> bool:
+        return bool(self._worker and self._worker.isRunning())
+
     def _compose(self):
+        if self.is_busy():
+            return
         workflow_path = self._wf_combo.currentData()
         instruction = self._instruction.toPlainText().strip()
         out = self._out_edit.toPlainText().strip()
@@ -1713,7 +1730,12 @@ class SceneComposerTab(QWidget):
         if not out:
             self._status.setText("Select an output folder.")
             return
+        self._save_state()
+        self._host.before_run(
+            [workflow_path],
+            lambda: self._launch(workflow_path, instruction, out, ref_images))
 
+    def _launch(self, workflow_path: str, instruction: str, out: str, ref_images: list[str]):
         with open(workflow_path, "r", encoding="utf-8") as f:
             workflow = json.load(f)
 
@@ -1722,9 +1744,8 @@ class SceneComposerTab(QWidget):
         if seed < 0:
             seed = random.randint(0, 2**31)
 
-        workflow = _patch_workflow_edit(workflow, instruction, seed, self._steps.value())
-
         w, h = self._size_combo.currentData()
+        workflow = _patch_workflow_edit(workflow, instruction, seed, self._steps.value(), w, h)
 
         self._active_job = {
             "prompt": instruction,
@@ -1734,22 +1755,20 @@ class SceneComposerTab(QWidget):
             "seed": seed,
         }
 
+        url = self._host.server_url()
+        if not url:
+            self._status.setText(NO_SERVER_MSG)
+            return
         self._compose_btn.setEnabled(False)
         self._progress.setValue(0)
         self._preview_panel.set_message("Sending to ComfyUI...")
-        self._save_state()
-
-        url = self._conn.active_url
-        if not url:
-            self._status.setText("Enter a ComfyUI URL (local or RunPod Pod).")
-            self._compose_btn.setEnabled(True)
-            return
         self._worker = EditorWorker(url, workflow, Path(out), ref_images, (w, h))
 
         self._worker.status.connect(self._status.setText)
         self._worker.progress.connect(self._progress.setValue)
         self._worker.done.connect(self._on_done)
         self._worker.error.connect(self._on_error)
+        self._host.run_started(self._worker)
         self._worker.start()
 
     def _on_done(self, path: str):
@@ -1767,12 +1786,14 @@ class SceneComposerTab(QWidget):
             "seed": job.get("seed", -1),
             "timestamp": datetime.now().isoformat(timespec="seconds"),
         })
+        self._host.run_ended()
 
     def _on_error(self, msg: str):
         self._compose_btn.setEnabled(True)
         self._progress.setValue(0)
         self._status.setText("Error — see preview panel")
         self._preview_panel.set_message(f"Error:\n{msg[:400]}")
+        self._host.run_ended()
 
     def apply_history(self, entry: dict):
         self._instruction.setPlainText(entry.get("prompt", ""))
@@ -1801,10 +1822,10 @@ class SceneComposerTab(QWidget):
 # ------------------------------------------------------------------ #
 
 class ImageVariationsTab(QWidget):
-    def __init__(self, settings: dict, api_keys: dict, parent=None):
+    def __init__(self, settings: dict, host: "MainWindow", parent=None):
         super().__init__(parent)
         self._settings = settings
-        self._api_keys = api_keys
+        self._host = host
         self._worker: QThread | None = None
         self._active_job: dict | None = None
         self._build_ui()
@@ -1827,9 +1848,6 @@ class ImageVariationsTab(QWidget):
         left_scroll.setMinimumWidth(280)
         left_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
-        # Connection (Local / RunPod)
-        self._conn = ConnectionWidget(self._settings, self._api_keys, "i2i")
-        left.addWidget(self._conn)
 
         # Workflow
         wf_group = QGroupBox("Workflow")
@@ -1841,6 +1859,7 @@ class ImageVariationsTab(QWidget):
         wf_reload.setToolTip("Reload workflows")
         wf_reload.clicked.connect(self._reload_workflows)
         wf_row.addWidget(self._wf_combo, stretch=1)
+        self._wf_combo.activated.connect(self._on_workflow_picked)
         wf_row.addWidget(wf_reload)
         left.addWidget(wf_group)
 
@@ -1976,6 +1995,15 @@ class ImageVariationsTab(QWidget):
         self._preview_panel = PreviewPanel()
         root.addWidget(self._preview_panel, stretch=2)
 
+    def _on_workflow_picked(self, _index: int):
+        """Picking a workflow loads its own step count (28 for Flux.2, 8 for
+        Turbo, 4 for Qwen Lightning): the slider always overrides the file,
+        so a value left over from another workflow would run silently wrong."""
+        steps = _workflow_steps(self._wf_combo.currentData())
+        if steps:
+            self._steps.setValue(steps)
+        self._save_state()
+
     def _reload_workflows(self):
         self._wf_combo.clear()
         workflows = sorted(WORKFLOWS_DIR.glob("i2i_*.json"))
@@ -2015,8 +2043,11 @@ class ImageVariationsTab(QWidget):
             self._src_slot.set_image(path, copy=False)
             self._status.setText(f"Source: {Path(path).name}")
 
+    def is_busy(self) -> bool:
+        return bool(self._worker and self._worker.isRunning())
+
     def _generate(self):
-        if self._worker and self._worker.isRunning():
+        if self.is_busy():
             return
 
         workflow_path = self._wf_combo.currentData()
@@ -2033,7 +2064,10 @@ class ImageVariationsTab(QWidget):
         if not out:
             self._status.setText("Select an output folder.")
             return
+        self._save_state()
+        self._host.before_run([workflow_path], lambda: self._launch(workflow_path, prompt, out, src))
 
+    def _launch(self, workflow_path: str, prompt: str, out: str, src: str):
         with open(workflow_path, "r", encoding="utf-8") as f:
             workflow = json.load(f)
 
@@ -2058,22 +2092,20 @@ class ImageVariationsTab(QWidget):
             "source": src,
         }
 
+        url = self._host.server_url()
+        if not url:
+            self._status.setText(NO_SERVER_MSG)
+            return
         self._gen_btn.setEnabled(False)
         self._progress.setValue(0)
         self._preview_panel.set_message("Generating variation...")
-        self._save_state()
-
-        url = self._conn.active_url
-        if not url:
-            self._status.setText("Enter a ComfyUI URL (local or RunPod Pod).")
-            self._gen_btn.setEnabled(True)
-            return
         self._worker = EditorWorker(url, workflow, Path(out), [src], (w, h))
 
         self._worker.status.connect(self._status.setText)
         self._worker.progress.connect(self._progress.setValue)
         self._worker.done.connect(self._on_done)
         self._worker.error.connect(self._on_error)
+        self._host.run_started(self._worker)
         self._worker.start()
 
     def _on_done(self, path: str):
@@ -2093,12 +2125,14 @@ class ImageVariationsTab(QWidget):
             "source": job.get("source", ""),
             "timestamp": datetime.now().isoformat(timespec="seconds"),
         })
+        self._host.run_ended()
 
     def _on_error(self, msg: str):
         self._gen_btn.setEnabled(True)
         self._progress.setValue(0)
         self._status.setText("Error — see preview panel")
         self._preview_panel.set_message(f"Error:\n{msg[:400]}")
+        self._host.run_ended()
 
     def apply_history(self, entry: dict):
         self._prompt.setPlainText(entry.get("prompt", ""))
@@ -2471,10 +2505,32 @@ class LibraryTab(QWidget):
 # ------------------------------------------------------------------ #
 
 class MainWindow(QMainWindow):
+    """Owns the one ComfyUI connection, the RunPod pod (PodControl, copied
+    from the ComfyUI Video Creator) and the model check & sync.
+
+    It is also the "RunHost" the generating tabs talk to. A tab only asks
+    server_url(), hands its run to before_run() (spend limit + the pod has the
+    workflow's models) and reports run_started() / run_ended(), which keep
+    the idle-stop countdown and the alert sound right.
+    """
+
     def __init__(self):
         super().__init__()
-        self._settings = load_settings()
-        self._api_keys = load_api_keys()
+        global CONFIG
+        CONFIG = ConfigManager(SETTINGS_FILE)
+        self._config = CONFIG
+        self._settings = CONFIG.data          # the tabs read/write this dict directly
+        self._live_workers: set[QThread] = set()
+
+        # Model check & sync: (workflow, server) pairs whose models were
+        # confirmed on the pod this session, so a run checks once, not every time.
+        self._models_ok: set[tuple[str, str]] = set()
+        self._pending = None  # (proceed, on_drop, key) while a model check/sync runs
+        self._model_check: model_sync.ModelCheckWorker | None = None
+        self._transfer: model_sync.TransferWorker | None = None
+        self._transfer_dlg: QProgressDialog | None = None
+        self._xfer_mark: tuple[str, float, int] = ("", 0.0, 0)   # (label, t0, bytes) for the rate readout
+        self._pod_only_declined: set[str] = set()                # "run on the pod" answers, this session
 
         self.setWindowTitle(f"AI Image Studio  v{VERSION}")
         self.setMinimumSize(800, 600)
@@ -2487,15 +2543,32 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
 
+        header = QHBoxLayout()
         title = QLabel("AI Image Studio")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(f"font-size:18pt; font-weight:bold; color:{ACCENT};")
-        root.addWidget(title)
+        header.addWidget(title)
+        header.addStretch()
+        self._mode_lbl = QLabel("")
+        self._mode_lbl.setObjectName("mode_badge")
+        header.addWidget(self._mode_lbl)
+        header.addSpacing(8)
+        # RunPod pod control: spend readout + Start/Stop Pod. It owns
+        # everything pod-related; this window only answers "is a run going?".
+        self._pod = PodControl(self._config, self._generation_running, self)
+        self._pod.server_changed.connect(self._on_server_changed)
+        self._pod.log.connect(self._log)
+        header.addWidget(self._pod)
+        header.addSpacing(8)
+        settings_btn = QPushButton("⚙ Settings")
+        settings_btn.setObjectName("secondary_btn")
+        settings_btn.clicked.connect(self._open_settings)
+        header.addWidget(settings_btn)
+        root.addLayout(header)
 
         self._tabs = QTabWidget()
-        self._t2i_tab     = TextToImageTab(self._settings, self._api_keys)
-        self._compose_tab = SceneComposerTab(self._settings, self._api_keys)
-        self._i2i_tab     = ImageVariationsTab(self._settings, self._api_keys)
+        self._t2i_tab     = TextToImageTab(self._settings, self)
+        self._compose_tab = SceneComposerTab(self._settings, self)
+        self._i2i_tab     = ImageVariationsTab(self._settings, self)
         self._library_tab = LibraryTab(self._settings)
         self._tabs.addTab(self._t2i_tab,     "✨  Text to Image")
         self._tabs.addTab(self._compose_tab, "🎨  Scene Composer")
@@ -2503,8 +2576,23 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._library_tab, "🖼  Library")
         root.addWidget(self._tabs)
 
+        self._status = QStatusBar()
+        self.setStatusBar(self._status)
+        self._server_lbl = QLabel("")
+        self._status.addPermanentWidget(self._server_lbl)
+
         self._library_tab.recall_requested.connect(self._on_recall)
         self._library_tab.variations_requested.connect(self._on_variations)
+
+        self._on_server_changed()
+        # After the window is actually on screen, so the pod prompt has a
+        # parent to centre on rather than appearing behind it.
+        QTimer.singleShot(200, self._pod.check_on_launch)
+
+    # ---- Tabs ------------------------------------------------------ #
+
+    def _generating_tabs(self):
+        return (self._t2i_tab, self._compose_tab, self._i2i_tab)
 
     def _on_recall(self, entry: dict):
         tab_key = entry.get("tab", "t2i")
@@ -2520,8 +2608,366 @@ class MainWindow(QMainWindow):
         self._i2i_tab.set_source_image(path)
         self._tabs.setCurrentWidget(self._i2i_tab)
 
+    def _open_settings(self):
+        dlg = SettingsDialog(self._config, self)
+        if dlg.exec():
+            self._on_server_changed()
+
+    # ---- RunHost: what the generating tabs call ------------------- #
+
+    def server_url(self) -> str:
+        return self._config.server_url()
+
+    def over_limit(self) -> bool:
+        return self._pod.over_limit()
+
+    def before_run(self, workflows: list[str], proceed: Callable[[], None],
+                   on_drop: Callable[[], None] | None = None):
+        """Run `proceed` once the pod is under its spend limit and every
+        workflow's models are confirmed on it (one check per workflow, in
+        turn). Local mode and confirmed workflows go straight through."""
+        on_drop = on_drop or (lambda: None)
+        if self._model_check is not None or self._transfer is not None:
+            self._status.showMessage("A model check is still running — try again when it finishes.", 6000)
+            return
+        if self._spend_limit_blocked():
+            on_drop()
+            return
+        remaining = list(workflows)
+
+        def step():
+            if not remaining:
+                proceed()
+                return
+            self._ensure_models(remaining.pop(0), step, on_drop)
+
+        step()
+
+    def run_started(self, worker: QThread):
+        """A tab started a worker: hold it until its thread really ends (a
+        tab replaces self._worker between queue jobs) and stop counting idle."""
+        self._live_workers.add(worker)
+        worker.finished.connect(self._on_run_thread_finished)
+        self._pod.cancel_idle_timer()
+
+    def run_ended(self):
+        """A run (one image, or a whole queue) finished or failed."""
+        self._alert()
+
+    # ---- Pod bookkeeping ------------------------------------------ #
+
+    def _generation_running(self) -> bool:
+        """PodControl asks this: a running generation or model transfer means
+        a spend-limit stop waits and the idle countdown never arms."""
+        return (any(t.is_busy() for t in self._generating_tabs())
+                or any(w.isRunning() for w in self._live_workers)
+                or self._transfer is not None)
+
+    def _on_run_thread_finished(self):
+        """A worker thread has really ended (done/error fire while it is
+        still winding down). A deferred spend-limit stop lands here, or the
+        idle countdown arms — unless another run (the next queued job) has
+        already started."""
+        worker = self.sender()
+        self._live_workers.discard(worker)
+        if self._generation_running():
+            return
+        self._pod.run_finished()
+        self._pod.start_idle_timer()
+
+    def _on_server_changed(self):
+        """A pod came up (or went away), or Settings changed the server."""
+        self._models_ok.clear()  # a different pod's volume may differ
+        runpod = self._config.is_runpod()
+        url = self.server_url()
+        dot = SUCCESS if url else ERROR
+        what = "RunPod" if runpod else "Local ComfyUI"
+        # Solid light text; the coloured dot carries the state.
+        self._mode_lbl.setText(f"<span style='color:{dot}'>●</span> {what}")
+        self._server_lbl.setText(f"ComfyUI:  {url or '(not set)'}")
+
+    def _alert(self):
+        """The one alert sound (Settings > RunPod), shared with the pod
+        chain's "pod found" / "gave up" alerts."""
+        if self._config.get("alert_sound_enabled", True):
+            alerts.play(self._config.get("alert_sound_path", ""))
+
+    def _spend_limit_blocked(self) -> bool:
+        """True (after telling the user) when the pod has hit its spend limit."""
+        if not self._pod.over_limit():
+            return False
+        limit = float(self._config.get("runpod_spend_limit", 0) or 0)
+        QMessageBox.warning(
+            self, "Spend limit reached",
+            f"This pod has hit the ${limit:.2f} session limit, so no new runs are "
+            "being started. It will stop once the current run finishes.\n\n"
+            "Raise the limit in Settings > RunPod to keep going.")
+        return True
+
+    def _log(self, msg: str):
+        """Pod and model-sync progress: status bar now, activity.log for later
+        (a transfer that misbehaves overnight should leave evidence)."""
+        self._status.showMessage(msg, 15000)
+        try:
+            with open(APP_DIR / "activity.log", "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S}  {msg}\n")
+        except OSError:
+            pass
+
+    # ---- Model check & sync (RunPod) — copied from Style Randomizer ---- #
+
+    def _ensure_models(self, wf_path: str, proceed, on_drop):
+        """Run `proceed` once the workflow's model files are confirmed on the
+        pod (copied there / back here if they were not). Local mode, the check
+        switched off, or an already-confirmed (workflow, server) pair go
+        straight through. `on_drop` runs when the user backs out."""
+        cfg = self._config.get_all()
+        if not (self._config.is_runpod() and model_sync.check_enabled(cfg)):
+            proceed()
+            return
+        key = (str(wf_path), self.server_url())
+        if key in self._models_ok:
+            proceed()
+            return
+        try:
+            refs = model_sync.models_in_workflow(json.loads(Path(wf_path).read_text(encoding="utf-8")))
+        except Exception as e:  # noqa: BLE001
+            self._log(f"Model check: couldn't read {Path(wf_path).name} ({e}) - the run will report it")
+            proceed()
+            return
+        if not refs:
+            self._models_ok.add(key)
+            proceed()
+            return
+        self._pending = (proceed, on_drop, key)
+        self._pod.cancel_idle_timer()
+        self._log(f"Model check: comparing {len(refs)} model file(s) for {Path(wf_path).name} "
+                  "between the local models folder and the pod volume…")
+        self._model_check = model_sync.ModelCheckWorker(cfg, list(refs))
+        self._model_check.done.connect(self._on_model_plan)
+        self._model_check.finished.connect(self._model_check_finished)
+        self._model_check.start()
+
+    def _model_check_finished(self):
+        self._model_check = None
+
+    def _model_release(self):
+        proceed, _drop, key = self._pending
+        self._pending = None
+        self._models_ok.add(key)
+        proceed()
+
+    def _model_release_unchecked(self):
+        """Run without the models confirmed: do not remember it, so the next
+        run asks again."""
+        proceed, _drop, _key = self._pending
+        self._pending = None
+        proceed()
+
+    def _model_drop(self, why: str):
+        _proceed, on_drop, _key = self._pending
+        self._pending = None
+        self._log(f"Run not started - {why}")
+        on_drop()
+
+    def _on_model_plan(self, plan: model_sync.SyncPlan):
+        if plan.error:
+            ans = QMessageBox.question(
+                self, "Couldn't check the pod's models",
+                f"The pod volume could not be listed:\n\n{plan.error}\n\n"
+                "Start the run anyway? A model the pod lacks will fail on the server.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            self._log(f"Model check failed: {plan.error}")
+            if ans == QMessageBox.StandardButton.Yes:
+                self._model_release_unchecked()
+            else:
+                self._model_drop("model check failed (see Settings > Models)")
+            return
+        for ref, actual in plan.case_mismatch.items():
+            self._log(f"Model check: {ref.rel} is spelled {actual} on disk — the Linux pod is case-sensitive")
+        for ref, (lsize, rsize) in plan.size_mismatch.items():
+            self._log(f"Model check: {ref.rel} differs in size (local {model_sync.fmt_size(lsize)}, pod {model_sync.fmt_size(rsize)}) — not touched")
+
+        # Models the pod has but this PC doesn't. The pod run is fine without
+        # them, so say exactly that and offer the download for local use —
+        # a 35 GB text encoder must never start pulling down unannounced.
+        offered = [j for j in plan.optional_downloads if j.ref.rel not in self._pod_only_declined]
+        if offered:
+            total = sum(j.size for j in offered)
+            names = "\n".join(f"    • {j.ref.kind}: {j.ref.rel}  ({model_sync.fmt_size(j.size)})" for j in offered)
+            self._log(f"Model check: {len(offered)} model(s) are on the pod but not on this PC ({model_sync.fmt_size(total)})")
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setWindowTitle("Model missing locally")
+            box.setText(f"{len(offered)} model file(s) exist on the pod but not on this PC "
+                        f"({model_sync.fmt_size(total)}):")
+            box.setInformativeText(
+                names + "\n\n"
+                "This run goes to the pod, which already has them, so it can start right away.\n"
+                "You only need the download if you also want to run this workflow on local ComfyUI.\n\n"
+                f"Download to {plan.local_root}? The download runs first, then the run starts.\n"
+                "(Settings > Models can download these automatically without asking.)")
+            dl = box.addButton("Download, then run", QMessageBox.ButtonRole.AcceptRole)
+            pod = box.addButton("Run on the pod without downloading", QMessageBox.ButtonRole.ActionRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(pod)
+            box.exec()
+            if box.clickedButton() is dl:
+                plan.downloads.extend(offered)
+                self._log(f"Model check: downloading {len(offered)} pod-only model(s) to this PC first")
+            elif box.clickedButton() is pod:
+                for j in offered:
+                    self._pod_only_declined.add(j.ref.rel)
+                self._log("Model check: running on the pod without the local copies (not asked again this session)")
+            else:
+                self._model_drop("cancelled at the missing-locally prompt")
+                return
+
+        if plan.clean and not plan.downloads:
+            self._log("Model check: every model file the run needs is on the pod")
+            self._model_release()
+            return
+
+        lines = []
+        if plan.uploads:
+            lines.append(f"Upload to the pod ({model_sync.fmt_size(sum(j.size for j in plan.uploads))}):")
+            lines += [f"    ↑ {j.label}  ({model_sync.fmt_size(j.size)})" for j in plan.uploads]
+        if plan.downloads:
+            lines.append(f"Download to {plan.local_root} ({model_sync.fmt_size(sum(j.size for j in plan.downloads))}):")
+            lines += [f"    ↓ {j.label}  ({model_sync.fmt_size(j.size)})" for j in plan.downloads]
+        if plan.nowhere:
+            lines.append("Not found on the pod OR locally — the run will fail on the server unless the pod has them outside the volume:")
+            lines += [f"    ✗ {r.kind}: {r.rel}" for r in plan.nowhere]
+        body = "\n".join(lines)
+        for ln in lines:
+            self._log("Model check: " + ln.strip())
+
+        if plan.jobs:
+            if plan.uploads or plan.nowhere:
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Icon.Question)
+                box.setWindowTitle("Sync models with the pod?")
+                box.setText(f"{len(plan.jobs)} model file(s) to copy "
+                            f"({model_sync.fmt_size(plan.total_bytes)} to move).")
+                box.setInformativeText(body + "\n\nCopy them now? The run starts automatically once every file is verified.")
+                yes = box.addButton("Sync, then run", QMessageBox.ButtonRole.AcceptRole)
+                anyway = box.addButton("Run without syncing", QMessageBox.ButtonRole.DestructiveRole)
+                box.addButton(QMessageBox.StandardButton.Cancel)
+                box.setDefaultButton(yes)
+                box.exec()
+                if box.clickedButton() is yes:
+                    self._start_transfer(plan)
+                elif box.clickedButton() is anyway:
+                    self._model_release_unchecked()
+                else:
+                    self._model_drop("model sync cancelled")
+                return
+            self._start_transfer(plan)        # downloads the user just said yes to
+            return
+
+        ans = QMessageBox.question(
+            self, "Models not found",
+            body + "\n\nStart the run anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ans == QMessageBox.StandardButton.Yes:
+            self._model_release_unchecked()
+        else:
+            self._model_drop("model files missing on both sides")
+
+    def _start_transfer(self, plan: model_sync.SyncPlan):
+        ups, downs = len([j for j in plan.jobs if j.direction == "upload"]), len([j for j in plan.jobs if j.direction == "download"])
+        size = model_sync.fmt_size(plan.total_bytes)
+        title = (f"Downloading {downs} model file(s) to this PC — {size} total" if not ups else
+                 f"Uploading {ups} model file(s) to the pod — {size} total" if not downs else
+                 f"Syncing models — {ups} up, {downs} down — {size} total")
+        self._xfer_mark = ("", time.time(), 0)
+        self._transfer_dlg = QProgressDialog("Starting…", "Cancel", 0, 1000, self)
+        self._transfer_dlg.setWindowTitle(title)
+        self._transfer_dlg.setMinimumWidth(560)
+        self._transfer_dlg.setMinimumDuration(0)
+        self._transfer_dlg.setAutoClose(False)
+        self._transfer_dlg.setAutoReset(False)
+        self._transfer_dlg.canceled.connect(self._cancel_transfer)
+        self._transfer = model_sync.TransferWorker(self._config.get_all(), plan.jobs)
+        self._transfer.log.connect(self._log)
+        self._transfer.progress.connect(self._on_transfer_progress)
+        self._transfer.finished_ok.connect(self._on_transfer_done)
+        self._transfer.finished.connect(self._transfer_finished)
+        self._transfer.start()
+
+    def _cancel_transfer(self):
+        if self._transfer is not None:
+            self._transfer.cancel()
+            if self._transfer_dlg is not None:
+                self._transfer_dlg.setLabelText("Cancelling after the current file…")
+
+    def _on_transfer_progress(self, done: int, total: int, label: str, files_done: int, files_total: int):
+        if self._transfer_dlg is None:
+            return
+        now = time.time()
+        mark_label, t0, b0 = self._xfer_mark
+        if label != mark_label:                 # new file (or a retry): rate restarts
+            self._xfer_mark = (label, now, done)
+            t0, b0 = now, done
+        elapsed = now - t0
+        rate = (done - b0) / elapsed if elapsed > 0.5 else 0.0
+        eta = model_sync.fmt_eta((total - done) / rate) if rate > 0 else "—"
+        self._transfer_dlg.setValue(int(done * 1000 / total) if total else 0)
+        self._transfer_dlg.setLabelText(
+            f"{label}\n"
+            f"{model_sync.fmt_size(done)} of {model_sync.fmt_size(total)}"
+            + (f"   ·   {model_sync.fmt_rate(rate)}   ·   about {eta} left" if rate > 0 else "")
+            + f"\nfile {min(files_done + 1, files_total)} of {files_total}   ·   Cancel stops the transfer now")
+
+    def _on_transfer_done(self, errors: list):
+        if self._transfer_dlg is not None:
+            self._transfer_dlg.close()
+            self._transfer_dlg = None
+        if errors:
+            text = "\n".join(f"• {name}: {err}" for name, err in errors[:12])
+            QMessageBox.critical(self, "Model sync failed",
+                                 f"{len(errors)} file(s) did not transfer:\n\n{text}\n\nThe run was not started.")
+            self._model_drop("model sync failed")
+            return
+        self._log("Model sync: every file verified - starting the run")
+        self._model_release()
+
+    def _transfer_finished(self):
+        self._transfer = None
+
+    # ---- Quit ------------------------------------------------------ #
+
     def closeEvent(self, event):
-        save_settings(self._settings)
+        # Ask about any pod this session is connected to - one adopted from the
+        # launch chooser too, not only one this app started. Asked first, so
+        # Cancel leaves everything running.
+        stop_pod = False
+        if self._pod.pod_id and self._config.get("runpod_auto_stop_on_exit", True):
+            ans = QMessageBox.question(
+                self, "Stop the pod?",
+                f"RunPod pod {self._pod.pod_id} is still running.\n\n"
+                "Yes — stop the pod, then quit. GPU billing ends.\n"
+                "No — quit and leave the pod running. It keeps billing until you "
+                "stop it in the RunPod console. Can reconnect if still running on "
+                "next app launch.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+            if ans == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            stop_pod = ans == QMessageBox.StandardButton.Yes
+            if not stop_pod:
+                self._pod.leave_running()
+        if self._transfer is not None:
+            self._transfer.cancel()
+            self._transfer.wait(5000)
+        if stop_pod:
+            self._pod.shutdown()
+        save_settings()
         event.accept()
 
 
@@ -2531,7 +2977,7 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     import traceback
-    log_file = Path(__file__).parent / "error_log.txt"
+    log_file = APP_DIR / "error_log.txt"
     try:
         app = QApplication(sys.argv)
         app.setApplicationName("AI Image Studio")

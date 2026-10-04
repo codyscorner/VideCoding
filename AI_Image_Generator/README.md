@@ -1,26 +1,35 @@
 # AI Image Studio
 
-**Version:** 3.2.0 | **Status:** Active | **Language:** Python
+**Version:** 3.3.0 | **Status:** Active | **Language:** Python
 
-A four-tab PyQt6 desktop application for AI image generation via ComfyUI (local or a RunPod Pod).
+A four-tab PyQt6 desktop application for AI image generation via ComfyUI (local or a RunPod pod the app starts and stops itself). Built mainly for multi-reference images: Scene Composer feeds up to four reference images to Flux.2 Dev for character-consistent scenes.
 
 ## Tabs
 
 - **Text to Image**: Text-to-image generation using any ComfyUI `t2i_*.json` workflow. Supports size presets (512×512 through Super UltraWide), steps, seed, output folder, and a batch queue for running multiple prompts unattended.
-- **Scene Composer**: Multi-reference-image composition. Drop up to 4 source images, describe the scene, and a ComfyUI `edit_*.json` workflow blends them together.
+- **Scene Composer**: Multi-reference-image composition. Drop up to 4 reference images, describe the scene (refer to them as "image 1", "image 2"… in slot order, gaps skipped), and a ComfyUI `edit_*.json` workflow blends them together. Default: **Flux.2 Dev multi-reference** (`edit_flux2_dev_multiref.json`, 28 steps; `_turbo` = Turbo LoRA, 8 steps). Empty slots are cut out of the workflow automatically.
 - **Variations**: Img2img — feed any image back in with a strength (denoise) slider and optional prompt using an `i2i_*.json` workflow. Low strength = subtle variation, high = mostly new image.
 - **Library**: Scrollable thumbnail grid of all generated images from all output folders. Preview, favorite (★), filename filter + favorites-only filter, prompt recall, A/B compare, send-to-Variations, delete, open folder. Auto-refreshes on tab switch.
 
-## Connection Modes (per tab)
+## Connection & RunPod
 
-- **Local ComfyUI** — default; connects to `http://127.0.0.1:8188` (or any URL)
-- **RunPod (Pod)** — enter a Pod's proxy URL (`https://<pod-id>-8188.proxy.runpod.net`); a Pod runs the same ComfyUI HTTP API as local, so both modes share the same `ComfyWorker`/`EditorWorker` classes — no separate serverless job submission/polling/base64 handling needed
+One connection for the whole app (header badge + **⚙ Settings > Server**): Local ComfyUI (`http://127.0.0.1:8188`) or a RunPod pod.
+
+RunPod pod control is copied from the ComfyUI Video Creator (same modules as the Style Randomizer and Chain Automator — no shared code, so pod fixes are ported by copying):
+
+- **Start Pod / Stop Pod** in the header, with the spend readout. Start works down Settings > RunPod's GPU priority + pod order, keeps trying every N minutes when all pods are busy, and plays the alert sound when one is up.
+- **Launch chooser**: pods already running when the app opens can be used, stopped, or left alone.
+- **Spend limit** per pod run (no new runs past it; the pod stops when the current run ends), **idle stop** N minutes after the last run, **quit prompt** to stop or leave the pod.
+- **Model check & sync** (Settings > Models, RunPod volume via S3): before a pod run, every model the workflow names is looked for on the pod volume and locally; missing ones are uploaded first. Pod-only models (e.g. the Flux.2 text encoder) are only downloaded to this PC if you say so.
+- The RunPod API key lives in `api_keys.json` next to the EXE (`runpod_api_key`), never in settings.
 
 ## Features
 
 - Size presets covering square, portrait, landscape, Full HD, 2K, 4K, and ultrawide resolutions
 - Dark purple theme (`#13131f` background, `#6c5ce7` accent)
-- ComfyUI workflow JSON integration (auto-patches prompt, size, seed, steps, denoise, LoadImage nodes)
+- ComfyUI workflow JSON integration (auto-patches prompt, size, seed, steps, denoise, LoadImage nodes) — including Flux.2's `Flux2Scheduler` / `EmptyFlux2LatentImage` (sizes snapped to 16 px)
+- Picking a workflow sets the Steps slider to that workflow's own step count
+- A rejected workflow shows ComfyUI's own node error (missing model, bad input) instead of a bare HTTP 400
 - Background generation thread — UI stays responsive during generation
 - **Batch queue** (Text to Image): add multiple prompt jobs, run sequentially; failed jobs are skipped and counted, the queue continues
 - **Generation history**: every generation records its prompt, workflow, size, steps, and resolved seed to `generation_history.json` (last 500); the Library shows the prompt for any selected image and **Recall Prompt** restores everything to the originating tab
@@ -33,21 +42,32 @@ A four-tab PyQt6 desktop application for AI image generation via ComfyUI (local 
 - Python 3.10+
 - PyQt6
 - Pillow (image resizing + encoding for uploads)
-- ComfyUI (local server) or RunPod serverless endpoint
+- ComfyUI (local server or a RunPod pod)
+- boto3 (model sync with the RunPod network volume)
 
 ## Files
 
 ```
 AI_Image_Generator/
-├── ai_image_generator.py       — Main application
-├── Comfy_Workflows/            — ComfyUI workflow JSON files
-│   ├── t2i_*.json              — Text-to-Image workflows
-│   ├── edit_*.json             — Scene Composer workflows
-│   └── i2i_*.json              — Variations (img2img) workflows
+├── ai_image_generator.py       — Main application (tabs, workers, main window)
+├── config.py                   — settings.json next to the EXE (app_dir), defaults, per-tab → one connection migration
+├── runpod_api.py               — RunPod REST/GraphQL client (copied from Video Creator)
+├── model_sync.py               — model check & S3 sync with the pod volume (copied)
+├── alerts.py                   — alert sound (copied)
+├── ui/
+│   ├── pod_control.py          — header Start/Stop Pod widget + launch chooser (copied)
+│   ├── pod_worker.py           — pod start/stop/list threads (copied)
+│   ├── settings_dialog.py      — Settings: Server / RunPod / Models (copied from Style Randomizer)
+│   └── styles.py               — purple theme colours + the copied modules' style rules
+├── Comfy_Workflows/            — ComfyUI workflow JSON files (API format)
+│   ├── t2i_*.json              — Text-to-Image workflows (flux1dev, flux2_dev, flux2_dev_turbo)
+│   ├── edit_*.json             — Scene Composer workflows (flux2_dev_multiref[_turbo], qwen_image_edit_2509)
+│   └── i2i_*.json              — Variations (img2img) workflows (none yet)
 ├── dropped_images/             — Drag-and-drop input staging (with archive/ subfolder)
-├── upload_temp/                — Upload staging for local ComfyUI API
-├── settings.json               — Persistent tab settings (gitignored)
+├── upload_temp/                — Upload staging for the ComfyUI API
+├── settings.json               — Settings (gitignored)
 ├── generation_history.json     — Last 500 generations for prompt recall (gitignored)
+├── activity.log                — Pod / model-sync progress lines (gitignored)
 └── api_keys.json               — RunPod API key (gitignored, never committed)
 ```
 
@@ -61,13 +81,25 @@ AI_Image_Generator/
 
 ## Building
 
+Build with the repo `.venv` (it has boto3), using the spec (excludes torch/tf from the shared venv):
+
 ```bash
-pyinstaller --onefile --windowed ai_image_generator.py
+P:\AI\VideCoding\.venv\Scripts\python.exe -m PyInstaller --noconfirm "AI Image Studio.spec"
 ```
 
-Output: `P:\Apps\VibeCoded\AI Image Studio\AI Image Studio.exe`
+Deploy: copy `dist\AI Image Studio.exe` and `Comfy_Workflows\` to `P:\Apps\VibeCoded\AI Image Studio\`. Never overwrite the `settings.json`, `api_keys.json` or `generation_history.json` already there. EXE is ~130 MB.
 
 ## Changelog
+
+### v3.3.0 — 2026-10-03
+- **RunPod pod control** ported from the ComfyUI Video Creator (via the Style Randomizer copy): header Start/Stop Pod + spend readout, launch chooser, GPU priority / pod order, keep-trying, spend limit, idle stop, quit prompt, alert sound. New modules `runpod_api.py`, `alerts.py`, `ui/pod_control.py`, `ui/pod_worker.py`
+- **Model check & sync** with the pod's network volume (`model_sync.py`, Settings > Models) gates every pod run; the T2I queue checks each of its workflows once up front
+- **One connection for the app**: the three per-tab Connection boxes are gone; old per-tab settings migrate automatically (Text to Image's choice wins). New **⚙ Settings** dialog (Server / RunPod / Models)
+- **Flux.2 Dev workflows**: `edit_flux2_dev_multiref.json` (4 chained ReferenceLatent references) + `_turbo`, `t2i_flux2_dev.json` + `_turbo`, converted from `Flux2_MultiRef_Character.json`. Flux.2 reference images are uploaded unresized (the workflow scales them to 1 MP); output size goes to the latent + scheduler nodes, snapped to 16 px
+- **Empty reference slots are pruned** from the workflow (LoadImage chain removed, ReferenceLatent / Qwen image inputs left to pass through) instead of failing on a placeholder file
+- **Fix**: reference images went into LoadImage nodes in text order of their ids (`"436"` before `"78"`), so Qwen edit got Image 1 in its second input. Now numeric order
+- **Fix**: settings, history and workflows lived next to `__file__`, which in the one-file EXE is the temp extraction folder — they now live next to the EXE (`config.app_dir()`)
+- Picking a workflow sets Steps from the file; HTTP 400 shows ComfyUI's node errors; generation timeout 10 → 30 min (cold pod model load); new size presets 832×1248, 1024×1536, 1248×832
 
 ### v3.2.0
 - Replaced RunPod Serverless (API key + endpoint ID, async job submission/polling, base64 image transfer) with **RunPod (Pod)**: enter a Pod's proxy URL and it's used directly as the ComfyUI HTTP API endpoint, same as local — removed `RunPodWorker`/`RunPodEditorWorker` entirely since `ComfyWorker`/`EditorWorker` now cover both modes via `ConnectionWidget.active_url`
@@ -118,3 +150,5 @@ Output: `P:\Apps\VibeCoded\AI Image Studio\AI Image Studio.exe`
 - [x] Favorites/rating in the Library tab — v3.1.0 (favorite toggle; numeric rating not needed)
 - [x] Img2img variations tab (feed a Library image back in with strength slider) — v3.1.0
 - [x] Side-by-side A/B compare of two generations — v3.1.0
+- [x] RunPod pod control + model sync (ported from Video Creator) — v3.3.0
+- [ ] An `i2i_*.json` workflow so the Variations tab can run (Flux.2: one reference + denoise, or a Flux.1 img2img)
