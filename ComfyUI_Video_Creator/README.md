@@ -1,6 +1,6 @@
 # ComfyUI Video Creator
 
-Version: 2.14.1
+Version: 2.15.0
 
 Single-shot ComfyUI API workflow runner with a dark red theme. Pick an image, a video to extend, or nothing but a prompt (text → video), pick a workflow JSON, press Run, and the finished video lands in a local folder — from a local ComfyUI or a RunPod pod.
 
@@ -92,6 +92,8 @@ pip install PyQt6 requests websocket-client pillow pyinstaller
 | `runpod_retry_window_min` | Give up looking after this long |
 | `alert_sound_path` | Sound played when a pod is found, when giving up, and when a queue of 2+ runs finishes |
 | `alert_sound_enabled` | Play the alert sound |
+| `s3_delete_outputs_after_download` | RunPod mode: delete each result from the pod volume (via S3) right after it is downloaded and its size matches (default off) |
+| `s3_output_prefix` | ComfyUI's output folder inside the bucket (default `runpod-slim/ComfyUI/output/`) |
 
 The RunPod **API key** is not in this file — it lives in `api_keys.json` next to the app (key `runpod_api_key`), or in the `RUNPOD_API_KEY` environment variable, which takes precedence. `video_creator_config.json` is preserved and copied on every deploy, so a secret in it would travel with the build.
 
@@ -118,6 +120,7 @@ Builds with the repo `.venv`, deploys `ComfyUI_Video_Creator.exe`, `app_icon.ico
 | `workflow_tools.py` | Load/validate API workflows, detect input/prompt/seed/length/output nodes, patch them |
 | `comfy_client.py` | Upload, queue, websocket/poll wait, history, download, interrupt |
 | `run_worker.py` | Background thread for one run: feed source → queue → wait → download → optional stitch |
+| `remote_cleanup.py` | Delete a downloaded result from the RunPod volume over S3 (size-verified, opt-in) |
 | `media_tools.py` | ffmpeg discovery, last frame, thumbnails, probe, concat |
 | `file_ops.py` | Recycle-Bin delete (shell `SHFileOperation`) + thumbnail-cache cleanup |
 | `ui/` | Dark red theme, thumbnail browsers, run panel, queue view, clone dialog, settings dialog, video player, main window |
