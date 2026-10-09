@@ -11,7 +11,7 @@ All notable changes to Music Player are recorded here.
   list of sources).
 - `Player.seek_relative` for the arrow-key seeking.
 - Packaged as a standalone Windows app with PyInstaller (icon bundled via
-  `resource_path`); build output to `P:\Apps\VibeCoded\Music Player\`.
+  `resource_path`); build output to `P:\Apps\AICoded\Music Player\`.
 
 ## [0.8.0] - 2026-07-03
 ### Added — Export playlist to a folder

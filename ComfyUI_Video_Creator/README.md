@@ -51,7 +51,7 @@ pip install PyQt6 requests websocket-client pillow pyinstaller
 
 **From source:** `run.bat` (or `python main.py`)
 
-**EXE:** `P:\Apps\VibeCoded\ComfyUI Video Creator\ComfyUI_Video_Creator.exe`
+**EXE:** `P:\Apps\AICoded\ComfyUI Video Creator\ComfyUI_Video_Creator.exe`
 
 1. ⚙ Settings (tabbed: **Server / Folders / RunPod / Prompts**) → on *Server* choose Local/RunPod and the URL and press *Test connection*; on *Folders* set Images, Videos, Workflows and Output.
    - On *RunPod*, the pod list fills itself in when the tab opens. Put your preferred **card model** at the top of *GPU priority* — the pod list below is the order the chain will actually use, so you can read it straight off.
@@ -109,7 +109,7 @@ Workflows must be **API exports** (Workflow > Export (API) in ComfyUI); the norm
 build.bat
 ```
 
-Builds with the repo `.venv`, deploys `ComfyUI_Video_Creator.exe`, `app_icon.ico` and `ffmpeg.exe` to `P:\Apps\VibeCoded\ComfyUI Video Creator\` and refreshes the Start Menu shortcuts. Bump `VERSION` in `main.py` (and this README + CHANGELOG) before every build.
+Builds with the repo `.venv`, deploys `ComfyUI_Video_Creator.exe`, `app_icon.ico` and `ffmpeg.exe` to `P:\Apps\AICoded\ComfyUI Video Creator\` and refreshes the Start Menu shortcuts. Bump `VERSION` in `main.py` (and this README + CHANGELOG) before every build.
 
 ## Project layout
 
