@@ -7,7 +7,7 @@ All notable changes to Prompt Archiver are documented here.
 ### Changed — full PyQt6 rewrite
 
 Complete rewrite from Electron + React + Material-UI to Python + PyQt6, matching
-the standard VibeCoded toolset (same stack as Music Player, AI Image Studio, etc.).
+the standard AICoded toolset (same stack as Music Player, AI Image Studio, etc.).
 
 - **Archive format unchanged** — existing `Prompt_Archive` folders load as-is;
   `metadata.json` keys are identical, so files written by v2 remain readable by v1.x

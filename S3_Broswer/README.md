@@ -35,7 +35,7 @@ PyQt6 file-explorer-style browser for RunPod's S3-compatible network-volume stor
 pyinstaller S3Browser.spec
 ```
 
-Deployed EXE: `P:\Apps\VibeCoded\S3 Browser\`
+Deployed EXE: `P:\Apps\AICoded\S3 Browser\`
 
 ## Changelog
 
