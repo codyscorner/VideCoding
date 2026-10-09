@@ -60,6 +60,10 @@ class ConfigManager:
         "s3_endpoint_url": "",
         "s3_bucket_name": "",
         "s3_models_prefix": "runpod-slim/ComfyUI/models/",
+        # remote_cleanup.py: after a RunPod result is downloaded and its size
+        # verified, delete it from the pod volume through S3. Off by default.
+        "s3_delete_outputs_after_download": False,
+        "s3_output_prefix": "runpod-slim/ComfyUI/output/",
         # Staging for workflows that read a whole folder (LoadImageListFromDir)
         "staging_dir_local": "",
         "runpod_input_dir": "/workspace/runpod-slim/ComfyUI/input",

@@ -17,6 +17,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from comfy_client import ComfyClient
 from media_tools import concat_videos, extract_last_frame, probe, resolve_ffmpeg
+from remote_cleanup import OutputCleaner, enabled as cleanup_enabled
 from workflow_tools import (
     ValueField, analyze, apply_inputs, apply_megapixels, apply_output_format, apply_seed,
     apply_steps, apply_turbo_toggle, apply_value, list_workflows, load_workflow, match_format_value, output_formats,
@@ -414,6 +415,7 @@ class RunWorker(QThread):
         stem = self._output_stem(req)
         label = _safe(req.workflow_label)
         results: list[Path] = []
+        cleaner = OutputCleaner(self._cfg, self._log) if self._runpod and cleanup_enabled(self._cfg) else None
         for idx, f in enumerate(files, 1):
             ext = Path(f["filename"]).suffix or ".mp4"
             suffix = f"_{idx}" if len(files) > 1 else ""
@@ -423,6 +425,8 @@ class RunWorker(QThread):
             self._client.download(f, dest)
             results.append(dest)
             self._log(f"Saved {dest.name} ({dest.stat().st_size // 1024} KB)")
+            if cleaner:
+                cleaner.delete_if_downloaded(f, dest)
         return results
 
     def _output_stem(self, req: RunRequest) -> str:

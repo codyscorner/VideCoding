@@ -401,6 +401,24 @@ class SettingsDialog(QDialog):
         syl.addWidget(self._s3_status)
         models_tab.addWidget(sync_group)
 
+        # ── Pod volume cleanup (delete results after download) ────────────
+        import remote_cleanup as rc
+        clean_group = QGroupBox("Pod volume cleanup — results")
+        cll = QVBoxLayout(clean_group)
+        cll.setSpacing(10)
+        cll.addWidget(self._caption(
+            "ComfyUI keeps every finished video in its output folder on the pod's volume, which is billed "
+            "per GB. With this ticked, each RunPod result is deleted from the volume (through the S3 "
+            "connection above) right after it has been downloaded — and only if the downloaded file's "
+            "size matches the one on the volume. A failed cleanup never fails the run."))
+        self._delete_after = QCheckBox("Delete results from the pod volume after they are downloaded")
+        self._delete_after.setChecked(bool(config.get(rc.CFG_DELETE_AFTER, False)))
+        cll.addWidget(self._delete_after)
+        self._output_prefix = self._text_row(
+            cll, "Output prefix:", config.get(rc.CFG_OUTPUT_PREFIX, rc.DEFAULT_OUTPUT_PREFIX),
+            "Path of ComfyUI's output folder inside the bucket (e.g. runpod-slim/ComfyUI/output/)")
+        models_tab.addWidget(clean_group)
+
         for lay in (server_tab, folders_tab, runpod_tab, prompt_tab, models_tab):
             lay.addStretch()
 
@@ -833,6 +851,9 @@ class SettingsDialog(QDialog):
         c.set(ms.CFG_MODEL_CHECK, bool(self._sync_enabled.isChecked()))
         c.set(ms.CFG_DOWNLOAD, bool(self._sync_download.isChecked()))
         c.set(ms.CFG_MODELS_DIR, self._models_dir.text().strip())
+        import remote_cleanup as rc
+        c.set(rc.CFG_DELETE_AFTER, bool(self._delete_after.isChecked()))
+        c.set(rc.CFG_OUTPUT_PREFIX, self._output_prefix.text().strip() or rc.DEFAULT_OUTPUT_PREFIX)
         for key, value in self._s3_config_from_fields().items():
             c.set(key, value)
         c.save()

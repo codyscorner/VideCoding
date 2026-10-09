@@ -1,5 +1,9 @@
 # Changelog — ComfyUI Video Creator
 
+### v2.15.0
+- **Delete results from the pod volume once they are downloaded** (new `remote_cleanup.py`). ComfyUI never removes its finished videos from `<ComfyUI>/output` on the network volume, and the volume is billed per GB, so every run left a clip behind. New **Settings → Models → Pod volume cleanup** box: *Delete results from the pod volume after they are downloaded* (**off by default**) and *Output prefix* (default `runpod-slim/ComfyUI/output/`, the output folder inside the bucket). Uses the same S3 connection as model sync
+- Safety rules: a file is deleted only if the object is on the volume, the local copy is not empty, and **the local size equals the volume's size** — a truncated download keeps the pod copy and logs why. Only real `output` files (never `temp`/preview), and a path with `..` is refused. After the last file in a run's folder goes, the empty `VideoCreator/<run>` folder is removed too (RunPod leaves directory nodes behind, so it is pruned bottom-up, and only after a listing shows nothing under it). RunPod mode only; a failed cleanup is logged (`Deleted … from the pod volume` / `Pod cleanup: kept …`) and never fails the run. Single-object deletes, because RunPod's bulk delete answers 307
+
 ### v2.14.1
 - **The video player loads the whole clip into memory before playing it**, so the first play no longer skips and pauses. Streaming an MP4 straight off disk makes the decoder seek between the index and the audio/video chunks; on a hard drive or a just-written file that stutters until the OS has cached it. The player now reads the file sequentially on a background thread (shows "Loading…"), then plays from RAM, and reads the next clip in a playlist while the current one plays so the changeover is smooth too. Files over 1 GB or unreadable ones fall back to streaming. Playing from memory also means the player no longer holds the video file open
 
